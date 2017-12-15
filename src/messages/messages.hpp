@@ -35,7 +35,24 @@
 namespace mesos {
 namespace internal {
 
-bool operator==(const Task& left, const Task& right);
+bool operator==(
+    const ResourceVersionUUID& left,
+    const ResourceVersionUUID& right);
+
+
+bool operator!=(
+    const ResourceVersionUUID& left,
+    const ResourceVersionUUID& right);
+
+
+bool operator==(
+    const OfferOperationStatusUpdate& left,
+    const OfferOperationStatusUpdate& right);
+
+
+bool operator!=(
+    const OfferOperationStatusUpdate& left,
+    const OfferOperationStatusUpdate& right);
 
 
 std::ostream& operator<<(std::ostream& stream, const StatusUpdate& update);
@@ -43,7 +60,17 @@ std::ostream& operator<<(std::ostream& stream, const StatusUpdate& update);
 
 std::ostream& operator<<(
     std::ostream& stream,
+    const OfferOperationStatusUpdate& update);
+
+
+std::ostream& operator<<(
+    std::ostream& stream,
     const StatusUpdateRecord::Type& type);
+
+
+std::ostream& operator<<(
+    std::ostream& stream,
+    const OfferOperationStatusUpdateRecord::Type& type);
 
 } // namespace internal {
 } // namespace mesos {

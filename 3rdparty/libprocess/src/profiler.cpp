@@ -30,11 +30,11 @@
 
 namespace process {
 
+#ifdef ENABLE_GPERFTOOLS
 namespace {
-
-const char PROFILE_FILE[] = "perftools.out";
-
-}  // namespace {
+constexpr char PROFILE_FILE[] = "perftools.out";
+} // namespace {
+#endif
 
 const std::string Profiler::START_HELP()
 {
@@ -60,7 +60,7 @@ const std::string Profiler::STOP_HELP()
 
 Future<http::Response> Profiler::start(
     const http::Request& request,
-    const Option<std::string>& /* principal */)
+    const Option<http::authentication::Principal>&)
 {
 #ifdef ENABLE_GPERFTOOLS
   const Option<std::string>
@@ -105,7 +105,7 @@ Future<http::Response> Profiler::start(
 
 Future<http::Response> Profiler::stop(
     const http::Request& request,
-    const Option<std::string>& /* principal */)
+    const Option<http::authentication::Principal>&)
 {
 #ifdef ENABLE_GPERFTOOLS
   if (!started) {

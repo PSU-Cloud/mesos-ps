@@ -53,7 +53,7 @@ hashmap<string, string> ModuleManager::kindToVersion;
 hashmap<string, ModuleBase*> ModuleManager::moduleBases;
 hashmap<string, Parameters> ModuleManager::moduleParameters;
 hashmap<string, string> ModuleManager::moduleLibraries;
-hashmap<string, Owned<DynamicLibrary>> ModuleManager::dynamicLibraries;
+hashmap<string, DynamicLibrary*> ModuleManager::dynamicLibraries;
 
 
 void ModuleManager::initialize()
@@ -72,12 +72,14 @@ void ModuleManager::initialize()
   kindToVersion["Authorizer"] = MESOS_VERSION;
   kindToVersion["ContainerLogger"] = MESOS_VERSION;
   kindToVersion["Hook"] = MESOS_VERSION;
+  kindToVersion["HttpAuthenticatee"] = MESOS_VERSION;
   kindToVersion["HttpAuthenticator"] = MESOS_VERSION;
   kindToVersion["Isolator"] = MESOS_VERSION;
   kindToVersion["MasterContender"] = MESOS_VERSION;
   kindToVersion["MasterDetector"] = MESOS_VERSION;
   kindToVersion["QoSController"] = MESOS_VERSION;
   kindToVersion["ResourceEstimator"] = MESOS_VERSION;
+  kindToVersion["SecretResolver"] = MESOS_VERSION;
   kindToVersion["TestModule"] = MESOS_VERSION;
 
   // What happens then when Mesos is built with a certain version,
@@ -288,7 +290,7 @@ Try<Nothing> ModuleManager::loadManifest(const Modules& modules)
               "': " + result.error());
         }
 
-        dynamicLibraries[libraryName] = dynamicLibrary;
+        dynamicLibraries[libraryName] = dynamicLibrary.release();
       }
 
       // Load module manifests.

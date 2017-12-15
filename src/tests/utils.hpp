@@ -17,7 +17,13 @@
 #ifndef __TESTS_UTILS_HPP__
 #define __TESTS_UTILS_HPP__
 
+#include <stdint.h>
+
+#include <string>
+
+#include <stout/ip.hpp>
 #include <stout/json.hpp>
+#include <stout/try.hpp>
 
 namespace mesos {
 namespace internal {
@@ -68,6 +74,16 @@ std::string getSbinDir();
 
 // Get the path to the directory of the webui files/assets.
 std::string getWebUIDir();
+
+// Get a random unused port.
+//
+// NOTE: While we make sure that the port returned by this function is
+// unused when this function returns, it might become used before the
+// caller can bind to it.
+Try<uint16_t> getFreePort();
+
+// Get a non-loopback IP available on this host.
+Try<net::IP::Network> getNonLoopbackIP();
 
 } // namespace tests {
 } // namespace internal {

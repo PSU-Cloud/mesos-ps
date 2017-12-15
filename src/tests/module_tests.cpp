@@ -58,6 +58,8 @@ protected:
   // per-test teardown.
   static void SetUpTestCase()
   {
+    MesosTest::SetUpTestCase();
+
     EXPECT_SOME(dynamicLibrary.open(
         getModulePath(DEFAULT_MODULE_LIBRARY_NAME)));
 
@@ -176,7 +178,7 @@ Try<Modules> getModulesFromJson(
 }
 
 
-// Test that a module library gets loaded,  and its contents
+// Test that a module library gets loaded, and its contents
 // version-verified. The provided test library matches the current
 // Mesos version exactly.
 TEST_F(ModuleTest, ExampleModuleLoadTest)

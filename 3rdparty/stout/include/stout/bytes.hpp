@@ -30,6 +30,12 @@
 class Bytes
 {
 public:
+  static constexpr uint64_t BYTES = 1;
+  static constexpr uint64_t KILOBYTES = 1024 * BYTES;
+  static constexpr uint64_t MEGABYTES = 1024 * KILOBYTES;
+  static constexpr uint64_t GIGABYTES = 1024 * MEGABYTES;
+  static constexpr uint64_t TERABYTES = 1024 * GIGABYTES;
+
   static Try<Bytes> parse(const std::string& s)
   {
     size_t index = 0;
@@ -97,66 +103,45 @@ public:
     return *this;
   }
 
-  Bytes& operator*=(double multiplier)
+  Bytes& operator*=(uint64_t multiplier)
   {
-    if (multiplier < 0) {
-      ABORT("Multiplying Bytes by negative multiplier "
-            "'" + stringify(multiplier) + "'");
-    }
-
     value *= multiplier;
     return *this;
   }
 
-  Bytes& operator/=(double divisor)
+  Bytes& operator/=(uint64_t divisor)
   {
-    if (divisor < 0) {
-      ABORT("Dividing Bytes by negative divisor "
-            "'" + stringify(divisor) + "'");
-    }
-
     value /= divisor;
     return *this;
   }
-
-protected:
-  static constexpr uint64_t BYTES = 1;
-  static constexpr uint64_t KILOBYTES = 1024 * BYTES;
-  static constexpr uint64_t MEGABYTES = 1024 * KILOBYTES;
-  static constexpr uint64_t GIGABYTES = 1024 * MEGABYTES;
-  static constexpr uint64_t TERABYTES = 1024 * GIGABYTES;
 
 private:
   uint64_t value;
 };
 
 
-class Kilobytes : public Bytes
+inline constexpr Bytes Kilobytes(uint64_t value)
 {
-public:
-  explicit constexpr Kilobytes(uint64_t value) : Bytes(value, KILOBYTES) {}
-};
+  return Bytes(value, Bytes::KILOBYTES);
+}
 
 
-class Megabytes : public Bytes
+inline constexpr Bytes Megabytes(uint64_t value)
 {
-public:
-  explicit constexpr Megabytes(uint64_t value) : Bytes(value, MEGABYTES) {}
-};
+  return Bytes(value, Bytes::MEGABYTES);
+}
 
 
-class Gigabytes : public Bytes
+inline constexpr Bytes Gigabytes(uint64_t value)
 {
-public:
-  explicit constexpr Gigabytes(uint64_t value) : Bytes(value, GIGABYTES) {}
-};
+  return Bytes(value, Bytes::GIGABYTES);
+}
 
 
-class Terabytes : public Bytes
+inline constexpr Bytes Terabytes(uint64_t value)
 {
-public:
-  explicit constexpr Terabytes(uint64_t value) : Bytes(value, TERABYTES) {}
-};
+  return Bytes(value, Bytes::TERABYTES);
+}
 
 
 inline std::ostream& operator<<(std::ostream& stream, const Bytes& bytes)
@@ -194,26 +179,16 @@ inline Bytes operator-(const Bytes& lhs, const Bytes& rhs)
 }
 
 
-inline Bytes operator*(const Bytes& lhs, double multiplier)
+inline Bytes operator*(const Bytes& lhs, uint64_t multiplier)
 {
-  if (multiplier < 0) {
-    ABORT("Multiplying Bytes by negative multiplier "
-          "'" + stringify(multiplier) + "'");
-  }
-
   Bytes result = lhs;
   result *= multiplier;
   return result;
 }
 
 
-inline Bytes operator/(const Bytes& lhs, double divisor)
+inline Bytes operator/(const Bytes& lhs, uint64_t divisor)
 {
-  if (divisor < 0) {
-    ABORT("Dividing Bytes by negative divisor "
-          "'" + stringify(divisor) + "'");
-  }
-
   Bytes result = lhs;
   result /= divisor;
   return result;

@@ -16,6 +16,11 @@ layout: documentation
   Scheduler Library</a></td>
   <td>C++</td>
 </tr>
+<tr>
+  <td><a href="https://github.com/apache/mesos/tree/master/src/java/src/org/apache/mesos/v1/scheduler">
+  Scheduler Adapter (depends on native libmesos)</a></td>
+  <td>Java</td>
+</tr>
 </table>
 
 ### User Contributed
@@ -43,9 +48,29 @@ run into any issues, file them with the library maintainers.*
   <td>Go</td>
 </tr>
 <tr>
+  <td><a href="https://github.com/ondrej-smola/mesos-go-http">
+  mesos-go-http</a></td>
+  <td>Go</td>
+</tr>
+<tr>
+  <td><a href="https://github.com/verizonlabs/mesos-framework-sdk">
+  mesos-framework-sdk</a></td>
+  <td>Go</td>
+</tr>
+<tr>
   <td><a href="https://github.com/nokia/mesos-scala-api">
   mesos-scala-api</a></td>
   <td>Scala</td>
+</tr>
+<tr>
+  <td><a href="https://github.com/douban/pymesos">
+  PyMesos</a></td>
+  <td>Python</td>
+</tr>
+<tr>
+  <td><a href="https://github.com/osallou/python-mesos-http">
+  python-mesos-http</a></td>
+  <td>Python</td>
 </tr>
 </table>
 
@@ -82,5 +107,33 @@ run into any issues, file them with the library maintainers.*
   <td><a href="https://github.com/mesos/mesos-go">
   mesos-go</a></td>
   <td>Go</td>
+</tr>
+<tr>
+  <td><a href="https://github.com/verizonlabs/mesos-framework-sdk">
+  mesos-framework-sdk</a></td>
+  <td>Go</td>
+</tr>
+<tr>
+  <td><a href="https://github.com/douban/pymesos">
+  PyMesos</a></td>
+  <td>Python</td>
+</tr>
+</table>
+
+## Operator API
+
+### User Contributed
+
+*Note: These libraries are supported by their authors, so if you
+run into any issues, file them with the library maintainers.*
+
+<table class="table table-bordered">
+<thead>
+<tr><th>Name</th><th>Language</th>
+</thead>
+<tr>
+  <td><a href="https://github.com/tobilg/mesos-operator-api-client">
+  mesos-operator-api-client</a></td>
+  <td>JavaScript</td>
 </tr>
 </table>

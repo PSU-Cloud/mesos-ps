@@ -149,7 +149,7 @@ public:
       frameworkId(_frameworkId),
       executorId(_executorId),
       connected(false),
-      connection(UUID::random()),
+      connection(id::UUID::random()),
       local(_local),
       aborted(false),
       mutex(_mutex),
@@ -237,7 +237,7 @@ protected:
     LOG(INFO) << "Executor registered on agent " << slaveId;
 
     connected = true;
-    connection = UUID::random();
+    connection = id::UUID::random();
 
     Stopwatch stopwatch;
     if (FLAGS_v >= 1) {
@@ -260,7 +260,7 @@ protected:
     LOG(INFO) << "Executor re-registered on agent " << slaveId;
 
     connected = true;
-    connection = UUID::random();
+    connection = id::UUID::random();
 
     Stopwatch stopwatch;
     if (FLAGS_v >= 1) {
@@ -284,7 +284,12 @@ protected:
 
     // Update the slave link.
     slave = from;
-    link(slave);
+
+    // We force a reconnect here to avoid sending on a stale "half-open"
+    // socket. We do not detect a disconnection in some cases when the
+    // connection is terminated by a netfilter module e.g., iptables
+    // running on the agent (see MESOS-5332).
+    link(slave, RemoteConnection::RECONNECT);
 
     // Re-register with slave.
     ReregisterExecutorMessage message;
@@ -292,16 +297,12 @@ protected:
     message.mutable_framework_id()->MergeFrom(frameworkId);
 
     // Send all unacknowledged updates.
-    // TODO(vinod): Use foreachvalue instead once LinkedHashmap
-    // supports it.
-    foreach (const StatusUpdate& update, updates.values()) {
+    foreachvalue (const StatusUpdate& update, updates) {
       message.add_updates()->MergeFrom(update);
     }
 
     // Send all unacknowledged tasks.
-    // TODO(vinod): Use foreachvalue instead once LinkedHashmap
-    // supports it.
-    foreach (const TaskInfo& task, tasks.values()) {
+    foreachvalue (const TaskInfo& task, tasks) {
       message.add_tasks()->MergeFrom(task);
     }
 
@@ -313,6 +314,12 @@ protected:
     if (aborted.load()) {
       VLOG(1) << "Ignoring run task message for task " << task.task_id()
               << " because the driver is aborted!";
+      return;
+    }
+
+    if (!connected) {
+      VLOG(1) << "Ignoring run task message for task " << task.task_id()
+              << " because the driver is disconnected!";
       return;
     }
 
@@ -359,7 +366,7 @@ protected:
       const TaskID& taskId,
       const string& uuid)
   {
-    Try<UUID> uuid_ = UUID::fromBytes(uuid);
+    Try<id::UUID> uuid_ = id::UUID::fromBytes(uuid);
     CHECK_SOME(uuid_);
 
     if (aborted.load()) {
@@ -367,6 +374,14 @@ protected:
               << uuid_.get() << " for task " << taskId
               << " of framework " << frameworkId
               << " because the driver is aborted!";
+      return;
+    }
+
+    if (!connected) {
+      VLOG(1) << "Ignoring status update acknowledgement "
+              << uuid_.get() << " for task " << taskId
+              << " of framework " << frameworkId
+              << " because the driver is disconnected!";
       return;
     }
 
@@ -389,6 +404,12 @@ protected:
   {
     if (aborted.load()) {
       VLOG(1) << "Ignoring framework message because the driver is aborted!";
+      return;
+    }
+
+    if (!connected) {
+      VLOG(1) << "Ignoring framework message because "
+              << "the driver is disconnected!";
       return;
     }
 
@@ -454,7 +475,7 @@ protected:
     }
   }
 
-  void _recoveryTimeout(UUID _connection)
+  void _recoveryTimeout(id::UUID _connection)
   {
     // If we're connected, no need to shut down the driver!
     if (connected) {
@@ -539,7 +560,7 @@ protected:
     // We overwrite the UUID for this status update, however with
     // the HTTP API, the executor will have to generate a UUID
     // (which needs to be validated to be RFC-4122 compliant).
-    UUID uuid = UUID::random();
+    id::UUID uuid = id::UUID::random();
     update->set_uuid(uuid.toBytes());
     update->mutable_status()->set_uuid(uuid.toBytes());
 
@@ -575,7 +596,7 @@ private:
   FrameworkID frameworkId;
   ExecutorID executorId;
   bool connected; // Registered with the slave.
-  UUID connection; // UUID to identify the connection instance.
+  id::UUID connection; // UUID to identify the connection instance.
   bool local;
   std::atomic_bool aborted;
   std::recursive_mutex* mutex;
@@ -585,7 +606,7 @@ private:
   Duration recoveryTimeout;
   Duration shutdownGracePeriod;
 
-  LinkedHashMap<UUID, StatusUpdate> updates; // Unacknowledged updates.
+  LinkedHashMap<id::UUID, StatusUpdate> updates; // Unacknowledged updates.
 
   // We store tasks that have not been acknowledged
   // (via status updates) by the slave. This ensures that, during
@@ -628,7 +649,7 @@ MesosExecutorDriver::MesosExecutorDriver(mesos::Executor* _executor)
 
   // Initialize logging.
   if (flags.initialize_driver_logging) {
-    logging::initialize("mesos", flags);
+    logging::initialize("mesos", false, flags);
   } else {
     VLOG(1) << "Disabling initialization of GLOG logging";
   }

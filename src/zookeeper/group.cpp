@@ -158,6 +158,7 @@ void GroupProcess::startConnection()
                        zk->getSessionId());
 }
 
+
 Future<Group::Membership> GroupProcess::join(
     const string& data,
     const Option<string>& label)
@@ -391,9 +392,9 @@ Try<bool> GroupProcess::authenticate()
 
   // Authenticate if necessary.
   if (auth.isSome()) {
-    LOG(INFO) << "Authenticating with ZooKeeper using " << auth.get().scheme;
+    LOG(INFO) << "Authenticating with ZooKeeper using " << auth->scheme;
 
-    int code = zk->authenticate(auth.get().scheme, auth.get().credentials);
+    int code = zk->authenticate(auth->scheme, auth->credentials);
 
     if (code == ZINVALIDSTATE || (code != ZOK && zk->retryable(code))) {
       return false;
@@ -489,14 +490,14 @@ void GroupProcess::timedout(int64_t sessionId)
   // The connect timer can be reset or replaced and `zk`
   // can be replaced since this method was dispatched.
   if (connectTimer.isSome() &&
-      connectTimer.get().timeout().expired() &&
+      connectTimer->timeout().expired() &&
       zk->getSessionId() == sessionId) {
     LOG(WARNING) << "Timed out waiting to connect to ZooKeeper. "
                  << "Forcing ZooKeeper session "
                  << "(sessionId=" << std::hex << sessionId << ") expiration";
 
     // Locally determine that the current session has expired.
-    expired(zk->getSessionId());
+    dispatch(self(), &Self::expired, zk->getSessionId());
   }
 }
 
@@ -599,12 +600,14 @@ Result<Group::Membership> GroupProcess::doJoin(
 {
   CHECK_EQ(state, READY);
 
+  const string path = znode + "/" + (label.isSome() ? (label.get() + "_") : "");
+
   // Create a new ephemeral node to represent a new member and use the
   // the specified data as its contents.
   string result;
 
-  int code = zk->create(
-      znode + "/" + (label.isSome() ? (label.get() + "_") : ""),
+  const int code = zk->create(
+      path,
       data,
       acl,
       ZOO_SEQUENCE | ZOO_EPHEMERAL,
@@ -615,7 +618,7 @@ Result<Group::Membership> GroupProcess::doJoin(
     return None();
   } else if (code != ZOK) {
     return Error(
-        "Failed to create ephemeral node at '" + znode +
+        "Failed to create ephemeral node at '" + path +
         "' in ZooKeeper: " + zk->message(code));
   }
 
@@ -625,10 +628,10 @@ Result<Group::Membership> GroupProcess::doJoin(
 
   // Save the sequence number but only grab the basename. Example:
   // "/path/to/znode/label_0000000131" => "0000000131".
-  string basename = Path(result).basename();
+  const string basename = strings::tokenize(result, "/").back();
 
   // Strip the label before grabbing the sequence number.
-  string node = label.isSome()
+  const string node = label.isSome()
       ? strings::remove(basename, label.get() + "_")
       : basename;
 
