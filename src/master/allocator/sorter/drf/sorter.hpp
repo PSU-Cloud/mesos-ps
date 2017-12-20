@@ -99,7 +99,7 @@ public:
 
   virtual void remove(const SlaveID& slaveId, const Resources& resources);
 
-  virtual std::vector<std::string> sort();
+  virtual std::vector<std::string> sort(const SlaveId& slaveId);
 
   virtual bool contains(const std::string& clientPath) const;
 
@@ -108,6 +108,8 @@ public:
 private:
   // A node in the sorter's tree.
   struct Node;
+
+  std::vector<std::string> sort();
 
   // Returns the dominant resource share for the node.
   double calculateShare(const Node* node) const;

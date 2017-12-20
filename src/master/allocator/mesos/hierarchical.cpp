@@ -1630,7 +1630,7 @@ void HierarchicalAllocatorProcess::__allocate()
   // roles for which quota is set (quota'ed roles). Such roles form a
   // special allocation group with a dedicated sorter.
   foreach (const SlaveID& slaveId, slaveIds) {
-    foreach (const string& role, quotaRoleSorter->sort()) {
+    foreach (const string& role, quotaRoleSorter->sort(slaveId)) {
       CHECK(quotas.contains(role));
 
       const Quota& quota = quotas.at(role);
@@ -1695,7 +1695,7 @@ void HierarchicalAllocatorProcess::__allocate()
       CHECK(frameworkSorters.contains(role));
       const Owned<Sorter>& frameworkSorter = frameworkSorters.at(role);
 
-      foreach (const string& frameworkId_, frameworkSorter->sort()) {
+      foreach (const string& frameworkId_, frameworkSorter->sort(slaveId)) {
         FrameworkID frameworkId;
         frameworkId.set_value(frameworkId_);
 
@@ -1897,7 +1897,7 @@ void HierarchicalAllocatorProcess::__allocate()
       CHECK(frameworkSorters.contains(role));
       const Owned<Sorter>& frameworkSorter = frameworkSorters.at(role);
 
-      foreach (const string& frameworkId_, frameworkSorter->sort()) {
+      foreach (const string& frameworkId_, frameworkSorter->sort(slaveId)) {
         FrameworkID frameworkId;
         frameworkId.set_value(frameworkId_);
 

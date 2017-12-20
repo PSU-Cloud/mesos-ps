@@ -137,7 +137,7 @@ public:
 
   // Returns all of the clients in the order that they should
   // be allocated to, according to this Sorter's policy.
-  virtual std::vector<std::string> sort() = 0;
+  virtual std::vector<std::string> sort(const SlaveID& slaveId) = 0;
 
   // Returns true if this Sorter contains the specified client,
   // which may be active or inactive.

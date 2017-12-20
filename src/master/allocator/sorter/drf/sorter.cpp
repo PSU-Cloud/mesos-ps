@@ -507,6 +507,11 @@ void DRFSorter::remove(const SlaveID& slaveId, const Resources& resources)
   }
 }
 
+vector<string> DRFSorter::sort(const SlaveId& slaveId) {
+	// call the private sort function with no input argument as in DRF, the
+	// scheduler does not sort per slave
+	return DRFSorter::sort();
+}
 
 vector<string> DRFSorter::sort()
 {
