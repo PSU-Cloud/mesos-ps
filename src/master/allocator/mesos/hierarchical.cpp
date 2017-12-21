@@ -1886,7 +1886,7 @@ void HierarchicalAllocatorProcess::__allocate()
       break;
     }
 
-    foreach (const string& role, roleSorter->sort()) {
+    foreach (const string& role, roleSorter->sort(slaveId)) {
       // In the second allocation stage, we only allocate
       // for non-quota roles.
       if (quotas.contains(role)) {

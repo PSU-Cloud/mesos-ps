@@ -99,7 +99,7 @@ public:
 
   virtual void remove(const SlaveID& slaveId, const Resources& resources);
 
-  virtual std::vector<std::string> sort(const SlaveId& slaveId);
+  virtual std::vector<std::string> sort(const SlaveID& slaveId);
 
   virtual bool contains(const std::string& clientPath) const;
 
