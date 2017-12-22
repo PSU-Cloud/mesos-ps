@@ -105,6 +105,8 @@ public:
 
   virtual int count() const;
 
+  virtual void printPerSlaveResources() const;
+
 private:
   // A node in the sorter's tree.
   struct Node;

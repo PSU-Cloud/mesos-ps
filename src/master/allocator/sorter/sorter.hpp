@@ -146,6 +146,9 @@ public:
   // Returns the number of clients this Sorter contains,
   // either active or inactive.
   virtual int count() const = 0;
+
+  // Expose per-slave resources for testing
+  virtual void printPerSlaveResources() const = 0;
 };
 
 } // namespace allocator {

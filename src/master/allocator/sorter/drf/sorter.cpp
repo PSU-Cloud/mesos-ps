@@ -594,6 +594,16 @@ int DRFSorter::count() const
   return clients.size();
 }
 
+void DRFSorter::printPerSlaveResources() const
+{
+  foreachpair (const SlaveID& slaveId,
+	       const Resources& resources,
+	       total_.resources) {
+    LOG(INFO) << "---Slave: " << slaveId.value();
+    LOG(INFO) << "------ CPUs: " << resources.cpus().get();
+    LOG(INFO) << "------ Mem: " << resources.mem().get().megabytes();
+  }
+}
 
 double DRFSorter::calculateShare(const Node* node) const
 {

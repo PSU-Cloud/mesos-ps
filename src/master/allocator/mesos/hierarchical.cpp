@@ -576,6 +576,14 @@ void HierarchicalAllocatorProcess::addSlave(
             << " (allocated: " << slave.allocated << ")";
 
   allocate(slaveId);
+
+  LOG(INFO) << "Total resources per-slave in role sorter:";
+  roleSorter->printPerSlaveResources();
+  LOG(INFO) << "Total resources per-slave in framework sorter under each role:";
+  foreachkey (const string& role, roles) {
+    LOG(INFO) << "Role: " << role;
+    frameworkSorters.at(role)->printPerSlaveResources();
+  }
 }
 
 
