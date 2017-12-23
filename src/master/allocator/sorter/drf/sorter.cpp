@@ -600,8 +600,18 @@ void DRFSorter::printPerSlaveResources() const
 	       const Resources& resources,
 	       total_.resources) {
     LOG(INFO) << "---Slave: " << slaveId.value();
-    LOG(INFO) << "------ CPUs: " << resources.cpus().get();
-    LOG(INFO) << "------ Mem: " << resources.mem().get().megabytes();
+    Option<double> cpus = resources.cpus();
+    if (!cpus.isNone()) {
+	LOG(INFO) << "------ CPUs: " << cpus.get();
+    } else {
+	LOG(INFO) << "------ CPUs: None";
+    }
+    Option<Bytes> mem = resources.mem();
+    if (!mem.isNone()) {
+        LOG(INFO) << "------ Mem: " << mem.get().megabytes();
+    } else {
+	LOG(INFO) << "------ Mem: None";
+    }
   }
 }
 
