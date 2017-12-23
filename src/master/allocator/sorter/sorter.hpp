@@ -139,6 +139,8 @@ public:
   // be allocated to, according to this Sorter's policy.
   virtual std::vector<std::string> sort(const SlaveID& slaveId) = 0;
 
+  virtual std::vector<std::string> sort() = 0;
+
   // Returns true if this Sorter contains the specified client,
   // which may be active or inactive.
   virtual bool contains(const std::string& client) const = 0;
