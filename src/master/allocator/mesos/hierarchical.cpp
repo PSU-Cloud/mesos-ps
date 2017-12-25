@@ -1893,7 +1893,6 @@ void HierarchicalAllocatorProcess::__allocate()
     if (!allocatable(remainingClusterResources - allocatedStage2)) {
       break;
     }
-
     foreach (const string& role, roleSorter->sort(slaveId)) {
       // In the second allocation stage, we only allocate
       // for non-quota roles.

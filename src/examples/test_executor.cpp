@@ -16,6 +16,8 @@
 
 #include <iostream>
 
+#include <unistd.h>
+
 #include <mesos/executor.hpp>
 
 #include <stout/duration.hpp>
@@ -60,6 +62,7 @@ public:
     driver->sendStatusUpdate(status);
 
     // This is where one would perform the requested task.
+    sleep(10);
 
     cout << "Finishing task " << task.task_id().value() << endl;
 

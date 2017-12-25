@@ -132,6 +132,7 @@ public:
         remaining -= resources.get();
 
         tasks.push_back(task);
+        break;  // hacking: one is enough
       }
 
       driver->launchTasks(offer.id(), tasks);

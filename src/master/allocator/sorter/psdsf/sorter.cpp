@@ -634,8 +634,9 @@ double PSDSFSorter::calculateShare(const Node* node,
   // in total_.resource.at(.) if we don't have .contains() check as follows.
   if (total_.resources.contains(slaveId)) {
     Option<double> totalCpus = total_.resources.at(slaveId).cpus();
-    if (fairnessExcludeResourceNames.isSome() &&
-        fairnessExcludeResourceNames->count("cpus") > 0 &&
+    if ((!fairnessExcludeResourceNames.isSome() ||
+        (fairnessExcludeResourceNames.isSome() &&
+        fairnessExcludeResourceNames->count("cpus") > 0)) &&
         !totalCpus.isNone() &&
         totalCpus.get() > 0 &&
         node->allocation.totals.contains("cpus")) {
@@ -644,8 +645,9 @@ double PSDSFSorter::calculateShare(const Node* node,
     }
 
     Option<Bytes> totalMem = total_.resources.at(slaveId).mem();
-    if (fairnessExcludeResourceNames.isSome() &&
-        fairnessExcludeResourceNames->count("mem") > 0 &&
+    if ((!fairnessExcludeResourceNames.isSome() ||
+        (fairnessExcludeResourceNames.isSome() &&
+        fairnessExcludeResourceNames->count("mem") > 0)) &&
         !totalMem.isNone() &&
         totalMem.get().megabytes() > 0 &&
         node->allocation.totals.contains("mem")) {
@@ -653,6 +655,8 @@ double PSDSFSorter::calculateShare(const Node* node,
       share = std::max(share, allocation / totalMem.get().megabytes());
     }
   }
+  LOG(INFO) << "------Share of " << node->name << " is "
+            << share / findWeight(node);
   return share / findWeight(node);
 }
 
