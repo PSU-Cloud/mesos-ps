@@ -38,6 +38,7 @@
 #include "master/allocator/mesos/metrics.hpp"
 
 #include "master/allocator/sorter/drf/sorter.hpp"
+#include "master/allocator/sorter/psdsf/sorter.hpp"
 
 #include "master/constants.hpp"
 
@@ -60,6 +61,11 @@ HierarchicalDRFAllocatorProcess;
 typedef MesosAllocator<HierarchicalDRFAllocatorProcess>
 HierarchicalDRFAllocator;
 
+typedef HierarchicalAllocatorProcess<PSDSFSorter, PSDSFSorter, PSDSFSorter>
+HierarchicalPSDSFAllocatorProcess;
+
+typedef MesosAllocator<HierarchicalPSDSFAllocatorProcess>
+HierarchicalPSDSFAllocator;
 
 namespace internal {
 

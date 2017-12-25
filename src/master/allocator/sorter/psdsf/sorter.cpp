@@ -52,7 +52,7 @@ PSDSFSorter::PSDSFSorter(
     const UPID& allocator,
     const string& metricsPrefix)
   : root(new Node("", Node::INTERNAL, nullptr)),
-    metrics(Metrics(allocator, *this, metricsPrefix)) {}
+    metrics(PSDSFMetrics(allocator, *this, metricsPrefix)) {}
 
 
 PSDSFSorter::~PSDSFSorter()
@@ -507,16 +507,21 @@ void PSDSFSorter::remove(const SlaveID& slaveId, const Resources& resources)
   }
 }
 
-vector<string> PSDSFSorter::sort(const SlaveID& slaveId) {
-    // call the private sort function with no input argument as in PSDSF, the
-    // scheduler does not sort per slave
-    return PSDSFSorter::sort();
+vector<string> PSDSFSorter::sort() {
+  vector<string> result;
+  return result;
 }
 
-vector<string> PSDSFSorter::sort()
-{
-  if (dirty) {
-    std::function<void (Node*)> sortTree = [this, &sortTree](Node* node) {
+vector<string> PSDSFSorter::sort(const SlaveID& slaveId) {
+  // TODO(yuquanshan): since we need to re-sort when slave is changed,
+  // the global (cross-slave) variable "dirty" is useless in our case,
+  // so change "dirty" to "true" in if (.). Alternatively, we can add
+  // another variable to, say, root node, which indicates which slave
+  // it tracks last time. As a result, if (.) would contain two
+  // conditions: dirty || slaveId.value() != root->lastSlave.value().
+  if (true) {
+    std::function<void (Node*)> sortTree =
+        [this, &slaveId, &sortTree](Node* node) {
       // Inactive leaves are always stored at the end of the
       // `children` vector; this means that as soon as we see an
       // inactive leaf, we can stop calculating shares, and we only
@@ -530,7 +535,7 @@ vector<string> PSDSFSorter::sort()
           break;
         }
 
-        child->share = calculateShare(child);
+        child->share = calculateShare(child, slaveId);
         ++childIter;
       }
 
@@ -597,50 +602,57 @@ int PSDSFSorter::count() const
 void PSDSFSorter::printPerSlaveResources() const
 {
   foreachpair (const SlaveID& slaveId,
-	       const Resources& resources,
-	       total_.resources) {
+               const Resources& resources,
+               total_.resources) {
     LOG(INFO) << "---Slave: " << slaveId.value();
     Option<double> cpus = resources.cpus();
     if (!cpus.isNone()) {
-	LOG(INFO) << "------ CPUs: " << cpus.get();
+        LOG(INFO) << "------ CPUs: " << cpus.get();
     } else {
-	LOG(INFO) << "------ CPUs: None";
+        LOG(INFO) << "------ CPUs: None";
     }
     Option<Bytes> mem = resources.mem();
     if (!mem.isNone()) {
         LOG(INFO) << "------ Mem: " << mem.get().megabytes();
     } else {
-	LOG(INFO) << "------ Mem: None";
+        LOG(INFO) << "------ Mem: None";
     }
   }
 }
 
-double PSDSFSorter::calculateShare(const Node* node) const
+double PSDSFSorter::calculateShare(const Node* node,
+                                   const SlaveID& slaveId) const
 {
   double share = 0.0;
 
-  // TODO(benh): This implementation of "dominant resource fairness"
-  // currently does not take into account resources that are not
-  // scalars.
+  // TODO(yuquanshan): currently only consider cpu and mem, may iterate
+  // Resources in the future
 
-  foreachpair (const string& resourceName,
-               const Value::Scalar& scalar,
-               total_.totals) {
-    // Filter out the resources excluded from fair sharing.
+  // Add the following if statement because slave wont be immediately
+  // registered in frameworkSorter (registered only after this slave's
+  // resources have been allocated under a role), so there will be a problem
+  // in total_.resource.at(.) if we don't have .contains() check as follows.
+  if (total_.resources.contains(slaveId)) {
+    Option<double> totalCpus = total_.resources.at(slaveId).cpus();
     if (fairnessExcludeResourceNames.isSome() &&
-        fairnessExcludeResourceNames->count(resourceName) > 0) {
-      continue;
+        fairnessExcludeResourceNames->count("cpus") > 0 &&
+        !totalCpus.isNone() &&
+        totalCpus.get() > 0 &&
+        node->allocation.totals.contains("cpus")) {
+      const double allocation = node->allocation.totals.at("cpus").value();
+      share = std::max(share, allocation / totalCpus.get());
     }
 
-    if (scalar.value() > 0.0 &&
-        node->allocation.totals.contains(resourceName)) {
-      const double allocation =
-        node->allocation.totals.at(resourceName).value();
-
-      share = std::max(share, allocation / scalar.value());
+    Option<Bytes> totalMem = total_.resources.at(slaveId).mem();
+    if (fairnessExcludeResourceNames.isSome() &&
+        fairnessExcludeResourceNames->count("mem") > 0 &&
+        !totalMem.isNone() &&
+        totalMem.get().megabytes() > 0 &&
+        node->allocation.totals.contains("mem")) {
+      const double allocation = node->allocation.totals.at("mem").value();
+      share = std::max(share, allocation / totalMem.get().megabytes());
     }
   }
-
   return share / findWeight(node);
 }
 

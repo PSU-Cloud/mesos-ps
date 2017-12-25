@@ -32,14 +32,14 @@ namespace allocator {
 
 class PSDSFSorter;
 
-struct Metrics
+struct PSDSFMetrics
 {
-  explicit Metrics(
+  explicit PSDSFMetrics(
       const process::UPID& context,
       PSDSFSorter& sorter,
       const std::string& prefix);
 
-  ~Metrics();
+  ~PSDSFMetrics();
 
   void add(const std::string& client);
   void remove(const std::string& client);

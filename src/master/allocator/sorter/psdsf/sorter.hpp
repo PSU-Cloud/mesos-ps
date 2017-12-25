@@ -130,8 +130,8 @@ private:
   // A node in the sorter's tree.
   struct Node;
 
-  // Returns the dominant resource share for the node.
-  double calculateShare(const Node* node) const;
+  // Calculate the dominant share of a client on a slave
+  double calculateShare(const Node* node, const SlaveID& slaveId) const;
 
   // Returns the weight associated with the node. If no weight has
   // been configured for the node's path, the default weight (1.0) is
@@ -200,8 +200,8 @@ private:
   } total_;
 
   // Metrics are optionally exposed by the sorter.
-  friend Metrics;
-  Option<Metrics> metrics;
+  friend PSDSFMetrics;
+  Option<PSDSFMetrics> metrics;
 };
 
 

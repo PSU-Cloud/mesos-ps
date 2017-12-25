@@ -38,7 +38,7 @@ namespace internal {
 namespace master {
 namespace allocator {
 
-Metrics::Metrics(
+PSDSFMetrics::PSDSFMetrics(
     const UPID& _context,
     PSDSFSorter& _sorter,
     const string& _prefix)
@@ -47,7 +47,7 @@ Metrics::Metrics(
     prefix(_prefix) {}
 
 
-Metrics::~Metrics()
+PSDSFMetrics::~PSDSFMetrics()
 {
   foreachvalue (const Gauge& gauge, dominantShares) {
     process::metrics::remove(gauge);
@@ -55,7 +55,7 @@ Metrics::~Metrics()
 }
 
 
-void Metrics::add(const string& client)
+void PSDSFMetrics::add(const string& client)
 {
   CHECK(!dominantShares.contains(client));
 
@@ -73,7 +73,8 @@ void Metrics::add(const string& client)
 
         // TODO(yuquanshan): Why need to calculate again?
         // Can we simply use sorterClient->share?
-        return sorter->calculateShare(sorterClient);
+        // return sorter->calculateShare(sorterClient);
+        return sorterClient->share;
       }));
 
   dominantShares.put(client, gauge);
@@ -81,7 +82,7 @@ void Metrics::add(const string& client)
 }
 
 
-void Metrics::remove(const string& client)
+void PSDSFMetrics::remove(const string& client)
 {
   CHECK(dominantShares.contains(client));
 

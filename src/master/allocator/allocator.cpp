@@ -28,6 +28,8 @@ using std::string;
 
 using mesos::internal::master::allocator::HierarchicalDRFAllocator;
 
+using mesos::internal::master::allocator::HierarchicalPSDSFAllocator;
+
 namespace mesos {
 namespace allocator {
 
@@ -39,6 +41,8 @@ Try<Allocator*> Allocator::create(const string& name)
   // ModuleManager and built-in allocator factory do that already.
   if (name == mesos::internal::master::DEFAULT_ALLOCATOR) {
     return HierarchicalDRFAllocator::create();
+  } else if (name == "HierarchicalPSDSF") {
+    return HierarchicalPSDSFAllocator::create();
   }
 
   return modules::ModuleManager::create<Allocator>(name);
