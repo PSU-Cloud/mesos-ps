@@ -30,6 +30,8 @@ using mesos::internal::master::allocator::HierarchicalDRFAllocator;
 
 using mesos::internal::master::allocator::HierarchicalPSDSFAllocator;
 
+using mesos::internal::master::allocator::HierarchicalRPSDSFAllocator;
+
 namespace mesos {
 namespace allocator {
 
@@ -43,6 +45,8 @@ Try<Allocator*> Allocator::create(const string& name)
     return HierarchicalDRFAllocator::create();
   } else if (name == "HierarchicalPSDSF") {
     return HierarchicalPSDSFAllocator::create();
+  } else if (name == "HierarchicalRPSDSF") {
+    return HierarchicalRPSDSFAllocator::create();
   }
 
   return modules::ModuleManager::create<Allocator>(name);

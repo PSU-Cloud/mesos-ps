@@ -327,6 +327,8 @@ set(MASTER_SRC
   master/allocator/sorter/drf/sorter.cpp
   master/allocator/sorter/psdsf/metrics.cpp
   master/allocator/sorter/psdsf/sorter.cpp
+  master/allocator/sorter/rpsdsf/metrics.cpp
+  master/allocator/sorter/rpsdsf/sorter.cpp
   master/contender/contender.cpp
   master/contender/standalone.cpp
   master/contender/zookeeper.cpp

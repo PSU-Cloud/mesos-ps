@@ -999,6 +999,8 @@ libmesos_no_3rdparty_la_SOURCES +=					\
   master/allocator/sorter/drf/sorter.cpp				\
   master/allocator/sorter/psdsf/metrics.cpp                             \
   master/allocator/sorter/psdsf/sorter.cpp                              \
+  master/allocator/sorter/rpsdsf/metrics.cpp                            \
+  master/allocator/sorter/rpsdsf/sorter.cpp                             \
   master/contender/contender.cpp					\
   master/contender/standalone.cpp					\
   master/contender/zookeeper.cpp					\
@@ -1149,6 +1151,8 @@ libmesos_no_3rdparty_la_SOURCES +=					\
   master/allocator/sorter/drf/sorter.hpp                                \
   master/allocator/sorter/psdsf/sorter.hpp                              \
   master/allocator/sorter/psdsf/metrics.hpp                             \
+  master/allocator/sorter/rpsdsf/sorter.hpp                             \
+  master/allocator/sorter/rpsdsf/metrics.hpp                            \
   master/contender/standalone.hpp					\
   master/contender/zookeeper.hpp					\
   master/detector/standalone.hpp					\

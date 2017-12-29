@@ -39,6 +39,7 @@
 
 #include "master/allocator/sorter/drf/sorter.hpp"
 #include "master/allocator/sorter/psdsf/sorter.hpp"
+#include "master/allocator/sorter/rpsdsf/sorter.hpp"
 
 #include "master/constants.hpp"
 
@@ -66,6 +67,12 @@ HierarchicalPSDSFAllocatorProcess;
 
 typedef MesosAllocator<HierarchicalPSDSFAllocatorProcess>
 HierarchicalPSDSFAllocator;
+
+typedef HierarchicalAllocatorProcess<RPSDSFSorter, RPSDSFSorter, RPSDSFSorter>
+HierarchicalRPSDSFAllocatorProcess;
+
+typedef MesosAllocator<HierarchicalRPSDSFAllocatorProcess>
+HierarchicalRPSDSFAllocator;
 
 namespace internal {
 
