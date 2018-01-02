@@ -140,6 +140,7 @@ HierarchicalAllocatorProcess::Framework::Framework(
   : roles(protobuf::framework::getRoles(frameworkInfo)),
     suppressedRoles(_suppressedRoles),
     capabilities(frameworkInfo.capabilities()),
+    dv(frameworkInfo.dvector()),
     active(_active) {}
 
 

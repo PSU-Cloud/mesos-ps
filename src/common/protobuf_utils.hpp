@@ -481,6 +481,18 @@ struct Capabilities
   bool regionAware = false;
 };
 
+struct DVector
+{
+  DVector() = default;
+  DVector(const FrameworkInfo::DVector& dv)
+  {
+    cpus = dv.cpus();
+    mem = dv.mem();
+  }
+
+  double cpus = 1;
+  int32_t mem = 100;
+};
 
 // Helper to get roles from FrameworkInfo based on the
 // presence of the MULTI_ROLE capability.

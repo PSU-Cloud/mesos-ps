@@ -410,6 +410,16 @@ message FrameworkInfo {
   // the framework). These labels are not interpreted by Mesos itself.
   // Labels should not contain duplicate key-value pairs.
   optional Labels labels = 11;
+
+  // D-vector: per task requirement of this framework, under strategy-proofness
+  // scheduling algorithm. Frameworks are expected to truthfully report their
+  // D-vector.
+  message DVector {
+    optional double cpus = 1 [default = 1];
+    optional int32 mem = 2 [default = 100];
+  }
+
+  optional DVector dvector = 13;
 }
 
 
