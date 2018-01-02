@@ -22,6 +22,8 @@
 
 #include "master/allocator/mesos/hierarchical.hpp"
 
+#include "master/allocator/mesos/fine_hierarchical.hpp"
+
 #include "module/manager.hpp"
 
 using std::string;
@@ -31,6 +33,12 @@ using mesos::internal::master::allocator::HierarchicalDRFAllocator;
 using mesos::internal::master::allocator::HierarchicalPSDSFAllocator;
 
 using mesos::internal::master::allocator::HierarchicalRPSDSFAllocator;
+
+using mesos::internal::master::allocator::FineHierarchicalDRFAllocator;
+
+using mesos::internal::master::allocator::FineHierarchicalPSDSFAllocator;
+
+using mesos::internal::master::allocator::FineHierarchicalRPSDSFAllocator;
 
 namespace mesos {
 namespace allocator {
@@ -47,6 +55,12 @@ Try<Allocator*> Allocator::create(const string& name)
     return HierarchicalPSDSFAllocator::create();
   } else if (name == "HierarchicalRPSDSF") {
     return HierarchicalRPSDSFAllocator::create();
+  } else if (name == "FineHierarchicalDRF") {
+    return FineHierarchicalDRFAllocator::create();
+  } else if (name == "FineHierarchicalPSDSF") {
+    return FineHierarchicalPSDSFAllocator::create();
+  } else if (name == "FineHierarchicalRPSDSF") {
+    return FineHierarchicalRPSDSFAllocator::create();
   }
 
   return modules::ModuleManager::create<Allocator>(name);
