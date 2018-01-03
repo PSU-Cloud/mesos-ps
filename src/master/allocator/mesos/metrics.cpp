@@ -26,6 +26,7 @@
 #include <stout/hashmap.hpp>
 
 #include "master/allocator/mesos/hierarchical.hpp"
+#include "master/allocator/mesos/fine_hierarchical.hpp"
 
 using std::string;
 
@@ -191,6 +192,168 @@ void Metrics::addRole(const string& role)
 
 
 void Metrics::removeRole(const string& role)
+{
+  Option<Gauge> gauge = offer_filters_active.get(role);
+
+  CHECK_SOME(gauge);
+
+  offer_filters_active.erase(role);
+
+  process::metrics::remove(gauge.get());
+}
+
+
+MetricsForFine::MetricsForFine(
+    const FineHierarchicalAllocatorProcess& _allocator)
+  : allocator(_allocator.self()),
+    event_queue_dispatches(
+        "allocator/mesos/event_queue_dispatches",
+        process::defer(
+            allocator,
+            &FineHierarchicalAllocatorProcess::_event_queue_dispatches)),
+    event_queue_dispatches_(
+        "allocator/event_queue_dispatches",
+        process::defer(
+            allocator,
+            &FineHierarchicalAllocatorProcess::_event_queue_dispatches)),
+    allocation_runs("allocator/mesos/allocation_runs"),
+    allocation_run("allocator/mesos/allocation_run", Hours(1)),
+    allocation_run_latency("allocator/mesos/allocation_run_latency", Hours(1))
+{
+  process::metrics::add(event_queue_dispatches);
+  process::metrics::add(event_queue_dispatches_);
+  process::metrics::add(allocation_runs);
+  process::metrics::add(allocation_run);
+  process::metrics::add(allocation_run_latency);
+
+  string resources[] = {"cpus", "mem", "disk"};
+
+  foreach (const string& resource, resources) {
+    Gauge total(
+        "allocator/mesos/resources/" + resource + "/total",
+        defer(allocator,
+              &FineHierarchicalAllocatorProcess::_resources_total,
+              resource));
+
+    Gauge offered_or_allocated(
+        "allocator/mesos/resources/" + resource + "/offered_or_allocated",
+        defer(allocator,
+              &FineHierarchicalAllocatorProcess::
+              _resources_offered_or_allocated,
+              resource));
+
+    resources_total.push_back(total);
+    resources_offered_or_allocated.push_back(offered_or_allocated);
+
+    process::metrics::add(total);
+    process::metrics::add(offered_or_allocated);
+  }
+}
+
+
+MetricsForFine::~MetricsForFine()
+{
+  process::metrics::remove(event_queue_dispatches);
+  process::metrics::remove(event_queue_dispatches_);
+  process::metrics::remove(allocation_runs);
+  process::metrics::remove(allocation_run);
+  process::metrics::remove(allocation_run_latency);
+
+  foreach (const Gauge& gauge, resources_total) {
+    process::metrics::remove(gauge);
+  }
+
+  foreach (const Gauge& gauge, resources_offered_or_allocated) {
+    process::metrics::remove(gauge);
+  }
+
+  foreachkey (const string& role, quota_allocated) {
+    foreachvalue (const Gauge& gauge, quota_allocated[role]) {
+      process::metrics::remove(gauge);
+    }
+  }
+
+  foreachkey (const string& role, quota_guarantee) {
+    foreachvalue (const Gauge& gauge, quota_guarantee[role]) {
+      process::metrics::remove(gauge);
+    }
+  }
+
+  foreachvalue (const Gauge& gauge, offer_filters_active) {
+    process::metrics::remove(gauge);
+  }
+}
+
+
+void MetricsForFine::setQuota(const string& role, const Quota& quota)
+{
+  CHECK(!quota_allocated.contains(role));
+
+  hashmap<string, Gauge> allocated;
+  hashmap<string, Gauge> guarantees;
+
+  foreach (const Resource& resource, quota.info.guarantee()) {
+    CHECK_EQ(Value::SCALAR, resource.type());
+    double value = resource.scalar().value();
+
+    Gauge guarantee = Gauge(
+        "allocator/mesos/quota"
+        "/roles/" + role +
+        "/resources/" + resource.name() +
+        "/guarantee",
+        process::defer([value]() { return value; }));
+
+    Gauge offered_or_allocated(
+        "allocator/mesos/quota"
+        "/roles/" + role +
+        "/resources/" + resource.name() +
+        "/offered_or_allocated",
+        defer(allocator,
+              &FineHierarchicalAllocatorProcess::_quota_allocated,
+              role,
+              resource.name()));
+
+    guarantees.put(resource.name(), guarantee);
+    allocated.put(resource.name(), offered_or_allocated);
+
+    process::metrics::add(guarantee);
+    process::metrics::add(offered_or_allocated);
+  }
+
+  quota_allocated[role] = allocated;
+  quota_guarantee[role] = guarantees;
+}
+
+
+void MetricsForFine::removeQuota(const string& role)
+{
+  CHECK(quota_allocated.contains(role));
+
+  foreachvalue (const Gauge& gauge, quota_allocated[role]) {
+    process::metrics::remove(gauge);
+  }
+
+  quota_allocated.erase(role);
+}
+
+
+void MetricsForFine::addRole(const string& role)
+{
+  CHECK(!offer_filters_active.contains(role));
+
+  Gauge gauge(
+      "allocator/mesos/offer_filters/roles/" + role + "/active",
+      defer(allocator,
+            &FineHierarchicalAllocatorProcess::_offer_filters_active,
+            role));
+
+  offer_filters_active.put(role, gauge);
+
+  process::metrics::add(gauge);
+}
+
+
+void MetricsForFine::removeRole(const string& role)
 {
   Option<Gauge> gauge = offer_filters_active.get(role);
 

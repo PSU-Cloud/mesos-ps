@@ -66,7 +66,8 @@ FineHierarchicalPSDSFAllocatorProcess;
 typedef MesosAllocator<FineHierarchicalPSDSFAllocatorProcess>
 FineHierarchicalPSDSFAllocator;
 
-typedef FineHierarchicalAllocatorProcess<RPSDSFSorter, RPSDSFSorter, RPSDSFSorter>
+typedef FineHierarchicalAllocatorProcess<RPSDSFSorter, RPSDSFSorter,
+    RPSDSFSorter>
 FineHierarchicalRPSDSFAllocatorProcess;
 
 typedef MesosAllocator<FineHierarchicalRPSDSFAllocatorProcess>
@@ -311,8 +312,8 @@ protected:
            const hashmap<SlaveID, UnavailableResources>&)>
     inverseOfferCallback;
 
-  friend Metrics;
-  Metrics metrics;
+  friend MetricsForFine;
+  MetricsForFine metrics;
 
   struct Framework
   {
