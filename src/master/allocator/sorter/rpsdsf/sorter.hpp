@@ -117,6 +117,13 @@ public:
   // Useless in RPSDSF sorter. Let it return an empty vector
   virtual std::vector<std::string> sort();
 
+  virtual std::priority_queue<std::pair<std::string, double>,
+                              std::vector< std::pair<std::string, double> >,
+                              ComparePair> yeildHeap(const SlaveID& slaveId);
+
+  virtual double updateVirtualShare(const std::pair<std::string, double>& elem,
+                                    const SlaveID& slaveId) const;
+
   // Check if the sorter contains a client
   virtual bool contains(const std::string& clientPath) const;
 

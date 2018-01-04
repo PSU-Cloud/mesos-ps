@@ -103,6 +103,22 @@ public:
 
   virtual std::vector<std::string> sort();
 
+  virtual std::priority_queue<std::pair<std::string, double>,
+                              std::vector< std::pair<std::string, double> >,
+                              ComparePair> yeildHeap(const SlaveID& slaveId)
+  {
+    std::priority_queue<std::pair<std::string, double>,
+                        std::vector< std::pair<std::string, double> >,
+                        ComparePair> pq;
+    return pq;
+  }
+
+  virtual double updateVirtualShare(const std::pair<std::string, double>& elem,
+                                    const SlaveID& slaveId) const
+  {
+    return 0.0;
+  }
+
   virtual bool contains(const std::string& clientPath) const;
 
   virtual int count() const;

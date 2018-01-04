@@ -18,6 +18,7 @@
 #define __MASTER_ALLOCATOR_SORTER_SORTER_HPP__
 
 #include <functional>
+#include <queue>
 #include <string>
 #include <vector>
 
@@ -140,6 +141,26 @@ public:
   virtual std::vector<std::string> sort(const SlaveID& slaveId) = 0;
 
   virtual std::vector<std::string> sort() = 0;
+
+  class ComparePair
+  {
+  public:
+    bool operator()(std::pair<std::string, double> left,
+                    std::pair<std::string, double> right)
+    {
+      return left.second > right.second;
+    }
+  };
+
+  // Supposed to be called by fine-grained allocator only,
+  // returns a mutable priority queue
+  virtual std::priority_queue<std::pair<std::string, double>,
+                              std::vector< std::pair<std::string, double> >,
+                              ComparePair>
+    yeildHeap(const SlaveID& slaveId) = 0;
+
+  virtual double updateVirtualShare(const std::pair<std::string, double>& elem,
+                                    const SlaveID& slaveId) const = 0;
 
   // Returns true if this Sorter contains the specified client,
   // which may be active or inactive.

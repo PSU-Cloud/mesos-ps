@@ -588,6 +588,90 @@ vector<string> RPSDSFSorter::sort(const SlaveID& slaveId) {
   return result;
 }
 
+std::priority_queue<std::pair<std::string, double>,
+                              std::vector< std::pair<std::string, double> >,
+                              Sorter::ComparePair>
+RPSDSFSorter::yeildHeap(const SlaveID& slaveId) {
+  // TODO(yuquanshan): since we need to re-sort when slave is changed,
+  // the global (cross-slave) variable "dirty" is useless in our case,
+  // so change "dirty" to "true" in if (.). Alternatively, we can add
+  // another variable to, say, root node, which indicates which slave
+  // it tracks last time. As a result, if (.) would contain two
+  // conditions: dirty || slaveId.value() != root->lastSlave.value().
+  if (true) {
+    std::function<void (Node*)> sortTree =
+        [this, &slaveId, &sortTree](Node* node) {
+      // Inactive leaves are always stored at the end of the
+      // `children` vector; this means that as soon as we see an
+      // inactive leaf, we can stop calculating shares, and we only
+      // need to sort the prefix of the vector before that point.
+      auto childIter = node->children.begin();
+
+      while (childIter != node->children.end()) {
+        Node* child = *childIter;
+
+        if (child->kind == Node::INACTIVE_LEAF) {
+          break;
+        }
+
+        child->share = calculateShare(child, slaveId);
+        ++childIter;
+      }
+
+      std::sort(node->children.begin(),
+                childIter,
+                RPSDSFSorter::Node::compareRPSDSF);
+
+      foreach (Node* child, node->children) {
+        if (child->kind == Node::INTERNAL) {
+          sortTree(child);
+        } else if (child->kind == Node::INACTIVE_LEAF) {
+          break;
+        }
+      }
+    };
+
+    sortTree(root);
+
+    dirty = false;
+  }
+
+  std::priority_queue<std::pair<std::string, double>,
+                          std::vector< std::pair<std::string, double> >,
+                          Sorter::ComparePair> result;
+
+  std::function<void (const Node*)> listClients =
+      [&listClients, &result](const Node* node) {
+    foreach (const Node* child, node->children) {
+      switch (child->kind) {
+        case Node::ACTIVE_LEAF:
+        {
+          std::pair<std::string, double> tmp(
+              child->clientPath(), child->share);
+          result.push(tmp);
+          break;
+        }
+        case Node::INACTIVE_LEAF:
+          return;
+
+        case Node::INTERNAL:
+          listClients(child);
+          break;
+      }
+    }
+  };
+
+  listClients(root);
+
+  return result;
+}
+
+double RPSDSFSorter::updateVirtualShare(
+    const std::pair<std::string, double>& elem,
+    const SlaveID& slaveId) const
+{
+  return calculateShare(find(elem.first), slaveId);
+}
 
 bool RPSDSFSorter::contains(const string& clientPath) const
 {
