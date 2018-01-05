@@ -1894,7 +1894,23 @@ void FineHierarchicalAllocatorProcess::__allocate()
     if (!allocatable(remainingClusterResources - allocatedStage2)) {
       break;
     }
-    foreach (const string& role, roleSorter->sort(slaveId)) {
+
+    std::priority_queue<std::pair<string, double>,
+                        std::vector< std::pair<string, double> >,
+                        Sorter::ComparePair> roleHeap
+                          = roleSorter->yeildHeap(slaveId);
+
+    while (!roleHeap.empty()) {
+      std::pair<string, double> heapNode = roleHeap.top();
+      roleHeap.pop();
+
+      // The flag indicating whether we will insert the above node back in
+      // heap: we insert this role back to heap *only when there exists a
+      // framework under this role which has be allocated any resource in
+      // this round*. Without this step we will be trapped in a dead-loop.
+      bool discardRole = true;
+
+      string& role = heapNode.first;
       // In the second allocation stage, we only allocate
       // for non-quota roles.
       if (quotas.contains(role)) {
@@ -2053,6 +2069,18 @@ void FineHierarchicalAllocatorProcess::__allocate()
         slave.allocated += resources;
 
         trackAllocatedResources(slaveId, frameworkId, resources);
+
+        // At this point under current role there is a framework that got some
+        // resource(s), what we need to do now is:
+        // 1. set the flag "discardRole" to false so that this role can be
+        //    inserted back to heap;
+        // 2. break this for loop.
+        discardRole = false;
+        break;
+      }
+      if (!discardRole) {
+          heapNode.second = roleSorter->updateVirtualShare(heapNode, slaveId);
+          roleHeap.push(heapNode);
       }
     }
   }
