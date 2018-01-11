@@ -2137,6 +2137,12 @@ void FineHierarchicalAllocatorProcess::__allocate()
       }
     }
   }
+  // print d-vectors
+  foreachkey (const FrameworkID& frameworkId, frameworks) {
+    LOG(INFO) << "D-vector of " << frameworkId.value() << " is "
+              << "(" << frameworks.at(frameworkId).dv.cpus << ","
+              << frameworks.at(frameworkId).dv.mem << ").";
+  }
 
   if (offerable.empty()) {
     VLOG(2) << "No allocations performed";
