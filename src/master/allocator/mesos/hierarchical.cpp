@@ -2038,6 +2038,20 @@ void HierarchicalAllocatorProcess::__allocate()
     }
   }
 
+  // print offerable table
+  foreachkey (const FrameworkID& frameworkId, offerable) {
+    foreachkey (const string& role, offerable.at(frameworkId)) {
+      foreachkey (const SlaveID& slaveId,
+                  offerable.at(frameworkId).at(role)) {
+        LOG(INFO) << frameworkId.value()
+               << " will get "
+               << offerable.at(frameworkId).at(role).at(slaveId)
+               << " from " << slaveId.value()
+               << " under role " << role;
+      }
+    }
+  }
+
   if (offerable.empty()) {
     VLOG(2) << "No allocations performed";
   } else {

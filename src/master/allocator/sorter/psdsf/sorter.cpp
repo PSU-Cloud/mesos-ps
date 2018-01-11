@@ -739,8 +739,6 @@ double PSDSFSorter::calculateShare(const Node* node,
       share = std::max(share, allocation / totalMem.get().megabytes());
     }
   }
-  LOG(INFO) << "------Share of " << node->name << " is "
-            << share / findWeight(node);
   return share / findWeight(node);
 }
 

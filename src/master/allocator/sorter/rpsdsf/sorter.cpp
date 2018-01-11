@@ -766,8 +766,6 @@ double RPSDSFSorter::calculateShare(const Node* node,
                        allocation / totalMem.get().megabytes() - allocatedMem);
     }
   }
-  LOG(INFO) << "------Share of " << node->name << " is "
-            << share / findWeight(node);
   return share / findWeight(node);
 }
 
