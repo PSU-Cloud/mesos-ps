@@ -61,6 +61,10 @@ RPSDSFSorter::~RPSDSFSorter()
 }
 
 
+bool RPSDSFSorter::residual() {
+  return true;
+}
+
 void RPSDSFSorter::initialize(
     const Option<set<string>>& _fairnessExcludeResourceNames)
 {

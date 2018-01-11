@@ -53,6 +53,11 @@ public:
 
   virtual ~Sorter() = default;
 
+  // The flag indicating whether this sorter is a r-PSDSF sorter, if so, then
+  // in fine-grained allocator, after one allocation (mapping), we need to
+  // update the entire heap.
+  virtual bool residual() = 0;
+
   // Initialize the sorter.
   virtual void initialize(
       const Option<std::set<std::string>>& fairnessExcludeResourceNames) = 0;

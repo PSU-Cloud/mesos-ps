@@ -61,6 +61,10 @@ PSDSFSorter::~PSDSFSorter()
 }
 
 
+bool PSDSFSorter::residual() {
+  return false;
+}
+
 void PSDSFSorter::initialize(
     const Option<set<string>>& _fairnessExcludeResourceNames)
 {

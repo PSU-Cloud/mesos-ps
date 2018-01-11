@@ -60,6 +60,9 @@ DRFSorter::~DRFSorter()
   delete root;
 }
 
+bool DRFSorter::residual() {
+  return false;
+}
 
 void DRFSorter::initialize(
     const Option<set<string>>& _fairnessExcludeResourceNames)
@@ -597,20 +600,20 @@ int DRFSorter::count() const
 void DRFSorter::printPerSlaveResources() const
 {
   foreachpair (const SlaveID& slaveId,
-	       const Resources& resources,
-	       total_.resources) {
+               const Resources& resources,
+               total_.resources) {
     LOG(INFO) << "---Slave: " << slaveId.value();
     Option<double> cpus = resources.cpus();
     if (!cpus.isNone()) {
-	LOG(INFO) << "------ CPUs: " << cpus.get();
+        LOG(INFO) << "------ CPUs: " << cpus.get();
     } else {
-	LOG(INFO) << "------ CPUs: None";
+        LOG(INFO) << "------ CPUs: None";
     }
     Option<Bytes> mem = resources.mem();
     if (!mem.isNone()) {
         LOG(INFO) << "------ Mem: " << mem.get().megabytes();
     } else {
-	LOG(INFO) << "------ Mem: None";
+        LOG(INFO) << "------ Mem: None";
     }
   }
 }

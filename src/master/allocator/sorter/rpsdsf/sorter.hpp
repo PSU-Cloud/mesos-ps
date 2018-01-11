@@ -51,6 +51,8 @@ public:
 
   virtual ~RPSDSFSorter();
 
+  virtual bool residual();
+
   virtual void initialize(
       const Option<std::set<std::string>>& fairnessExcludeResourceNames);
 
