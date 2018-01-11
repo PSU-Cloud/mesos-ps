@@ -2052,7 +2052,7 @@ void FineHierarchicalAllocatorProcess::__allocate()
               std::to_string(resources.mem().get().megabytes()) + ";";
         }
         Try<vector<Resource> > resources2Strip = Resources::fromSimpleString(s);
-        if (!resources2Strip.isSome()) {
+        if (resources2Strip.isSome()) {
           vector<Resource> stripVec = resources2Strip.get();
           for (vector<Resource>::iterator it =
               stripVec.begin(); it != stripVec.end(); it++) {
@@ -2125,6 +2125,7 @@ void FineHierarchicalAllocatorProcess::__allocate()
   }
 
   // print offerable table
+  LOG(INFO) << "=======================";
   foreachkey (const FrameworkID& frameworkId, offerable) {
     foreachkey (const string& role, offerable.at(frameworkId)) {
       foreachkey (const SlaveID& slaveId,
@@ -2143,6 +2144,7 @@ void FineHierarchicalAllocatorProcess::__allocate()
               << "(" << frameworks.at(frameworkId).dv.cpus << ","
               << frameworks.at(frameworkId).dv.mem << ").";
   }
+  LOG(INFO) << "========================";
 
   if (offerable.empty()) {
     VLOG(2) << "No allocations performed";
