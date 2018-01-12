@@ -2011,6 +2011,7 @@ void FineHierarchicalAllocatorProcess::__allocate()
 
         // If the framework filters these resources, ignore.
         if (isFiltered(frameworkId, role, slaveId, resources)) {
+          LOG(INFO) << "Skip this framework since it's filtered " << slaveId;
           continue;
         }
 
@@ -2405,17 +2406,19 @@ bool FineHierarchicalAllocatorProcess::isFiltered(
   // we use find to avoid the doing any redundant lookups.
   auto roleFilters = framework.offerFilters.find(role);
   if (roleFilters == framework.offerFilters.end()) {
+    LOG(INFO) << "Failed to find " << role;
     return false;
   }
 
   auto agentFilters = roleFilters->second.find(slaveId);
   if (agentFilters == roleFilters->second.end()) {
+    LOG(INFO) << "Failed to find " << slaveId;
     return false;
   }
 
   foreach (OfferFilter* offerFilter, agentFilters->second) {
     if (offerFilter->filter(resources)) {
-      VLOG(1) << "Filtered offer with " << resources
+      LOG(INFO) << "Filtered offer with " << resources
               << " on agent " << slaveId
               << " for role " << role
               << " of framework " << frameworkId;
