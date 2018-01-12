@@ -127,6 +127,7 @@ public:
   virtual bool filter() const
   {
     // See comment above why we currently don't do more fine-grained filtering.
+    LOG(INFO) << "It's a RefusedInverseOfferFilter...";
     return timeout.remaining() > Seconds(0);
   }
 
@@ -2409,18 +2410,15 @@ bool FineHierarchicalAllocatorProcess::isFiltered(
   // we use find to avoid the doing any redundant lookups.
   auto roleFilters = framework.offerFilters.find(role);
   if (roleFilters == framework.offerFilters.end()) {
-    LOG(INFO) << "Failed to find " << role;
     return false;
   }
 
   auto agentFilters = roleFilters->second.find(slaveId);
   if (agentFilters == roleFilters->second.end()) {
-    LOG(INFO) << "Failed to find " << slaveId;
     return false;
   }
   LOG(INFO) << "finding filter...";
   foreach (OfferFilter* offerFilter, agentFilters->second) {
-    LOG(INFO) << "find one filter...";
     if (offerFilter->filter(resources)) {
       LOG(INFO) << "Filtered offer with " << resources
               << " on agent " << slaveId
