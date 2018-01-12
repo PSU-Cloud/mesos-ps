@@ -88,6 +88,8 @@ public:
     // more revocable resources only or non-revocable resources only,
     // but currently the filter only expires if there is more of both
     // revocable and non-revocable resources.
+    LOG(INFO) << "Resources in the filter: " << resources;
+    LOG(INFO) << "Input resources: " << _resources;
     return resources.contains(_resources); // Refused resources are superset.
   }
 
