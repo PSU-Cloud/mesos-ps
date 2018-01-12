@@ -79,7 +79,9 @@ public:
 class RefusedOfferFilter : public OfferFilter
 {
 public:
-  RefusedOfferFilter(const Resources& _resources) : resources(_resources) {}
+  RefusedOfferFilter(const Resources& _resources) : resources(_resources) {
+    LOG(INFO) << "Refuse offer filter added...";
+  }
 
   virtual bool filter(const Resources& _resources) const
   {
@@ -2427,6 +2429,7 @@ bool FineHierarchicalAllocatorProcess::isFiltered(
 
       return true;
     }
+    LOG(INFO) << "Pass this filter...";
   }
 
   return false;
