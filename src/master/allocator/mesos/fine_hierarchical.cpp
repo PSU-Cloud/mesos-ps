@@ -21,6 +21,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <iostream>
 
 #include <mesos/attributes.hpp>
 #include <mesos/resources.hpp>
@@ -80,7 +81,7 @@ class RefusedOfferFilter : public OfferFilter
 {
 public:
   RefusedOfferFilter(const Resources& _resources) : resources(_resources) {
-    LOG(INFO) << "Refuse offer filter added...";
+    std::cout << "Refuse offer filter added..." << std::endl;
   }
 
   virtual bool filter(const Resources& _resources) const
@@ -90,8 +91,8 @@ public:
     // more revocable resources only or non-revocable resources only,
     // but currently the filter only expires if there is more of both
     // revocable and non-revocable resources.
-    LOG(INFO) << "Resources in the filter: " << resources;
-    LOG(INFO) << "Input resources: " << _resources;
+    std::cout << "Resources in the filter: " << resources << std::endl;
+    std::cout << "Input resources: " << _resources << std::endl;
     return resources.contains(_resources); // Refused resources are superset.
   }
 
