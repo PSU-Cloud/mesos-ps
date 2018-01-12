@@ -330,6 +330,8 @@ protected:
 
     protobuf::framework::DVector dv;
 
+    bool dvEnabled;
+
     // Active offer and inverse offer filters for the framework.
     // Offer filters are tied to the role the filtered resources
     // were allocated to.

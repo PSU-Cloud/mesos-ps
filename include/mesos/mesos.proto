@@ -420,6 +420,11 @@ message FrameworkInfo {
   }
 
   optional DVector dvector = 13;
+
+  // Indicating whether D-Vector is explicitly specified by the framework,
+  // if not, then apply coarse-grained allocating style in fine-grained
+  // scheduler.
+  optional bool dv_enabled = 14 [default = false];
 }
 
 

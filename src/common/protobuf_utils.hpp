@@ -491,7 +491,7 @@ struct DVector
   }
 
   double cpus = 1;
-  int32_t mem = 100;
+  int32_t mem = 1024;
 };
 
 // Helper to get roles from FrameworkInfo based on the
