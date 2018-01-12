@@ -1245,7 +1245,7 @@ void FineHierarchicalAllocatorProcess::recoverResources(
   CHECK_SOME(timeout);
 
   if (timeout.get() != Duration::zero()) {
-    VLOG(1) << "Framework " << frameworkId
+    LOG(INFO) << "Framework " << frameworkId
             << " filtered agent " << slaveId
             << " for " << timeout.get();
 
