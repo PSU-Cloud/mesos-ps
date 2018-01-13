@@ -21,7 +21,6 @@
 #include <string>
 #include <utility>
 #include <vector>
-#include <iostream>
 
 #include <mesos/attributes.hpp>
 #include <mesos/resources.hpp>
@@ -80,9 +79,7 @@ public:
 class RefusedOfferFilter : public OfferFilter
 {
 public:
-  RefusedOfferFilter(const Resources& _resources) : resources(_resources) {
-    std::cout << "Refuse offer filter added..." << std::endl;
-  }
+  RefusedOfferFilter(const Resources& _resources) : resources(_resources) {}
 
   virtual bool filter(const Resources& _resources) const
   {
@@ -91,8 +88,6 @@ public:
     // more revocable resources only or non-revocable resources only,
     // but currently the filter only expires if there is more of both
     // revocable and non-revocable resources.
-    std::cout << "Resources in the filter: " << resources << std::endl;
-    std::cout << "Input resources: " << _resources << std::endl;
     return resources.contains(_resources); // Refused resources are superset.
   }
 
@@ -130,7 +125,6 @@ public:
   virtual bool filter() const
   {
     // See comment above why we currently don't do more fine-grained filtering.
-    LOG(INFO) << "It's a RefusedInverseOfferFilter...";
     return timeout.remaining() > Seconds(0);
   }
 
@@ -1251,7 +1245,7 @@ void FineHierarchicalAllocatorProcess::recoverResources(
   CHECK_SOME(timeout);
 
   if (timeout.get() != Duration::zero()) {
-    LOG(INFO) << "Framework " << frameworkId
+    VLOG(1) << "Framework " << frameworkId
             << " filtered agent " << slaveId
             << " for " << timeout.get();
 
@@ -2072,9 +2066,11 @@ void FineHierarchicalAllocatorProcess::__allocate()
         }
 
         // If the framework filters these resources, ignore.
-        LOG(INFO) << "See if filter works...";
         if (isFiltered(frameworkId, role, slaveId, resources)) {
-          LOG(INFO) << "Skip this framework since it's filtered " << slaveId;
+          continue;
+        }
+
+        if (!allocatable(resources)) {
           continue;
         }
 
@@ -2420,17 +2416,16 @@ bool FineHierarchicalAllocatorProcess::isFiltered(
   if (agentFilters == roleFilters->second.end()) {
     return false;
   }
-  LOG(INFO) << "finding filter...";
+
   foreach (OfferFilter* offerFilter, agentFilters->second) {
     if (offerFilter->filter(resources)) {
-      LOG(INFO) << "Filtered offer with " << resources
+      VLOG(1) << "Filtered offer with " << resources
               << " on agent " << slaveId
               << " for role " << role
               << " of framework " << frameworkId;
 
       return true;
     }
-    LOG(INFO) << "Pass this filter...";
   }
 
   return false;

@@ -1244,7 +1244,7 @@ void HierarchicalAllocatorProcess::recoverResources(
   CHECK_SOME(timeout);
 
   if (timeout.get() != Duration::zero()) {
-    LOG(INFO) << "Framework " << frameworkId
+    VLOG(1) << "Framework " << frameworkId
             << " filtered agent " << slaveId
             << " for " << timeout.get();
 
