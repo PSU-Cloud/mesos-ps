@@ -2061,8 +2061,6 @@ void FineHierarchicalAllocatorProcess::__allocate()
             }
           }
           resources += targetResources;
-        } else {
-          LOG(INFO) << frameworkId << " didn't specify its D-Vector...";
         }
 
         // If the framework filters these resources, ignore.
@@ -2138,7 +2136,6 @@ void FineHierarchicalAllocatorProcess::__allocate()
   }
 
   // print offerable table
-  LOG(INFO) << "=======================";
   foreachkey (const FrameworkID& frameworkId, offerable) {
     foreachkey (const string& role, offerable.at(frameworkId)) {
       foreachkey (const SlaveID& slaveId,
@@ -2151,13 +2148,6 @@ void FineHierarchicalAllocatorProcess::__allocate()
       }
     }
   }
-  // print d-vectors
-  foreachkey (const FrameworkID& frameworkId, frameworks) {
-    LOG(INFO) << "D-vector of " << frameworkId.value() << " is "
-              << "(" << frameworks.at(frameworkId).dv.cpus << ","
-              << frameworks.at(frameworkId).dv.mem << ").";
-  }
-  LOG(INFO) << "========================";
 
   if (offerable.empty()) {
     VLOG(2) << "No allocations performed";

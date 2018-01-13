@@ -416,7 +416,7 @@ message FrameworkInfo {
   // D-vector.
   message DVector {
     optional double cpus = 1 [default = 1];
-    optional int32 mem = 2 [default = 100];
+    optional int32 mem = 2 [default = 1024];
   }
 
   optional DVector dvector = 13;
