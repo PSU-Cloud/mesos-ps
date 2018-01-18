@@ -1899,7 +1899,7 @@ void FineHierarchicalAllocatorProcess::__allocate()
     std::priority_queue<std::pair<string, double>,
                         std::vector< std::pair<string, double> >,
                         Sorter::ComparePair> roleHeap
-                          = roleSorter->yeildHeap(slaveId);
+                          = roleSorter->yieldHeap(slaveId);
 
     while (!roleHeap.empty()) {
       std::pair<string, double> heapNode = roleHeap.top();

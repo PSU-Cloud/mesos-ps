@@ -585,6 +585,84 @@ vector<string> DRFSorter::sort()
   return result;
 }
 
+std::priority_queue<std::pair<std::string, double>,
+                              std::vector< std::pair<std::string, double> >,
+                              Sorter::ComparePair>
+DRFSorter::yieldHeap(const SlaveID& slaveId) {
+  if (dirty) {
+    std::function<void (Node*)> sortTree =
+        [this, &slaveId, &sortTree](Node* node) {
+      // Inactive leaves are always stored at the end of the
+      // `children` vector; this means that as soon as we see an
+      // inactive leaf, we can stop calculating shares, and we only
+      // need to sort the prefix of the vector before that point.
+      auto childIter = node->children.begin();
+
+      while (childIter != node->children.end()) {
+        Node* child = *childIter;
+
+        if (child->kind == Node::INACTIVE_LEAF) {
+          break;
+        }
+
+        child->share = calculateShare(child);
+        ++childIter;
+      }
+
+      std::sort(node->children.begin(),
+                childIter,
+                DRFSorter::Node::compareDRF);
+
+      foreach (Node* child, node->children) {
+        if (child->kind == Node::INTERNAL) {
+          sortTree(child);
+        } else if (child->kind == Node::INACTIVE_LEAF) {
+          break;
+        }
+      }
+    };
+
+    sortTree(root);
+
+    dirty = false;
+  }
+
+  std::priority_queue<std::pair<std::string, double>,
+                          std::vector< std::pair<std::string, double> >,
+                          Sorter::ComparePair> result;
+
+  std::function<void (const Node*)> listClients =
+      [&listClients, &result](const Node* node) {
+    foreach (const Node* child, node->children) {
+      switch (child->kind) {
+        case Node::ACTIVE_LEAF:
+        {
+          std::pair<std::string, double> tmp(
+              child->clientPath(), child->share);
+          result.push(tmp);
+          break;
+        }
+        case Node::INACTIVE_LEAF:
+          return;
+
+        case Node::INTERNAL:
+          listClients(child);
+          break;
+      }
+    }
+  };
+
+  listClients(root);
+
+  return result;
+}
+
+double DRFSorter::updateVirtualShare(
+    const std::pair<std::string, double>& elem,
+    const SlaveID& slaveId) const
+{
+  return calculateShare(find(elem.first));
+}
 
 bool DRFSorter::contains(const string& clientPath) const
 {

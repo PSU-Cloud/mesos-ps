@@ -121,7 +121,7 @@ public:
 
   virtual std::priority_queue<std::pair<std::string, double>,
                               std::vector< std::pair<std::string, double> >,
-                              ComparePair> yeildHeap(const SlaveID& slaveId);
+                              ComparePair> yieldHeap(const SlaveID& slaveId);
 
   virtual double updateVirtualShare(const std::pair<std::string, double>& elem,
                                     const SlaveID& slaveId) const;

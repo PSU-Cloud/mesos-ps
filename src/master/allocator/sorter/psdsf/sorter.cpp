@@ -594,7 +594,7 @@ vector<string> PSDSFSorter::sort(const SlaveID& slaveId) {
 std::priority_queue<std::pair<std::string, double>,
                               std::vector< std::pair<std::string, double> >,
                               Sorter::ComparePair>
-PSDSFSorter::yeildHeap(const SlaveID& slaveId) {
+PSDSFSorter::yieldHeap(const SlaveID& slaveId) {
   // TODO(yuquanshan): since we need to re-sort when slave is changed,
   // the global (cross-slave) variable "dirty" is useless in our case,
   // so change "dirty" to "true" in if (.). Alternatively, we can add
