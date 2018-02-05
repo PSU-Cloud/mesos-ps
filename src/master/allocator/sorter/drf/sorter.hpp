@@ -18,6 +18,7 @@
 #define __MASTER_ALLOCATOR_SORTER_DRF_SORTER_HPP__
 
 #include <algorithm>
+#include <cmath>
 #include <set>
 #include <string>
 #include <vector>
@@ -109,6 +110,18 @@ public:
                               std::vector< std::pair<std::string, double> >,
                               ComparePair> yieldHeap(const SlaveID& slaveId);
 
+  class CompareSlaves
+  {
+  public:
+    bool operator()(std::pair<SlaveID, double> left,
+                    std::pair<SlaveID, double> right)
+    {
+      return left.second > right.second;
+    }
+  };
+
+  virtual std::vector<SlaveID> bestFitSlaves(const Resources& dv);
+
   virtual double updateVirtualShare(const std::pair<std::string, double>& elem,
                                     const SlaveID& slaveId) const;
 
@@ -124,6 +137,21 @@ private:
 
   // Returns the dominant resource share for the node.
   double calculateShare(const Node* node) const;
+
+  // Normalized L-1 norm
+  double norml1norm(std::vector<double> a, std::vector<double> b)
+  {
+    // TODO(yuquanshan): So far, if first element 0, cannot normalize,
+    // return 0.0 directly. Is there any better way of handling this edge case?
+    if (a.size() == 0 || a.size() != b.size() || a[0] == 0 || b[0] == 0) {
+      return 0.0;
+    }
+    double result = 0.0;
+    for (int i = 0; i < a.size(); i++) {
+      result += std::abs(a[i] / a[0] - b[i] / b[0]);
+    }
+    return result;
+  }
 
   // Returns the weight associated with the node. If no weight has
   // been configured for the node's path, the default weight (1.0) is

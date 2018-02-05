@@ -591,7 +591,7 @@ std::priority_queue<std::pair<std::string, double>,
 DRFSorter::yieldHeap(const SlaveID& slaveId) {
   if (dirty) {
     std::function<void (Node*)> sortTree =
-        [this, &slaveId, &sortTree](Node* node) {
+        [this, &sortTree](Node* node) {
       // Inactive leaves are always stored at the end of the
       // `children` vector; this means that as soon as we see an
       // inactive leaf, we can stop calculating shares, and we only
@@ -654,6 +654,76 @@ DRFSorter::yieldHeap(const SlaveID& slaveId) {
 
   listClients(root);
 
+  return result;
+}
+
+std::vector<SlaveID> DRFSorter::bestFitSlaves(const Resources& dv)
+{
+  double tot_cpus = 0.0;
+  double tot_mem = 0.0;
+  std::vector<SlaveID> result;
+  foreachpair (const string& resourceName,
+               const Value::Scalar& scalar,
+               total_.totals) {
+    if (resourceName.compare("cpus") == 0) {
+      tot_cpus += scalar.value();
+    }
+    if (resourceName.compare("mem") == 0) {
+      tot_mem += scalar.value();
+    }
+  }
+  // In the edge case where the total cpus or memory is zero,
+  // return empty list.
+  if (tot_cpus == 0.0 || tot_mem == 0.0) {
+    return result;
+  }
+
+  // D-vector [CPUs, MEM] normalized by total amount
+  std::vector<double> ndv;
+  ndv.push_back(dv.cpus().isNone()? 0.0 : dv.cpus().get() / tot_cpus);
+  ndv.push_back(dv.mem().isNone()? 0.0 : (double)dv.mem().get() / tot_mem);
+
+  std::priority_queue<std::pair<SlaveID, double>,
+                      std::vector< std::pair<SlaveID, double> >,
+                      CompareSlaves> heap;
+
+  foreachpair (const SlaveID& slaveId,
+               const Resources& resources,
+               total_.resources) {
+    Option<double> totalCpus = total_.resources.at(slaveId).cpus();
+    Option<Bytes> totalMem = total_.resources.at(slaveId).mem();
+    double allocatedCpus = 0.0;
+    for (auto childIter = root->children.begin();
+        childIter != root->children.end(); childIter++) {
+      Node* child = *childIter;
+      if (child->allocation.resources.contains(slaveId) &&
+          !child->allocation.resources.at(slaveId).cpus().isNone()) {
+        allocatedCpus += child->allocation.resources.at(slaveId).cpus().get();
+      }
+    }
+    double allocatedMem = 0.0;
+    for (auto childIter = root->children.begin();
+        childIter != root->children.end(); childIter++) {
+      Node* child = *childIter;
+      if (child->allocation.resources.contains(slaveId) &&
+          !child->allocation.resources.at(slaveId).mem().isNone()) {
+        allocatedMem += child->allocation.resources.at(slaveId).mem()
+            .get().megabytes();
+      }
+    }
+    std::vector<double> tmp;
+    tmp.push_back(totalCpus.isNone()?
+                  0.0 : (totalCpus.get() - allocatedCpus) / tot_cpus);
+    tmp.push_back(totalMem.isNone()?
+                  0.0 : ((double)totalMem.get() - allocatedMem) / tot_mem);
+    std::pair<SlaveID, double> tmpNode(slaveId, norml1norm(tmp, ndv));
+    heap.push(tmpNode);
+  }
+  while(!heap.empty()) {
+    std::pair<SlaveID, double> heapNode = heap.top();
+    heap.pop();
+    result.push_back(heapNode.first);
+  }
   return result;
 }
 

@@ -164,6 +164,13 @@ public:
                               ComparePair>
     yieldHeap(const SlaveID& slaveId) = 0;
 
+  // Yield a list of slaves in the order of best-fit given a D-vector
+  virtual std::vector<SlaveID> bestFitSlaves(const Resources& dv)
+  {
+    vector<string> result;
+    return result;
+  }
+
   virtual double updateVirtualShare(const std::pair<std::string, double>& elem,
                                     const SlaveID& slaveId) const = 0;
 
