@@ -994,7 +994,7 @@ libmesos_no_3rdparty_la_SOURCES +=					\
   master/weights_handler.cpp						\
   master/allocator/allocator.cpp					\
   master/allocator/mesos/hierarchical.cpp				\
-  master/allocator/mesos/fine_hierarchical.cpp			\
+  master/allocator/mesos/fine_hierarchical.cpp			        \
   master/allocator/mesos/metrics.cpp					\
   master/allocator/sorter/drf/metrics.cpp				\
   master/allocator/sorter/drf/sorter.cpp				\
@@ -1002,6 +1002,8 @@ libmesos_no_3rdparty_la_SOURCES +=					\
   master/allocator/sorter/psdsf/sorter.cpp                              \
   master/allocator/sorter/rpsdsf/metrics.cpp                            \
   master/allocator/sorter/rpsdsf/sorter.cpp                             \
+  master/allocator/sorter/tsf/metrics.cpp                               \
+  master/allocator/sorter/tsf/sorter.cpp                                \
   master/contender/contender.cpp					\
   master/contender/standalone.cpp					\
   master/contender/zookeeper.cpp					\
@@ -1146,7 +1148,7 @@ libmesos_no_3rdparty_la_SOURCES +=					\
   master/weights.hpp							\
   master/allocator/mesos/allocator.hpp					\
   master/allocator/mesos/hierarchical.hpp				\
-  master/allocator/mesos/fine_hierarchical.hpp			\
+  master/allocator/mesos/fine_hierarchical.hpp		        	\
   master/allocator/mesos/metrics.hpp					\
   master/allocator/sorter/sorter.hpp					\
   master/allocator/sorter/drf/metrics.hpp				\
@@ -1155,6 +1157,8 @@ libmesos_no_3rdparty_la_SOURCES +=					\
   master/allocator/sorter/psdsf/metrics.hpp                             \
   master/allocator/sorter/rpsdsf/sorter.hpp                             \
   master/allocator/sorter/rpsdsf/metrics.hpp                            \
+  master/allocator/sorter/tsf/sorter.hpp                             	\
+  master/allocator/sorter/tsf/metrics.hpp           	                \
   master/contender/standalone.hpp					\
   master/contender/zookeeper.hpp					\
   master/detector/standalone.hpp					\

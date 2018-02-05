@@ -269,10 +269,21 @@ void HierarchicalAllocatorProcess::addFramework(
 
   const Framework& framework = frameworks.at(frameworkId);
 
+  string dvStr = "cpus:" + std::to_string(framework.dv.cpus) +
+      ";mem:" + std::to_string(framework.dv.mem);
+
+  Try<vector<Resource> > dvRcs = Resources::fromSimpleString(dvStr);
+
   foreach (const string& role, framework.roles) {
     trackFrameworkUnderRole(frameworkId, role);
 
     CHECK(frameworkSorters.contains(role));
+
+    if (dvRcs.isSome()) {
+      Resources resources(dvRcs.get());
+      roleSorter->updateDvector(role, resources);
+      frameworkSorters.at(role)->updateDvector(frameworkId.value(), resources);
+    }
 
     if (suppressedRoles.count(role)) {
       frameworkSorters.at(role)->deactivate(frameworkId.value());

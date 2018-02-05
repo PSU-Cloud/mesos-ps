@@ -40,6 +40,7 @@
 #include "master/allocator/sorter/drf/sorter.hpp"
 #include "master/allocator/sorter/psdsf/sorter.hpp"
 #include "master/allocator/sorter/rpsdsf/sorter.hpp"
+#include "master/allocator/sorter/tsf/sorter.hpp"
 
 #include "master/constants.hpp"
 
@@ -72,6 +73,12 @@ FineHierarchicalRPSDSFAllocatorProcess;
 
 typedef MesosAllocator<FineHierarchicalRPSDSFAllocatorProcess>
 FineHierarchicalRPSDSFAllocator;
+
+typedef FineHierarchicalAllocatorProcess<TSFSorter, TSFSorter, TSFSorter>
+FineHierarchicalTSFAllocatorProcess;
+
+typedef MesosAllocator<FineHierarchicalTSFAllocatorProcess>
+FineHierarchicalTSFAllocator;
 
 namespace internal {
 

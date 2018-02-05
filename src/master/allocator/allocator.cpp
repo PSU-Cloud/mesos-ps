@@ -40,6 +40,8 @@ using mesos::internal::master::allocator::FineHierarchicalPSDSFAllocator;
 
 using mesos::internal::master::allocator::FineHierarchicalRPSDSFAllocator;
 
+using mesos::internal::master::allocator::FineHierarchicalTSFAllocator;
+
 namespace mesos {
 namespace allocator {
 
@@ -61,6 +63,8 @@ Try<Allocator*> Allocator::create(const string& name)
     return FineHierarchicalPSDSFAllocator::create();
   } else if (name == "FineHierarchicalRPSDSF") {
     return FineHierarchicalRPSDSFAllocator::create();
+  } else if (name == "FineHierarchicalTSF") {
+    return FineHierarchicalTSFAllocator::create();
   }
 
   return modules::ModuleManager::create<Allocator>(name);

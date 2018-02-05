@@ -167,6 +167,10 @@ public:
   virtual double updateVirtualShare(const std::pair<std::string, double>& elem,
                                     const SlaveID& slaveId) const = 0;
 
+  // Update D-vector inside sorting node
+  virtual void updateDvector(const std::string& client,
+                             const Resources& resources) {}
+
   // Returns true if this Sorter contains the specified client,
   // which may be active or inactive.
   virtual bool contains(const std::string& client) const = 0;

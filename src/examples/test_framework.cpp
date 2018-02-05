@@ -278,6 +278,7 @@ int main(int argc, char** argv)
       FrameworkInfo::Capability::RESERVATION_REFINEMENT);
   framework.mutable_dvector()->set_cpus(CPUS_PER_TASK);
   framework.mutable_dvector()->set_mem(MEM_PER_TASK);
+  framework.set_dv_enabled(true);
 
   value = os::getenv("MESOS_CHECKPOINT");
   if (value.isSome()) {
