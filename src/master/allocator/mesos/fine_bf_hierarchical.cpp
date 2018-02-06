@@ -1935,6 +1935,8 @@ void FineBFHierarchicalAllocatorProcess::__allocate()
       FrameworkID frameworkId;
       frameworkId.set_value(frameworkId_);
 
+      CHECK(frameworks.contains(frameworkId));
+
       const Framework& framework = frameworks.at(frameworkId);
 
       std::string tempstr = "cpus:" + std::to_string(framework.dv.cpus) + ";" +
@@ -1950,7 +1952,6 @@ void FineBFHierarchicalAllocatorProcess::__allocate()
 
       foreach (const SlaveID& slaveId, roleSorter->bestFitSlaves(dvRcrs)) {
         CHECK(slaves.contains(slaveId));
-        CHECK(frameworks.contains(frameworkId));
 
         Slave& slave = slaves.at(slaveId);
 
@@ -2124,29 +2125,29 @@ void FineBFHierarchicalAllocatorProcess::__allocate()
         //    inserted back to heap;
         // 2. break this for loop.
         discardRole = false;
-        if (!discardRole) {
-          if (roleSorter->residual()) {
-            // TODO(yuquanshan): the following implementation is pretty
-            // expensive, is there more efficient way of doing this?
-            vector<std::pair<string, double> > pairs;
-            while(!roleHeap.empty()) {
-              pairs.push_back(roleHeap.top());
-              roleHeap.pop();
-            }
 
-            for (vector<std::pair<string, double> >::iterator it =
-                 pairs.begin(); it != pairs.end(); it++) {
-              it->second = roleSorter->updateVirtualShare(*it, slaveId);
-              roleHeap.push(*it);
-            }
+        if (roleSorter->residual()) {
+          // TODO(yuquanshan): the following implementation is pretty
+          // expensive, is there more efficient way of doing this?
+          vector<std::pair<string, double> > pairs;
+          while(!roleHeap.empty()) {
+            pairs.push_back(roleHeap.top());
+            roleHeap.pop();
           }
-          heapNode.second = roleSorter->updateVirtualShare(heapNode, slaveId);
-          roleHeap.push(heapNode);
-          break;
+
+          for (vector<std::pair<string, double> >::iterator it =
+               pairs.begin(); it != pairs.end(); it++) {
+            it->second = roleSorter->updateVirtualShare(*it, slaveId);
+            roleHeap.push(*it);
+          }
         }
+        heapNode.second = roleSorter->updateVirtualShare(heapNode, slaveId);
+        roleHeap.push(heapNode);
+        break;
+
       }
       // If discardRole was set to false, then some resources from the previous
-      // slaves have been allocated, no need to continue iterating slaves.
+      // slaves have been allocated, no need to continue iterating frameworks.
       if (!discardRole) {
         break;
       }
