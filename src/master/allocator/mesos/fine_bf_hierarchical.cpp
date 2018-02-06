@@ -1935,11 +1935,23 @@ void FineBFHierarchicalAllocatorProcess::__allocate()
       FrameworkID frameworkId;
       frameworkId.set_value(frameworkId_);
 
-      foreach (const SlaveID& slaveId, roleSorter->bestFitSlaves()) {
+      const Framework& framework = frameworks.at(frameworkId);
+
+      std::string tempstr = "cpus:" + std::to_string(framework.dv.cpus) + ";" +
+          "mem:" + std::to_string(framework.dv.mem);
+
+      // TODO(yuquanshan): current we only allocated non-shared resources
+      // to the framework. In the future, we have to consider being able to
+      // allocate shared resources to the framework, i.e., stripping the
+      // "shared" attribute from targetResources.
+      Try<vector<Resource> > tempvec = Resources::fromSimpleString(tempstr);
+
+      Resources dvRcrs(tempvec.get());
+
+      foreach (const SlaveID& slaveId, roleSorter->bestFitSlaves(dvRcrs)) {
         CHECK(slaves.contains(slaveId));
         CHECK(frameworks.contains(frameworkId));
 
-        const Framework& framework = frameworks.at(frameworkId);
         Slave& slave = slaves.at(slaveId);
 
         // Only offer resources from slaves that have GPUs to
@@ -1997,15 +2009,6 @@ void FineBFHierarchicalAllocatorProcess::__allocate()
           resources = resources.nonRevocable();
         }
 
-        // When reservation refinements are present, old frameworks without the
-        // RESERVATION_REFINEMENT capability won't be able to understand the
-        // new format. While it's possible to translate the refined reservation
-        // into the old format by "hiding" the intermediate reservations in the
-        // "stack", this leads to ambiguity when processing RESERVE / UNRESERVE
-        // operations. This is due to the loss of information when we drop the
-        // intermediatereservations. Therefore, for now we simply filter out
-        // resources with refined reservations if the framework does not have
-        // the capability.
         if (!framework.capabilities.reservationRefinement) {
           resources = resources.filter([](const Resource& resource) {
             return !Resources::hasRefinedReservations(resource);
@@ -2121,7 +2124,26 @@ void FineBFHierarchicalAllocatorProcess::__allocate()
         //    inserted back to heap;
         // 2. break this for loop.
         discardRole = false;
-        break;
+        if (!discardRole) {
+          if (roleSorter->residual()) {
+            // TODO(yuquanshan): the following implementation is pretty
+            // expensive, is there more efficient way of doing this?
+            vector<std::pair<string, double> > pairs;
+            while(!roleHeap.empty()) {
+              pairs.push_back(roleHeap.top());
+              roleHeap.pop();
+            }
+
+            for (vector<std::pair<string, double> >::iterator it =
+                 pairs.begin(); it != pairs.end(); it++) {
+              it->second = roleSorter->updateVirtualShare(*it, slaveId);
+              roleHeap.push(*it);
+            }
+          }
+          heapNode.second = roleSorter->updateVirtualShare(heapNode, slaveId);
+          roleHeap.push(heapNode);
+          break;
+        }
       }
       // If discardRole was set to false, then some resources from the previous
       // slaves have been allocated, no need to continue iterating slaves.
@@ -2129,27 +2151,7 @@ void FineBFHierarchicalAllocatorProcess::__allocate()
         break;
       }
     }
-    if (!discardRole) {
-      if (roleSorter->residual()) {
-        // TODO(yuquanshan): the following implementation is pretty
-        // expensive, is there more efficient way of doing this?
-        vector<std::pair<string, double> > pairs;
-        while(!roleHeap.empty()) {
-          pairs.push_back(roleHeap.top());
-          roleHeap.pop();
-        }
-
-        for (vector<std::pair<string, double> >::iterator it =
-             pairs.begin(); it != pairs.end(); it++) {
-          it->second = roleSorter->updateVirtualShare(*it, slaveId);
-          roleHeap.push(*it);
-        }
-      }
-      heapNode.second = roleSorter->updateVirtualShare(heapNode, slaveId);
-      roleHeap.push(heapNode);
-    }
   }
-
 
   // print offerable table
   foreachkey (const FrameworkID& frameworkId, offerable) {

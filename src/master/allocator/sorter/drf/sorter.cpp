@@ -681,7 +681,8 @@ std::vector<SlaveID> DRFSorter::bestFitSlaves(const Resources& dv)
   // D-vector [CPUs, MEM] normalized by total amount
   std::vector<double> ndv;
   ndv.push_back(dv.cpus().isNone()? 0.0 : dv.cpus().get() / tot_cpus);
-  ndv.push_back(dv.mem().isNone()? 0.0 : (double)dv.mem().get() / tot_mem);
+  ndv.push_back(dv.mem().isNone()?
+      0.0 : (double)dv.mem().get().megabytes() / tot_mem);
 
   std::priority_queue<std::pair<SlaveID, double>,
                       std::vector< std::pair<SlaveID, double> >,
@@ -690,8 +691,8 @@ std::vector<SlaveID> DRFSorter::bestFitSlaves(const Resources& dv)
   foreachpair (const SlaveID& slaveId,
                const Resources& resources,
                total_.resources) {
-    Option<double> totalCpus = total_.resources.at(slaveId).cpus();
-    Option<Bytes> totalMem = total_.resources.at(slaveId).mem();
+    Option<double> totalCpus = resources.cpus();
+    Option<Bytes> totalMem = resources.mem();
     double allocatedCpus = 0.0;
     for (auto childIter = root->children.begin();
         childIter != root->children.end(); childIter++) {
@@ -715,7 +716,7 @@ std::vector<SlaveID> DRFSorter::bestFitSlaves(const Resources& dv)
     tmp.push_back(totalCpus.isNone()?
                   0.0 : (totalCpus.get() - allocatedCpus) / tot_cpus);
     tmp.push_back(totalMem.isNone()?
-                  0.0 : ((double)totalMem.get() - allocatedMem) / tot_mem);
+                  0.0 : (totalMem.get().megabytes() - allocatedMem) / tot_mem);
     std::pair<SlaveID, double> tmpNode(slaveId, norml1norm(tmp, ndv));
     heap.push(tmpNode);
   }

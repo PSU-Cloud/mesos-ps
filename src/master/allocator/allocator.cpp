@@ -24,6 +24,8 @@
 
 #include "master/allocator/mesos/fine_hierarchical.hpp"
 
+#include "master/allocator/mesos/fine_bf_hierarchical.hpp"
+
 #include "module/manager.hpp"
 
 using std::string;
@@ -41,6 +43,8 @@ using mesos::internal::master::allocator::FineHierarchicalPSDSFAllocator;
 using mesos::internal::master::allocator::FineHierarchicalRPSDSFAllocator;
 
 using mesos::internal::master::allocator::FineHierarchicalTSFAllocator;
+
+using mesos::internal::master::allocator::FineBFHierarchicalDRFAllocator;
 
 namespace mesos {
 namespace allocator {
@@ -65,6 +69,8 @@ Try<Allocator*> Allocator::create(const string& name)
     return FineHierarchicalRPSDSFAllocator::create();
   } else if (name == "FineHierarchicalTSF") {
     return FineHierarchicalTSFAllocator::create();
+  } else if (name == "FineBFHierarchicalDRF") {
+    return FineBFHierarchicalDRFAllocator::create();
   }
 
   return modules::ModuleManager::create<Allocator>(name);

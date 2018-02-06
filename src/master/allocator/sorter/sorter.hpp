@@ -167,7 +167,7 @@ public:
   // Yield a list of slaves in the order of best-fit given a D-vector
   virtual std::vector<SlaveID> bestFitSlaves(const Resources& dv)
   {
-    vector<string> result;
+    std::vector<SlaveID> result;
     return result;
   }
 

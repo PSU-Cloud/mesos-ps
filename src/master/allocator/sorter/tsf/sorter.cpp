@@ -752,7 +752,7 @@ double TSFSorter::calculateShare(const Node* node) const
   }
 
   double share = currTasks / maxTasks;
-  LOG(INFO) << "=== Share of " << node->name << " is " << share;
+  // LOG(INFO) << "=== Share of " << node->name << " is " << share;
   return share / findWeight(node);
 }
 

@@ -14,8 +14,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef __MASTER_ALLOCATOR_MESOS_FINE_HIERARCHICAL_HPP__
-#define __MASTER_ALLOCATOR_MESOS_FINE_HIERARCHICAL_HPP__
+#ifndef __MASTER_ALLOCATOR_MESOS_FINE_BF_HIERARCHICAL_HPP__
+#define __MASTER_ALLOCATOR_MESOS_FINE_BF_HIERARCHICAL_HPP__
 
 #include <set>
 #include <string>
@@ -299,8 +299,8 @@ protected:
            const hashmap<SlaveID, UnavailableResources>&)>
     inverseOfferCallback;
 
-  friend MetricsForFine;
-  MetricsForFine metrics;
+  friend MetricsForBFFine;
+  MetricsForBFFine metrics;
 
   struct Framework
   {
@@ -631,4 +631,4 @@ public:
 } // namespace internal {
 } // namespace mesos {
 
-#endif // __MASTER_ALLOCATOR_MESOS_FINE_HIERARCHICAL_HPP__
+#endif // __MASTER_ALLOCATOR_MESOS_FINE_BF_HIERARCHICAL_HPP__

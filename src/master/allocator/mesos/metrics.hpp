@@ -41,6 +41,8 @@ class HierarchicalAllocatorProcess;
 
 class FineHierarchicalAllocatorProcess;
 
+class FineBFHierarchicalAllocatorProcess;
+
 // Collection of metrics for the allocator; these begin
 // with the following prefix: `allocator/mesos/`.
 struct Metrics
@@ -105,6 +107,56 @@ struct MetricsForFine
   void removeRole(const std::string& role);
 
   const process::PID<FineHierarchicalAllocatorProcess> allocator;
+
+  // Number of dispatch events currently waiting in the allocator process.
+  process::metrics::Gauge event_queue_dispatches;
+
+  // TODO(bbannier) This metric is identical to `event_queue_dispatches`, but
+  // uses a name deprecated in 1.0. This metric should be removed after the
+  // deprecation cycle.
+  process::metrics::Gauge event_queue_dispatches_;
+
+  // Number of times the allocation algorithm has run.
+  process::metrics::Counter allocation_runs;
+
+  // Time spent in the allocation algorithm.
+  process::metrics::Timer<Milliseconds> allocation_run;
+
+  // The latency of allocation runs due to the batching of allocation requests.
+  process::metrics::Timer<Milliseconds> allocation_run_latency;
+
+  // Gauges for the total amount of each resource in the cluster.
+  std::vector<process::metrics::Gauge> resources_total;
+
+  // Gauges for the allocated amount of each resource in the cluster.
+  std::vector<process::metrics::Gauge> resources_offered_or_allocated;
+
+  // Gauges for the per-role quota allocation for each resource.
+  hashmap<std::string, hashmap<std::string, process::metrics::Gauge>>
+    quota_allocated;
+
+  // Gauges for the per-role quota guarantee for each resource.
+  hashmap<std::string, hashmap<std::string, process::metrics::Gauge>>
+    quota_guarantee;
+
+  // Gauges for the per-role count of active offer filters.
+  hashmap<std::string, process::metrics::Gauge> offer_filters_active;
+};
+
+struct MetricsForBFFine
+{
+  explicit MetricsForBFFine(
+      const FineBFHierarchicalAllocatorProcess& allocator);
+
+  ~MetricsForBFFine();
+
+  void setQuota(const std::string& role, const Quota& quota);
+  void removeQuota(const std::string& role);
+
+  void addRole(const std::string& role);
+  void removeRole(const std::string& role);
+
+  const process::PID<FineBFHierarchicalAllocatorProcess> allocator;
 
   // Number of dispatch events currently waiting in the allocator process.
   process::metrics::Gauge event_queue_dispatches;

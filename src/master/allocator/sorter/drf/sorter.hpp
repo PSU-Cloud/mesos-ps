@@ -147,7 +147,7 @@ private:
       return 0.0;
     }
     double result = 0.0;
-    for (int i = 0; i < a.size(); i++) {
+    for (uint i = 0; i < a.size(); i++) {
       result += std::abs(a[i] / a[0] - b[i] / b[0]);
     }
     return result;
