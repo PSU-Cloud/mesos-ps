@@ -767,7 +767,7 @@ double RPSDSFSorter::calculateShare(const Node* node,
         node->allocation.totals.contains("mem")) {
       const double allocation = node->allocation.totals.at("mem").value();
       share = std::max(share,
-                       allocation / totalMem.get().megabytes() - allocatedMem);
+                       allocation / (totalMem.get().megabytes() - allocatedMem));
     }
   }
   return share / findWeight(node);
