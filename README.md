@@ -1,9 +1,5 @@
 # A working copy of Apache Mesos
 
-TODO:
-1. modify the original DRF scheduling algorithms to PS-DFS. 
-2. add more test frameworks to provide test support.
-
 # Apache Mesos
 
 Apache Mesos is a cluster manager that provides efficient resource isolation
@@ -32,3 +28,21 @@ Instructions are included on the [Getting Started](http://mesos.apache.org/getti
 Apache Mesos is licensed under the [Apache License, Version 2.0](http://www.apache.org/licenses/LICENSE-2.0).
 
 For additional information, see the LICENSE and NOTICE files.
+
+# Added new features
+
+Several different scheduling algorithms:
+- coarse-grained DRF - "HierarchicalDRFAllocator";
+- coarse-grained PSDSF - "HierarchicalPSDSFAllocator";
+- coarse-grained rPSDSF - "HierarchicalRPSDSFAllocator";
+- fine-grained DRF - "FineHierarchicalDRFAllocator";
+- fine-grained PSDSF - "FineHierarchicalPSDSFAllocator";
+- fine-grained RPSDSF - "FineHierarchicalRPSDSFAllocator";
+- fine-grained TSF - "FineHierarchicalTSFAllocator";
+- fine-grained Best-fit DRF - "FineBFHierarchicalDRFAllocator".
+
+The default algorithm is coarse-grained DRF. To activate other algorithms, for example fine-grained DRF, you can run
+'''
+./bin/mesos-master.sh --ip=172.31.16.219 --work_dir=/var/lib/mesos-master --roles="*,wc,pi" --weights="*=1,wc=3,pi=3" --allocator=FineHierarchicalDRF # focus on --allocator=*, ignore other configs
+'''
+For more details regarding the performance of those different scheduling fashions see our (report)[https://arxiv.org/abs/1803.00922].
