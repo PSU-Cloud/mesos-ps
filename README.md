@@ -47,4 +47,6 @@ The default algorithm is coarse-grained DRF. To activate other algorithms, for e
 ./bin/mesos-master.sh --ip=172.31.16.219 --work_dir=/var/lib/mesos-master --roles="*,wc,pi" --weights="*=1,wc=3,pi=3" --allocator=FineHierarchicalDRF # focus on --allocator=*, ignore other configs
 ```
 
+The [slide](http://www.cse.psu.edu/~yxs182/doc/adding_more_scheduling_algorithms_in_mesos.pptx) covers the implementation details of those alternative Mesos schedulers.
+
 For more details regarding the performance of those different scheduling fashions see our [report](https://arxiv.org/abs/1803.00922).
