@@ -425,6 +425,16 @@ message FrameworkInfo {
   // if not, then apply coarse-grained allocating style in fine-grained
   // scheduler.
   optional bool dv_enabled = 14 [default = false];
+
+  // D-cap: indicating the demand cap of resources.
+  message DCap {
+    optional double cpus = 1 [default = 65536];
+    optional int32 mem = 2 [default = 2147483647];
+  }
+
+  optional DCap dcap = 15;
+
+  optional bool dcap_enabled = 16;
 }
 
 
