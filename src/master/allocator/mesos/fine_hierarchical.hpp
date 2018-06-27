@@ -337,7 +337,11 @@ protected:
 
     protobuf::framework::DVector dv;
 
+    protobuf::framework::DCap dcap;
+
     bool dvEnabled;
+
+    bool dcapEnabled;
 
     // Active offer and inverse offer filters for the framework.
     // Offer filters are tied to the role the filtered resources

@@ -141,7 +141,9 @@ FineHierarchicalAllocatorProcess::Framework::Framework(
     suppressedRoles(_suppressedRoles),
     capabilities(frameworkInfo.capabilities()),
     dv(frameworkInfo.dvector()),
+    dcap(frameworkInfo.dcap()),
     dvEnabled(frameworkInfo.dv_enabled()),
+    dcapEnabled(frameworkInfo.dcap_enabled()),
     active(_active) {}
 
 
@@ -2023,13 +2025,38 @@ void FineHierarchicalAllocatorProcess::__allocate()
         // If the framework didn't explicitly specify its D-vector, e.g.,
         // Spark's driver dispatcher, then apply coarse-grained style, i.e.,
         // give all the available resources on this slave to this framework.
+        double allocatedCpus = 0.0;
+        int allocatedMem = 0;
+
+        Resources& rcss = frameworkSorter->allocationScalarQuantities(
+            frameworkId.value());
+        if (rcss.cpus().isSome()) {
+          allocatedCpus += rcss.cpus().get();
+        }
+        if (rcss.mem().isSome()) {
+          allocatedMem += rcss.mem().get();
+        }
+
+        Resources targetResources;
         if (framework.dvEnabled) {
           std::string s = "";
+
           if (framework.dv.cpus > 0.0) {
-            s = s + "cpus:" + std::to_string(framework.dv.cpus) + ";";
+            if (framework.dcapEnabled) {
+              s = s + "cpus:" + std::to_string(min(framework.dv.cpus,
+                      max(0, framework.dcap.cpus - allocatedCpus))) + ";";
+            } else {
+              s = s + "cpus:" + std::to_string(framework.dv.cpus) + ";";
+            }
           }
+
           if (framework.dv.mem > 0) {
-            s = s + "mem:" + std::to_string(framework.dv.mem) + ";";
+            if (framework.dcapEnabled) {
+              s = s + "mem:" + std::to_string(min(framework.dv.mem,
+                      max(0, framework.dcap.mem - allocatedMem))) + ";";
+            } else {
+              s = s + "mem:" + std::to_string(framework.dv.mem) + ";";
+            }
           }
 
           // TODO(yuquanshan): current we only allocated non-shared resources
@@ -2040,39 +2067,79 @@ void FineHierarchicalAllocatorProcess::__allocate()
 
           if (!resourceVec.isSome()) {
             continue;
-          }
-
-          Resources targetResources(resourceVec.get());
-
-          // If the total available resources (current "resources") cannot
-          // satisfy the resource requirement specified by D-vector of this
-          // framework, then skip this framework.
-          if (!resources.contains(targetResources)) {
-            continue;
-          }
-
-          // Strip original CPU and mem from resources, replace them with
-          // targetResources.
-          s = "";
-          if (resources.cpus().isSome() && resources.cpus().get() > 0.0) {
-            s = s + "cpus:" + std::to_string(resources.cpus().get()) + ";";
-          }
-          if (resources.mem().isSome()
-              && resources.mem().get().megabytes() > 0) {
-            s = s + "mem:" +
-                std::to_string(resources.mem().get().megabytes()) + ";";
-          }
-          Try<vector<Resource> > resources2Strip =
-              Resources::fromSimpleString(s);
-          if (resources2Strip.isSome()) {
-            vector<Resource> stripVec = resources2Strip.get();
+          } else {
+            vector<Resource> rvec = resourceVec.get();
             for (vector<Resource>::iterator it =
-                stripVec.begin(); it != stripVec.end(); it++) {
-              resources -= *it;
+                rvec.begin(); it != rvec.end(); it++) {
+              targetResources += *it;
             }
           }
-          resources += targetResources;
+        } else {
+          std:string s = "";
+
+          double currcpus = resources.cpus().isSome()?resources.cpus().get():0;
+          int currmem = resources.mem().isSome()?resources.mem().get():0;
+          if (framework.dv.cpus > 0.0) {
+            if (framework.dcapEnabled) {
+              s = s + "cpus:" + std::to_string(min(currcpus,
+                      max(0, framework.dcap.cpus - allocatedCpus))) + ";";
+            } else {
+              s = s + "cpus:" + std::to_string(currcpus) + ";";
+            }
+          }
+
+          if (framework.dv.mem > 0) {
+            if (framework.dcapEnabled) {
+              s = s + "mem:" + std::to_string(min(currmem,
+                      max(0, framework.dcap.mem - allocatedMem))) + ";";
+            } else {
+              s = s + "mem:" + std::to_string(currmem) + ";";
+            }
+          }
+
+          Try<vector<Resource> > resourceVec = Resources::fromSimpleString(s);
+
+          if (!resourceVec.isSome()) {
+            continue;
+          } else {
+            vector<Resource> rvec = resourceVec.get();
+            for (vector<Resource>::iterator it =
+                rvec.begin(); it != rvec.end(); it++) {
+              targetResources += *it;
+            }
+          }
         }
+        // Resources targetResources(resourceVec.get());
+
+        // If the total available resources (current "resources") cannot
+        // satisfy the resource requirement specified by D-vector of this
+        // framework, then skip this framework.
+        if (!resources.contains(targetResources)) {
+          continue;
+        }
+
+        // Strip original CPU and mem from resources, replace them with
+        // targetResources.
+        s = "";
+        if (resources.cpus().isSome() && resources.cpus().get() > 0.0) {
+          s = s + "cpus:" + std::to_string(resources.cpus().get()) + ";";
+        }
+        if (resources.mem().isSome()
+            && resources.mem().get().megabytes() > 0) {
+          s = s + "mem:" +
+              std::to_string(resources.mem().get().megabytes()) + ";";
+        }
+        Try<vector<Resource> > resources2Strip =
+            Resources::fromSimpleString(s);
+        if (resources2Strip.isSome()) {
+          vector<Resource> stripVec = resources2Strip.get();
+          for (vector<Resource>::iterator it =
+              stripVec.begin(); it != stripVec.end(); it++) {
+            resources -= *it;
+          }
+        }
+        resources += targetResources;
+
 
         // If the framework filters these resources, ignore.
         if (isFiltered(frameworkId, role, slaveId, resources)) {
