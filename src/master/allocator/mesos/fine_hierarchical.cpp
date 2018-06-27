@@ -2028,7 +2028,7 @@ void FineHierarchicalAllocatorProcess::__allocate()
         double allocatedCpus = 0.0;
         int allocatedMem = 0;
 
-        Resources& rcss = frameworkSorter->allocationScalarQuantities(
+        Resources rcss = frameworkSorter->allocationScalarQuantities(
             frameworkId_);
         if (rcss.cpus().isSome()) {
           allocatedCpus += rcss.cpus().get();
