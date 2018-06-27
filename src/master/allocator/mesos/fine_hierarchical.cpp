@@ -2044,7 +2044,7 @@ void FineHierarchicalAllocatorProcess::__allocate()
           if (framework.dv.cpus > 0.0) {
             if (framework.dcapEnabled) {
               s = s + "cpus:" + std::to_string(std::min(framework.dv.cpus,
-                      std::max(0, framework.dcap.cpus - allocatedCpus))) + ";";
+                    std::max(0.0, framework.dcap.cpus - allocatedCpus))) + ";";
             } else {
               s = s + "cpus:" + std::to_string(framework.dv.cpus) + ";";
             }
@@ -2083,7 +2083,7 @@ void FineHierarchicalAllocatorProcess::__allocate()
           if (framework.dv.cpus > 0.0) {
             if (framework.dcapEnabled) {
               s = s + "cpus:" + std::to_string(std::min(currcpus,
-                      std::max(0, framework.dcap.cpus - allocatedCpus))) + ";";
+                    std::max(0.0, framework.dcap.cpus - allocatedCpus))) + ";";
             } else {
               s = s + "cpus:" + std::to_string(currcpus) + ";";
             }
