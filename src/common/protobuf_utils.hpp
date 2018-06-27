@@ -494,6 +494,19 @@ struct DVector
   int32_t mem = 1024;
 };
 
+struct DCap
+{
+  DCap() = default;
+  DCap(const FrameworkInfo::DCap& dc)
+  {
+    cpus = dc.cpus();
+    mem = dc.mem();
+  }
+
+  double cpus = 65536;
+  int32_t mem = 2147483647;
+};
+
 // Helper to get roles from FrameworkInfo based on the
 // presence of the MULTI_ROLE capability.
 std::set<std::string> getRoles(const FrameworkInfo& frameworkInfo);
