@@ -2029,12 +2029,12 @@ void FineHierarchicalAllocatorProcess::__allocate()
         int allocatedMem = 0;
 
         Resources& rcss = frameworkSorter->allocationScalarQuantities(
-            frameworkId.value());
+            frameworkId_);
         if (rcss.cpus().isSome()) {
           allocatedCpus += rcss.cpus().get();
         }
         if (rcss.mem().isSome()) {
-          allocatedMem += rcss.mem().get();
+          allocatedMem += rcss.mem().get().megabytes();
         }
 
         Resources targetResources;
@@ -2044,7 +2044,7 @@ void FineHierarchicalAllocatorProcess::__allocate()
           if (framework.dv.cpus > 0.0) {
             if (framework.dcapEnabled) {
               s = s + "cpus:" + std::to_string(min(framework.dv.cpus,
-                      max(0, framework.dcap.cpus - allocatedCpus))) + ";";
+                      std::max(0, framework.dcap.cpus - allocatedCpus))) + ";";
             } else {
               s = s + "cpus:" + std::to_string(framework.dv.cpus) + ";";
             }
@@ -2053,7 +2053,7 @@ void FineHierarchicalAllocatorProcess::__allocate()
           if (framework.dv.mem > 0) {
             if (framework.dcapEnabled) {
               s = s + "mem:" + std::to_string(min(framework.dv.mem,
-                      max(0, framework.dcap.mem - allocatedMem))) + ";";
+                      std::max(0, framework.dcap.mem - allocatedMem))) + ";";
             } else {
               s = s + "mem:" + std::to_string(framework.dv.mem) + ";";
             }
@@ -2075,14 +2075,15 @@ void FineHierarchicalAllocatorProcess::__allocate()
             }
           }
         } else {
-          std:string s = "";
+          std::string s = "";
 
           double currcpus = resources.cpus().isSome()?resources.cpus().get():0;
-          int currmem = resources.mem().isSome()?resources.mem().get():0;
+          int currmem = resources.mem().isSome()?resources.mem()
+              .get().megabytes():0;
           if (framework.dv.cpus > 0.0) {
             if (framework.dcapEnabled) {
               s = s + "cpus:" + std::to_string(min(currcpus,
-                      max(0, framework.dcap.cpus - allocatedCpus))) + ";";
+                      std::max(0, framework.dcap.cpus - allocatedCpus))) + ";";
             } else {
               s = s + "cpus:" + std::to_string(currcpus) + ";";
             }
@@ -2091,7 +2092,7 @@ void FineHierarchicalAllocatorProcess::__allocate()
           if (framework.dv.mem > 0) {
             if (framework.dcapEnabled) {
               s = s + "mem:" + std::to_string(min(currmem,
-                      max(0, framework.dcap.mem - allocatedMem))) + ";";
+                      std::max(0, framework.dcap.mem - allocatedMem))) + ";";
             } else {
               s = s + "mem:" + std::to_string(currmem) + ";";
             }
@@ -2120,7 +2121,7 @@ void FineHierarchicalAllocatorProcess::__allocate()
 
         // Strip original CPU and mem from resources, replace them with
         // targetResources.
-        s = "";
+        std::string s = "";
         if (resources.cpus().isSome() && resources.cpus().get() > 0.0) {
           s = s + "cpus:" + std::to_string(resources.cpus().get()) + ";";
         }
