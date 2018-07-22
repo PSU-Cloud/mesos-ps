@@ -16,6 +16,7 @@
 
 #include <mesos/type_utils.hpp>
 
+#include <process/clock.hpp>
 #include <process/gtest.hpp>
 #include <process/gmock.hpp>
 
@@ -24,7 +25,11 @@
 #include <stout/protobuf.hpp>
 #include <stout/stringify.hpp>
 
+#include <stout/os/realpath.hpp>
+
 #include "common/http.hpp"
+
+#include "csi/paths.hpp"
 
 #include "internal/evolve.hpp"
 
@@ -43,6 +48,7 @@ using mesos::internal::slave::Slave;
 
 using mesos::master::detector::MasterDetector;
 
+using process::Clock;
 using process::Future;
 using process::Owned;
 using process::PID;
@@ -54,14 +60,18 @@ namespace mesos {
 namespace internal {
 namespace tests {
 
+constexpr char TEST_SLRP_TYPE[] = "org.apache.mesos.rp.local.storage";
+constexpr char TEST_SLRP_NAME[] = "test";
+
+
 class AgentResourceProviderConfigApiTest
-  : public MesosTest,
+  : public ContainerizerTest<slave::MesosContainerizer>,
     public WithParamInterface<ContentType>
 {
 public:
-  virtual void SetUp()
+  void SetUp() override
   {
-    MesosTest::SetUp();
+    ContainerizerTest<slave::MesosContainerizer>::SetUp();
 
     resourceProviderConfigDir =
       path::join(sandbox.get(), "resource_provider_configs");
@@ -69,66 +79,129 @@ public:
     ASSERT_SOME(os::mkdir(resourceProviderConfigDir));
   }
 
-  ResourceProviderInfo createResourceProviderInfo(const Bytes& capacity)
+  ResourceProviderInfo createResourceProviderInfo(const string& volumes)
   {
-    const string testCsiPluginWorkDir = path::join(sandbox.get(), "test");
-    CHECK_SOME(os::mkdir(testCsiPluginWorkDir));
+    Option<ResourceProviderInfo> info;
 
-    string testCsiPluginPath =
-      path::join(tests::flags.build_dir, "src", "test-csi-plugin");
+    // This extra closure is necessary in order to use `ASSERT_*`, as
+    // these macros require a void return type.
+    [&]() {
+      // Randomize the plugin name so we get a clean work directory for
+      // each created config.
+      const string testCsiPluginName =
+        "test_csi_plugin_" +
+        strings::remove(id::UUID::random().toString(), "-");
 
-    Try<string> resourceProviderConfig = strings::format(
-        R"~(
-        {
-          "type": "org.apache.mesos.rp.local.storage",
-          "name": "test",
-          "default_reservations": [
-            {
-              "type": "DYNAMIC",
-              "role": "storage"
-            }
-          ],
-          "storage": {
-            "plugin": {
-              "type": "org.apache.mesos.csi.test",
-              "name": "slrp_test",
-              "containers": [
-                {
-                  "services": [
-                    "CONTROLLER_SERVICE",
-                    "NODE_SERVICE"
-                  ],
-                  "command": {
-                    "shell": false,
-                    "value": "%s",
-                    "arguments": [
-                      "%s",
-                      "--available_capacity=%s",
-                      "--work_dir=%s"
-                    ]
+      const string testCsiPluginPath =
+        path::join(tests::flags.build_dir, "src", "test-csi-plugin");
+
+      const string testCsiPluginWorkDir =
+        path::join(sandbox.get(), testCsiPluginName);
+      ASSERT_SOME(os::mkdir(testCsiPluginWorkDir));
+
+      Try<string> resourceProviderConfig = strings::format(
+          R"~(
+          {
+            "type": "%s",
+            "name": "%s",
+            "default_reservations": [
+              {
+                "type": "DYNAMIC",
+                "role": "storage"
+              }
+            ],
+            "storage": {
+              "plugin": {
+                "type": "org.apache.mesos.csi.test",
+                "name": "%s",
+                "containers": [
+                  {
+                    "services": [
+                      "CONTROLLER_SERVICE",
+                      "NODE_SERVICE"
+                    ],
+                    "command": {
+                      "shell": false,
+                      "value": "%s",
+                      "arguments": [
+                        "%s",
+                        "--available_capacity=0B",
+                        "--volumes=%s",
+                        "--work_dir=%s"
+                      ]
+                    }
                   }
-                }
-              ]
+                ]
+              }
             }
           }
-        }
-        )~",
-        testCsiPluginPath,
-        testCsiPluginPath,
-        stringify(capacity),
-        testCsiPluginWorkDir);
+          )~",
+          TEST_SLRP_TYPE,
+          TEST_SLRP_NAME,
+          testCsiPluginName,
+          testCsiPluginPath,
+          testCsiPluginPath,
+          volumes,
+          testCsiPluginWorkDir);
 
-    CHECK_SOME(resourceProviderConfig);
+      ASSERT_SOME(resourceProviderConfig);
 
-    Try<JSON::Object> json =
-      JSON::parse<JSON::Object>(resourceProviderConfig.get());
-    CHECK_SOME(json);
+      Try<JSON::Object> json =
+        JSON::parse<JSON::Object>(resourceProviderConfig.get());
+      ASSERT_SOME(json);
 
-    Try<ResourceProviderInfo> info =
-      ::protobuf::parse<ResourceProviderInfo>(json.get());
-    CHECK_SOME(info);
+      Try<ResourceProviderInfo> _info =
+        ::protobuf::parse<ResourceProviderInfo>(json.get());
+      ASSERT_SOME(_info);
+
+      info = _info.get();
+    }();
 
     return info.get();
+  }
+
+  void TearDown() override
+  {
+    foreach (const string& slaveWorkDir, slaveWorkDirs) {
+      // Clean up CSI endpoint directories if there is any.
+      const string csiRootDir = slave::paths::getCsiRootDir(slaveWorkDir);
+
+      Try<list<string>> csiContainerPaths =
+        csi::paths::getContainerPaths(csiRootDir, "*", "*");
+      ASSERT_SOME(csiContainerPaths);
+
+      foreach (const string& path, csiContainerPaths.get()) {
+        Try<csi::paths::ContainerPath> containerPath =
+          csi::paths::parseContainerPath(csiRootDir, path);
+        ASSERT_SOME(containerPath);
+
+        Result<string> endpointDir =
+          os::realpath(csi::paths::getEndpointDirSymlinkPath(
+              csiRootDir,
+              containerPath->type,
+              containerPath->name,
+              containerPath->containerId));
+
+        if (endpointDir.isSome()) {
+          ASSERT_SOME(os::rmdir(endpointDir.get()));
+        }
+      }
+    }
+
+    ContainerizerTest<slave::MesosContainerizer>::TearDown();
+  }
+
+  slave::Flags CreateSlaveFlags() override
+  {
+    slave::Flags flags =
+      ContainerizerTest<slave::MesosContainerizer>::CreateSlaveFlags();
+
+    // Store the agent work directory for cleaning up CSI endpoint
+    // directories during teardown.
+    // NOTE: DO NOT change the work directory afterward.
+    slaveWorkDirs.push_back(flags.work_dir);
+
+    return flags;
   }
 
   Future<http::Response> addResourceProviderConfig(
@@ -196,6 +269,7 @@ public:
   }
 
 protected:
+  vector<string> slaveWorkDirs;
   string resourceProviderConfigDir;
 };
 
@@ -212,36 +286,23 @@ TEST_P(AgentResourceProviderConfigApiTest, ROOT_Add)
 {
   const ContentType contentType = GetParam();
 
-  Try<Owned<cluster::Master>> master = StartMaster();
+  master::Flags masterFlags = CreateMasterFlags();
+  masterFlags.allocation_interval = Milliseconds(50);
+
+  Try<Owned<cluster::Master>> master = StartMaster(masterFlags);
   ASSERT_SOME(master);
 
   Owned<MasterDetector> detector = master.get()->createDetector();
 
-  slave::Flags flags = CreateSlaveFlags();
-  flags.isolation = "filesystem/linux";
+  slave::Flags slaveFlags = CreateSlaveFlags();
+  slaveFlags.isolation = "filesystem/linux";
 
-  // Disable HTTP authentication to simplify resource provider interactions.
-  flags.authenticate_http_readwrite = false;
-
-  // Set the resource provider capability and other required capabilities.
-  constexpr SlaveInfo::Capability::Type capabilities[] = {
-    SlaveInfo::Capability::MULTI_ROLE,
-    SlaveInfo::Capability::HIERARCHICAL_ROLE,
-    SlaveInfo::Capability::RESERVATION_REFINEMENT,
-    SlaveInfo::Capability::RESOURCE_PROVIDER
-  };
-
-  flags.agent_features = SlaveCapabilities();
-  foreach (SlaveInfo::Capability::Type type, capabilities) {
-    flags.agent_features->add_capabilities()->set_type(type);
-  }
-
-  flags.resource_provider_config_dir = resourceProviderConfigDir;
+  slaveFlags.resource_provider_config_dir = resourceProviderConfigDir;
 
   Future<SlaveRegisteredMessage> slaveRegisteredMessage =
     FUTURE_PROTOBUF(SlaveRegisteredMessage(), _, _);
 
-  Try<Owned<cluster::Slave>> slave = StartSlave(detector.get(), flags);
+  Try<Owned<cluster::Slave>> slave = StartSlave(detector.get(), slaveFlags);
   ASSERT_SOME(slave);
 
   AWAIT_READY(slaveRegisteredMessage);
@@ -257,11 +318,16 @@ TEST_P(AgentResourceProviderConfigApiTest, ROOT_Add)
 
   EXPECT_CALL(sched, registered(&driver, _, _));
 
-  Future<vector<Offer>> offers;
+  // We use the following filter to filter offers that do not have
+  // wanted resources for 365 days (the maximum).
+  Filters declineFilters;
+  declineFilters.set_refuse_seconds(Days(365).secs());
 
   // Decline offers that contain only the agent's default resources.
   EXPECT_CALL(sched, resourceOffers(&driver, _))
-    .WillRepeatedly(DeclineOffers());
+    .WillRepeatedly(DeclineOffers(declineFilters));
+
+  Future<vector<Offer>> offers;
 
   EXPECT_CALL(sched, resourceOffers(&driver, OffersHaveAnyResource(
       std::bind(&Resources::hasResourceProvider, lambda::_1))))
@@ -270,7 +336,7 @@ TEST_P(AgentResourceProviderConfigApiTest, ROOT_Add)
   driver.start();
 
   // Add a new resource provider.
-  ResourceProviderInfo info = createResourceProviderInfo(Gigabytes(4));
+  ResourceProviderInfo info = createResourceProviderInfo("volume1:4GB");
 
   AWAIT_EXPECT_RESPONSE_STATUS_EQ(
       http::OK().status,
@@ -298,53 +364,105 @@ TEST_P(AgentResourceProviderConfigApiTest, ROOT_Add)
 }
 
 
-// This test checks that adding a resource provider config that already
-// exists is not allowed.
-TEST_P(AgentResourceProviderConfigApiTest, ROOT_AddConflict)
+// This test checks that adding a resource provider config that is identical to
+// an existing one is allowed due to idempotency.
+TEST_P(AgentResourceProviderConfigApiTest, ROOT_IdempotentAdd)
 {
   const ContentType contentType = GetParam();
+
+  Clock::pause();
 
   Try<Owned<cluster::Master>> master = StartMaster();
   ASSERT_SOME(master);
 
   Owned<MasterDetector> detector = master.get()->createDetector();
 
-  slave::Flags flags = CreateSlaveFlags();
-  flags.isolation = "filesystem/linux";
+  slave::Flags slaveFlags = CreateSlaveFlags();
+  slaveFlags.isolation = "filesystem/linux";
 
-  // Disable HTTP authentication to simplify resource provider interactions.
-  flags.authenticate_http_readwrite = false;
+  slaveFlags.resource_provider_config_dir = resourceProviderConfigDir;
 
-  // Set the resource provider capability and other required capabilities.
-  constexpr SlaveInfo::Capability::Type capabilities[] = {
-    SlaveInfo::Capability::MULTI_ROLE,
-    SlaveInfo::Capability::HIERARCHICAL_ROLE,
-    SlaveInfo::Capability::RESERVATION_REFINEMENT,
-    SlaveInfo::Capability::RESOURCE_PROVIDER
-  };
+  // Generate a pre-existing config.
+  const string configPath = path::join(resourceProviderConfigDir, "test.json");
+  ResourceProviderInfo info = createResourceProviderInfo("volume1:4GB");
+  ASSERT_SOME(os::write(configPath, stringify(JSON::protobuf(info))));
 
-  flags.agent_features = SlaveCapabilities();
-  foreach (SlaveInfo::Capability::Type type, capabilities) {
-    flags.agent_features->add_capabilities()->set_type(type);
-  }
+  // Since the local resource provider daemon is started after the agent is
+  // registered, it is guaranteed that the slave will send two
+  // `UpdateSlaveMessage`s, where the latter one contains resources from the
+  // storage local resource provider.
+  // NOTE: The order of the two `FUTURE_PROTOBUF`s are reversed because GMock
+  // will search the expectations in reverse order.
+  Future<UpdateSlaveMessage> updateSlave2 =
+    FUTURE_PROTOBUF(UpdateSlaveMessage(), _, _);
+  Future<UpdateSlaveMessage> updateSlave1 =
+    FUTURE_PROTOBUF(UpdateSlaveMessage(), _, _);
 
-  flags.resource_provider_config_dir = resourceProviderConfigDir;
+  Try<Owned<cluster::Slave>> slave = StartSlave(detector.get(), slaveFlags);
+  ASSERT_SOME(slave);
+
+  // Advance the clock to trigger agent registration and prevent retry.
+  Clock::advance(slaveFlags.registration_backoff_factor);
+
+  AWAIT_READY(updateSlave1);
+
+  // NOTE: We need to resume the clock so that the resource provider can
+  // periodically check if the CSI endpoint socket has been created by the
+  // plugin container, which runs in another Linux process.
+  Clock::resume();
+
+  AWAIT_READY(updateSlave2);
+  ASSERT_TRUE(updateSlave2->has_resource_providers());
+  ASSERT_EQ(1, updateSlave2->resource_providers().providers_size());
+
+  Clock::pause();
+
+  // No update message should be triggered by an idempotent add.
+  EXPECT_NO_FUTURE_PROTOBUFS(UpdateSlaveMessage(), _, _);
+
+  // Add a resource provider config that is identical to the existing one.
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(
+      http::OK().status,
+      addResourceProviderConfig(slave.get()->pid, contentType, info));
+
+  Clock::settle();
+}
+
+
+// This test checks that adding a resource provider config that already
+// exists is not allowed.
+TEST_P(AgentResourceProviderConfigApiTest, ROOT_AddConflict)
+{
+  const ContentType contentType = GetParam();
+
+  master::Flags masterFlags = CreateMasterFlags();
+  masterFlags.allocation_interval = Milliseconds(50);
+
+  Try<Owned<cluster::Master>> master = StartMaster(masterFlags);
+  ASSERT_SOME(master);
+
+  Owned<MasterDetector> detector = master.get()->createDetector();
+
+  slave::Flags slaveFlags = CreateSlaveFlags();
+  slaveFlags.isolation = "filesystem/linux";
+
+  slaveFlags.resource_provider_config_dir = resourceProviderConfigDir;
 
   // Generate a pre-existing config.
   const string configPath = path::join(resourceProviderConfigDir, "test.json");
   ASSERT_SOME(os::write(
       configPath,
-      stringify(JSON::protobuf(createResourceProviderInfo(Gigabytes(4))))));
+      stringify(JSON::protobuf(createResourceProviderInfo("volume1:4GB")))));
 
   Future<SlaveRegisteredMessage> slaveRegisteredMessage =
     FUTURE_PROTOBUF(SlaveRegisteredMessage(), _, _);
 
-  Try<Owned<cluster::Slave>> slave = StartSlave(detector.get(), flags);
+  Try<Owned<cluster::Slave>> slave = StartSlave(detector.get(), slaveFlags);
   ASSERT_SOME(slave);
 
   AWAIT_READY(slaveRegisteredMessage);
 
-  ResourceProviderInfo info = createResourceProviderInfo(Gigabytes(2));
+  ResourceProviderInfo info = createResourceProviderInfo("volume1:2GB");
 
   AWAIT_EXPECT_RESPONSE_STATUS_EQ(
       http::Conflict().status,
@@ -376,42 +494,29 @@ TEST_P(AgentResourceProviderConfigApiTest, ROOT_Update)
 {
   const ContentType contentType = GetParam();
 
-  Try<Owned<cluster::Master>> master = StartMaster();
+  master::Flags masterFlags = CreateMasterFlags();
+  masterFlags.allocation_interval = Milliseconds(50);
+
+  Try<Owned<cluster::Master>> master = StartMaster(masterFlags);
   ASSERT_SOME(master);
 
   Owned<MasterDetector> detector = master.get()->createDetector();
 
-  slave::Flags flags = CreateSlaveFlags();
-  flags.isolation = "filesystem/linux";
+  slave::Flags slaveFlags = CreateSlaveFlags();
+  slaveFlags.isolation = "filesystem/linux";
 
-  // Disable HTTP authentication to simplify resource provider interactions.
-  flags.authenticate_http_readwrite = false;
-
-  // Set the resource provider capability and other required capabilities.
-  constexpr SlaveInfo::Capability::Type capabilities[] = {
-    SlaveInfo::Capability::MULTI_ROLE,
-    SlaveInfo::Capability::HIERARCHICAL_ROLE,
-    SlaveInfo::Capability::RESERVATION_REFINEMENT,
-    SlaveInfo::Capability::RESOURCE_PROVIDER
-  };
-
-  flags.agent_features = SlaveCapabilities();
-  foreach (SlaveInfo::Capability::Type type, capabilities) {
-    flags.agent_features->add_capabilities()->set_type(type);
-  }
-
-  flags.resource_provider_config_dir = resourceProviderConfigDir;
+  slaveFlags.resource_provider_config_dir = resourceProviderConfigDir;
 
   // Generate a pre-existing config.
   const string configPath = path::join(resourceProviderConfigDir, "test.json");
   ASSERT_SOME(os::write(
       configPath,
-      stringify(JSON::protobuf(createResourceProviderInfo(Gigabytes(4))))));
+      stringify(JSON::protobuf(createResourceProviderInfo("volume1:4GB")))));
 
   Future<SlaveRegisteredMessage> slaveRegisteredMessage =
     FUTURE_PROTOBUF(SlaveRegisteredMessage(), _, _);
 
-  Try<Owned<cluster::Slave>> slave = StartSlave(detector.get(), flags);
+  Try<Owned<cluster::Slave>> slave = StartSlave(detector.get(), slaveFlags);
   ASSERT_SOME(slave);
 
   AWAIT_READY(slaveRegisteredMessage);
@@ -427,29 +532,39 @@ TEST_P(AgentResourceProviderConfigApiTest, ROOT_Update)
 
   EXPECT_CALL(sched, registered(&driver, _, _));
 
-  Future<vector<Offer>> oldOffers;
-  Future<vector<Offer>> newOffers;
+  // We use the following filter to filter offers that do not have
+  // wanted resources for 365 days (the maximum).
+  Filters declineFilters;
+  declineFilters.set_refuse_seconds(Days(365).secs());
 
   // Decline offers that contain only the agent's default resources.
   EXPECT_CALL(sched, resourceOffers(&driver, _))
-    .WillRepeatedly(DeclineOffers());
+    .WillRepeatedly(DeclineOffers(declineFilters));
+
+  Future<vector<Offer>> oldOffers;
 
   EXPECT_CALL(sched, resourceOffers(&driver, OffersHaveAnyResource(
       std::bind(&Resources::hasResourceProvider, lambda::_1))))
-    .WillOnce(FutureArg<1>(&oldOffers))
-    .WillOnce(FutureArg<1>(&newOffers));
-
-  Future<OfferID> rescinded;
-
-  EXPECT_CALL(sched, offerRescinded(&driver, _))
-    .WillOnce(FutureArg<1>(&rescinded));
+    .WillOnce(FutureArg<1>(&oldOffers));
 
   driver.start();
 
   // Wait for an offer having the old provider resource.
   AWAIT_READY(oldOffers);
+  ASSERT_FALSE(oldOffers->empty());
 
-  ResourceProviderInfo info = createResourceProviderInfo(Gigabytes(2));
+  Future<OfferID> rescinded;
+
+  EXPECT_CALL(sched, offerRescinded(&driver, oldOffers->at(0).id()))
+    .WillOnce(FutureArg<1>(&rescinded));
+
+  Future<vector<Offer>> newOffers;
+
+  EXPECT_CALL(sched, resourceOffers(&driver, OffersHaveAnyResource(
+      std::bind(&Resources::hasResourceProvider, lambda::_1))))
+    .WillOnce(FutureArg<1>(&newOffers));
+
+  ResourceProviderInfo info = createResourceProviderInfo("volume1:2GB");
 
   AWAIT_EXPECT_RESPONSE_STATUS_EQ(
       http::OK().status,
@@ -485,43 +600,98 @@ TEST_P(AgentResourceProviderConfigApiTest, ROOT_Update)
 }
 
 
-// This test checks that updating a nonexistent resource provider config
-// is not allowed.
-TEST_P(AgentResourceProviderConfigApiTest, UpdateNotFound)
+// This test checks that updating an existing resource provider config with an
+// identical one will not relaunch the resource provider due to idempotency.
+TEST_P(AgentResourceProviderConfigApiTest, ROOT_IdempotentUpdate)
 {
   const ContentType contentType = GetParam();
+
+  Clock::pause();
 
   Try<Owned<cluster::Master>> master = StartMaster();
   ASSERT_SOME(master);
 
   Owned<MasterDetector> detector = master.get()->createDetector();
 
-  slave::Flags flags = CreateSlaveFlags();
+  slave::Flags slaveFlags = CreateSlaveFlags();
+  slaveFlags.isolation = "filesystem/linux";
 
-  // Set the resource provider capability and other required capabilities.
-  constexpr SlaveInfo::Capability::Type capabilities[] = {
-    SlaveInfo::Capability::MULTI_ROLE,
-    SlaveInfo::Capability::HIERARCHICAL_ROLE,
-    SlaveInfo::Capability::RESERVATION_REFINEMENT,
-    SlaveInfo::Capability::RESOURCE_PROVIDER
-  };
+  slaveFlags.resource_provider_config_dir = resourceProviderConfigDir;
 
-  flags.agent_features = SlaveCapabilities();
-  foreach (SlaveInfo::Capability::Type type, capabilities) {
-    flags.agent_features->add_capabilities()->set_type(type);
-  }
+  // Generate a pre-existing config.
+  const string configPath = path::join(resourceProviderConfigDir, "test.json");
+  ResourceProviderInfo info = createResourceProviderInfo("volume1:4GB");
+  ASSERT_SOME(os::write(configPath, stringify(JSON::protobuf(info))));
 
-  flags.resource_provider_config_dir = resourceProviderConfigDir;
+  // Since the local resource provider daemon is started after the agent is
+  // registered, it is guaranteed that the slave will send two
+  // `UpdateSlaveMessage`s, where the latter one contains resources from the
+  // storage local resource provider.
+  // NOTE: The order of the two `FUTURE_PROTOBUF`s are reversed because GMock
+  // will search the expectations in reverse order.
+  Future<UpdateSlaveMessage> updateSlave2 =
+    FUTURE_PROTOBUF(UpdateSlaveMessage(), _, _);
+  Future<UpdateSlaveMessage> updateSlave1 =
+    FUTURE_PROTOBUF(UpdateSlaveMessage(), _, _);
+
+  Try<Owned<cluster::Slave>> slave = StartSlave(detector.get(), slaveFlags);
+  ASSERT_SOME(slave);
+
+  // Advance the clock to trigger agent registration and prevent retry.
+  Clock::advance(slaveFlags.registration_backoff_factor);
+
+  AWAIT_READY(updateSlave1);
+
+  // NOTE: We need to resume the clock so that the resource provider can
+  // periodically check if the CSI endpoint socket has been created by the
+  // plugin container, which runs in another Linux process.
+  Clock::resume();
+
+  AWAIT_READY(updateSlave2);
+  ASSERT_TRUE(updateSlave2->has_resource_providers());
+  ASSERT_EQ(1, updateSlave2->resource_providers().providers_size());
+
+  Clock::pause();
+
+  // No update message should be triggered by an idempotent update.
+  EXPECT_NO_FUTURE_PROTOBUFS(UpdateSlaveMessage(), _, _);
+
+  // Update the resource provider with an identical config.
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(
+      http::OK().status,
+      updateResourceProviderConfig(slave.get()->pid, contentType, info));
+
+  Clock::settle();
+}
+
+
+// This test checks that updating a nonexistent resource provider config
+// is not allowed.
+TEST_P(AgentResourceProviderConfigApiTest, UpdateNotFound)
+{
+  const ContentType contentType = GetParam();
+
+  master::Flags masterFlags = CreateMasterFlags();
+  masterFlags.allocation_interval = Milliseconds(50);
+
+  Try<Owned<cluster::Master>> master = StartMaster(masterFlags);
+  ASSERT_SOME(master);
+
+  Owned<MasterDetector> detector = master.get()->createDetector();
+
+  slave::Flags slaveFlags = CreateSlaveFlags();
+
+  slaveFlags.resource_provider_config_dir = resourceProviderConfigDir;
 
   Future<SlaveRegisteredMessage> slaveRegisteredMessage =
     FUTURE_PROTOBUF(SlaveRegisteredMessage(), _, _);
 
-  Try<Owned<cluster::Slave>> slave = StartSlave(detector.get(), flags);
+  Try<Owned<cluster::Slave>> slave = StartSlave(detector.get(), slaveFlags);
   ASSERT_SOME(slave);
 
   AWAIT_READY(slaveRegisteredMessage);
 
-  ResourceProviderInfo info = createResourceProviderInfo(Gigabytes(4));
+  ResourceProviderInfo info = createResourceProviderInfo("volume1:4GB");
 
   AWAIT_EXPECT_RESPONSE_STATUS_EQ(
       http::NotFound().status,
@@ -540,41 +710,28 @@ TEST_P(AgentResourceProviderConfigApiTest, ROOT_Remove)
 {
   const ContentType contentType = GetParam();
 
-  Try<Owned<cluster::Master>> master = StartMaster();
+  master::Flags masterFlags = CreateMasterFlags();
+  masterFlags.allocation_interval = Milliseconds(50);
+
+  Try<Owned<cluster::Master>> master = StartMaster(masterFlags);
   ASSERT_SOME(master);
 
   Owned<MasterDetector> detector = master.get()->createDetector();
 
-  slave::Flags flags = CreateSlaveFlags();
-  flags.isolation = "filesystem/linux";
+  slave::Flags slaveFlags = CreateSlaveFlags();
+  slaveFlags.isolation = "filesystem/linux";
 
-  // Disable HTTP authentication to simplify resource provider interactions.
-  flags.authenticate_http_readwrite = false;
-
-  // Set the resource provider capability and other required capabilities.
-  constexpr SlaveInfo::Capability::Type capabilities[] = {
-    SlaveInfo::Capability::MULTI_ROLE,
-    SlaveInfo::Capability::HIERARCHICAL_ROLE,
-    SlaveInfo::Capability::RESERVATION_REFINEMENT,
-    SlaveInfo::Capability::RESOURCE_PROVIDER
-  };
-
-  flags.agent_features = SlaveCapabilities();
-  foreach (SlaveInfo::Capability::Type type, capabilities) {
-    flags.agent_features->add_capabilities()->set_type(type);
-  }
-
-  flags.resource_provider_config_dir = resourceProviderConfigDir;
+  slaveFlags.resource_provider_config_dir = resourceProviderConfigDir;
 
   // Generate a pre-existing config.
   const string configPath = path::join(resourceProviderConfigDir, "test.json");
-  ResourceProviderInfo info = createResourceProviderInfo(Gigabytes(4));
+  ResourceProviderInfo info = createResourceProviderInfo("volume1:4GB");
   ASSERT_SOME(os::write(configPath, stringify(JSON::protobuf(info))));
 
   Future<SlaveRegisteredMessage> slaveRegisteredMessage =
     FUTURE_PROTOBUF(SlaveRegisteredMessage(), _, _);
 
-  Try<Owned<cluster::Slave>> slave = StartSlave(detector.get(), flags);
+  Try<Owned<cluster::Slave>> slave = StartSlave(detector.get(), slaveFlags);
   ASSERT_SOME(slave);
 
   AWAIT_READY(slaveRegisteredMessage);
@@ -590,24 +747,31 @@ TEST_P(AgentResourceProviderConfigApiTest, ROOT_Remove)
 
   EXPECT_CALL(sched, registered(&driver, _, _));
 
-  Future<vector<Offer>> oldOffers;
+  // We use the following filter to filter offers that do not have
+  // wanted resources for 365 days (the maximum).
+  Filters declineFilters;
+  declineFilters.set_refuse_seconds(Days(365).secs());
 
   // Decline offers that contain only the agent's default resources.
   EXPECT_CALL(sched, resourceOffers(&driver, _))
-    .WillRepeatedly(DeclineOffers());
+    .WillRepeatedly(DeclineOffers(declineFilters));
+
+  Future<vector<Offer>> oldOffers;
 
   EXPECT_CALL(sched, resourceOffers(&driver, OffersHaveAnyResource(
       std::bind(&Resources::hasResourceProvider, lambda::_1))))
     .WillOnce(FutureArg<1>(&oldOffers));
 
-  // TODO(chhsiao): Wait for an rescinded offer once we implemented the
-  // logic to send `UpdateSlaveMessage` upon removal of a resource
-  // provider.
-
   driver.start();
 
   // Wait for an offer having the old provider resource.
   AWAIT_READY(oldOffers);
+  ASSERT_FALSE(oldOffers->empty());
+
+  Future<OfferID> rescinded;
+
+  EXPECT_CALL(sched, offerRescinded(&driver, oldOffers->at(0).id()))
+    .WillOnce(FutureArg<1>(&rescinded));
 
   AWAIT_EXPECT_RESPONSE_STATUS_EQ(
       http::OK().status,
@@ -617,50 +781,41 @@ TEST_P(AgentResourceProviderConfigApiTest, ROOT_Remove)
   // Check that the existing config is removed.
   EXPECT_FALSE(os::exists(configPath));
 
-  // TODO(chhsiao): Wait for the old offer to be rescinded.
+  // Wait for the old offer to be rescinded.
+  AWAIT_READY(rescinded);
 }
 
 
-// This test checks that removing a nonexistent resource provider config
-// is not allowed.
-TEST_P(AgentResourceProviderConfigApiTest, RemoveNotFound)
+// This test checks that removing a nonexistent resource provider config is
+// allowed due to idempotency.
+TEST_P(AgentResourceProviderConfigApiTest, IdempotentRemove)
 {
   const ContentType contentType = GetParam();
 
-  Try<Owned<cluster::Master>> master = StartMaster();
+  master::Flags masterFlags = CreateMasterFlags();
+  masterFlags.allocation_interval = Milliseconds(50);
+
+  Try<Owned<cluster::Master>> master = StartMaster(masterFlags);
   ASSERT_SOME(master);
 
   Owned<MasterDetector> detector = master.get()->createDetector();
 
-  slave::Flags flags = CreateSlaveFlags();
+  slave::Flags slaveFlags = CreateSlaveFlags();
 
-  // Set the resource provider capability and other required capabilities.
-  constexpr SlaveInfo::Capability::Type capabilities[] = {
-    SlaveInfo::Capability::MULTI_ROLE,
-    SlaveInfo::Capability::HIERARCHICAL_ROLE,
-    SlaveInfo::Capability::RESERVATION_REFINEMENT,
-    SlaveInfo::Capability::RESOURCE_PROVIDER
-  };
-
-  flags.agent_features = SlaveCapabilities();
-  foreach (SlaveInfo::Capability::Type type, capabilities) {
-    flags.agent_features->add_capabilities()->set_type(type);
-  }
-
-  flags.resource_provider_config_dir = resourceProviderConfigDir;
+  slaveFlags.resource_provider_config_dir = resourceProviderConfigDir;
 
   Future<SlaveRegisteredMessage> slaveRegisteredMessage =
     FUTURE_PROTOBUF(SlaveRegisteredMessage(), _, _);
 
-  Try<Owned<cluster::Slave>> slave = StartSlave(detector.get(), flags);
+  Try<Owned<cluster::Slave>> slave = StartSlave(detector.get(), slaveFlags);
   ASSERT_SOME(slave);
 
   AWAIT_READY(slaveRegisteredMessage);
 
-  ResourceProviderInfo info = createResourceProviderInfo(Gigabytes(4));
+  ResourceProviderInfo info = createResourceProviderInfo("volume1:4GB");
 
   AWAIT_EXPECT_RESPONSE_STATUS_EQ(
-      http::NotFound().status,
+      http::OK().status,
       removeResourceProviderConfig(
           slave.get()->pid, contentType, info.type(), info.name()));
 }

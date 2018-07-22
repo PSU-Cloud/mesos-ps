@@ -53,6 +53,7 @@
 #include <process/process.hpp>
 #include <process/protobuf.hpp>
 #include <process/shared.hpp>
+#include <process/sequence.hpp>
 
 #include <stout/boundedhashmap.hpp>
 #include <stout/bytes.hpp>
@@ -98,6 +99,7 @@ namespace mesos {
 
 // Forward declarations.
 class Authorizer;
+class DiskProfileAdaptor;
 
 namespace internal {
 namespace slave {
@@ -126,7 +128,7 @@ public:
         mesos::SecretGenerator* secretGenerator,
         const Option<Authorizer*>& authorizer);
 
-  virtual ~Slave();
+  ~Slave() override;
 
   void shutdown(const process::UPID& from, const std::string& message);
 
@@ -143,6 +145,12 @@ public:
 
   void doReliableRegistration(Duration maxBackoff);
 
+  // TODO(mzhu): Combine this with `runTask()' and replace all `runTask()'
+  // mock with `run()` mock.
+  void handleRunTaskMessage(
+      const process::UPID& from,
+      RunTaskMessage&& runTaskMessage);
+
   // Made 'virtual' for Slave mocking.
   virtual void runTask(
       const process::UPID& from,
@@ -150,7 +158,8 @@ public:
       const FrameworkID& frameworkId,
       const process::UPID& pid,
       const TaskInfo& task,
-      const std::vector<ResourceVersionUUID>& resourceVersionUuids);
+      const std::vector<ResourceVersionUUID>& resourceVersionUuids,
+      const Option<bool>& launchExecutor);
 
   void run(
       const FrameworkInfo& frameworkInfo,
@@ -158,16 +167,52 @@ public:
       Option<TaskInfo> task,
       Option<TaskGroupInfo> taskGroup,
       const std::vector<ResourceVersionUUID>& resourceVersionUuids,
-      const process::UPID& pid);
+      const process::UPID& pid,
+      const Option<bool>& launchExecutor);
 
   // Made 'virtual' for Slave mocking.
-  virtual void _run(
-      const process::Future<std::list<bool>>& unschedules,
+  //
+  // This function returns a future so that we can encapsulate a task(group)
+  // launch operation (from agent receiving the run message to the completion
+  // of `_run()`) into a single future. This includes all the asynchronous
+  // steps (currently two: unschedule GC and task authorization) prior to the
+  // executor launch.
+  virtual process::Future<Nothing> _run(
       const FrameworkInfo& frameworkInfo,
       const ExecutorInfo& executorInfo,
       const Option<TaskInfo>& task,
       const Option<TaskGroupInfo>& taskGroup,
-      const std::vector<ResourceVersionUUID>& resourceVersionUuids);
+      const std::vector<ResourceVersionUUID>& resourceVersionUuids,
+      const Option<bool>& launchExecutor);
+
+  // Made 'virtual' for Slave mocking.
+  virtual void __run(
+      const FrameworkInfo& frameworkInfo,
+      const ExecutorInfo& executorInfo,
+      const Option<TaskInfo>& task,
+      const Option<TaskGroupInfo>& taskGroup,
+      const std::vector<ResourceVersionUUID>& resourceVersionUuids,
+      const Option<bool>& launchExecutor);
+
+  // This is called when the resource limits of the container have
+  // been updated for the given tasks and task groups. If the update is
+  // successful, we flush the given tasks to the executor by sending
+  // RunTaskMessages or `LAUNCH_GROUP` events.
+  //
+  // Made 'virtual' for Slave mocking.
+  virtual void ___run(
+      const process::Future<Nothing>& future,
+      const FrameworkID& frameworkId,
+      const ExecutorID& executorId,
+      const ContainerID& containerId,
+      const std::vector<TaskInfo>& tasks,
+      const std::vector<TaskGroupInfo>& taskGroups);
+
+  // TODO(mzhu): Combine this with `runTaskGroup()' and replace all
+  // `runTaskGroup()' mock with `run()` mock.
+  void handleRunTaskGroupMessage(
+      const process::UPID& from,
+      RunTaskGroupMessage&& runTaskGroupMessage);
 
   // Made 'virtual' for Slave mocking.
   virtual void runTaskGroup(
@@ -175,7 +220,8 @@ public:
       const FrameworkInfo& frameworkInfo,
       const ExecutorInfo& executorInfo,
       const TaskGroupInfo& taskGroupInfo,
-      const std::vector<ResourceVersionUUID>& resourceVersionUuids);
+      const std::vector<ResourceVersionUUID>& resourceVersionUuids,
+      const Option<bool>& launchExecutor);
 
   // Made 'virtual' for Slave mocking.
   virtual void killTask(
@@ -187,6 +233,15 @@ public:
       const process::UPID& from,
       const FrameworkID& frameworkId,
       const ExecutorID& executorId);
+
+  // Shut down an executor. This is a two phase process. First, an
+  // executor receives a shut down message (shut down phase), then
+  // after a configurable timeout the slave actually forces a kill
+  // (kill phase, via the isolator) if the executor has not
+  // exited.
+  //
+  // Made 'virtual' for Slave mocking.
+  virtual void _shutdownExecutor(Framework* framework, Executor* executor);
 
   void shutdownFramework(
       const process::UPID& from,
@@ -208,13 +263,13 @@ public:
   void checkpointResourcesMessage(
       const std::vector<Resource>& checkpointedResources);
 
-  void applyOfferOperation(const ApplyOfferOperationMessage& message);
+  void applyOperation(const ApplyOperationMessage& message);
 
-  // Reconciles pending offer operations with the master. This is necessary to
-  // handle cases in which operations were dropped in transit, or in which an
-  // agent's `UpdateSlaveMessage` was sent at the same time as an operation was
-  // en route from the master to the agent.
-  void reconcileOfferOperations(const ReconcileOfferOperationsMessage& message);
+  // Reconciles pending operations with the master. This is necessary to handle
+  // cases in which operations were dropped in transit, or in which an agent's
+  // `UpdateSlaveMessage` was sent at the same time as an operation was en route
+  // from the master to the agent.
+  void reconcileOperations(const ReconcileOperationsMessage& message);
 
   void subscribe(
       HttpConnection http,
@@ -227,7 +282,7 @@ public:
       const FrameworkID& frameworkId,
       const ExecutorID& executorId);
 
-  // Called when an executor re-registers with a recovering slave.
+  // Called when an executor reregisters with a recovering slave.
   // 'tasks' : Unacknowledged tasks (i.e., tasks that the executor
   //           driver never received an ACK for.)
   // 'updates' : Unacknowledged updates.
@@ -301,15 +356,15 @@ public:
       const TaskID& taskId,
       const std::string& uuid);
 
-  void offerOperationUpdateAcknowledgement(
-      const process::UPID& from,
-      const OfferOperationUpdateAcknowledgementMessage& acknowledgement);
-
   void _statusUpdateAcknowledgement(
       const process::Future<bool>& future,
       const TaskID& taskId,
       const FrameworkID& frameworkId,
-      const id::UUID& uuid);
+      const UUID& uuid);
+
+  void operationStatusAcknowledgement(
+      const process::UPID& from,
+      const AcknowledgeOperationStatusMessage& acknowledgement);
 
   void executorLaunched(
       const FrameworkID& frameworkId,
@@ -366,29 +421,9 @@ public:
   // their address which we do in tests (for things like
   // FUTURE_DISPATCH).
 // protected:
-  virtual void initialize();
-  virtual void finalize();
-  virtual void exited(const process::UPID& pid);
-
-  void __run(
-      const process::Future<std::list<bool>>& future,
-      const FrameworkInfo& frameworkInfo,
-      const ExecutorInfo& executorInfo,
-      const Option<TaskInfo>& task,
-      const Option<TaskGroupInfo>& taskGroup,
-      const std::vector<ResourceVersionUUID>& resourceVersionUuids);
-
-  // This is called when the resource limits of the container have
-  // been updated for the given tasks and task groups. If the update is
-  // successful, we flush the given tasks to the executor by sending
-  // RunTaskMessages or `LAUNCH_GROUP` events.
-  void ___run(
-      const process::Future<Nothing>& future,
-      const FrameworkID& frameworkId,
-      const ExecutorID& executorId,
-      const ContainerID& containerId,
-      const std::list<TaskInfo>& tasks,
-      const std::list<TaskGroupInfo>& taskGroups);
+  void initialize() override;
+  void finalize() override;
+  void exited(const process::UPID& pid) override;
 
   process::Future<Secret> generateSecret(
       const FrameworkID& frameworkId,
@@ -407,6 +442,51 @@ public:
                     const std::string& virtualPath);
 
   Nothing detachFile(const std::string& path);
+
+  // TODO(qianzhang): This is a workaround to make the default executor task's
+  // volume directory visible in MESOS UI. It handles two cases:
+  //   1. The task has disk resources specified. In this case any disk resources
+  //      specified for the task are mounted on the top level container since
+  //      currently all resources of nested containers are merged in the top
+  //      level executor container. To make sure the task can access any volumes
+  //      specified in its disk resources from its sandbox, a workaround was
+  //      introduced to the default executor in MESOS-7225, i.e., adding a
+  //      `SANDBOX_PATH` volume with type `PARENT` to the corresponding nested
+  //      container. This volume gets translated into a bind mount in the nested
+  //      container's mount namespace, which is not visible in Mesos UI because
+  //      it operates in the host namespace. See MESOS-8279 for details.
+  //   2. The executor has disk resources specified and the task's ContainerInfo
+  //      has a `SANDBOX_PATH` volume with type `PARENT` specified to share the
+  //      executor's disk volume. Similar to the first case, this `SANDBOX_PATH`
+  //      volume gets translated into a bind mount which is not visible in Mesos
+  //      UI. See MESOS-8565 for details.
+  //
+  // To make the task's volume directory visible in Mesos UI, here we attach the
+  // executor's volume directory to it so that it can be accessed via the /files
+  // endpoint. So when users browse task's volume directory in Mesos UI, what
+  // they actually browse is the executor's volume directory. Note when calling
+  // `Files::attach()`, the third argument `authorized` is not specified because
+  // it is already specified when we do the attach for the executor's sandbox
+  // and it also applies to the executor's tasks. Note that for the second case
+  // we can not do the attach when the task's ContainerInfo has a `SANDBOX_PATH`
+  // volume with type `PARENT` but the executor has NO disk resources, because
+  // in such case the attach will fail due to the executor's volume directory
+  // not existing which will actually be created by the `volume/sandbox_path`
+  // isolator when launching the nested container. But if the executor has disk
+  // resources, then we will not have this issue since the executor's volume
+  // directory will be created by the `filesystem/linux` isolator when launching
+  // the executor before we do the attach.
+  void attachTaskVolumeDirectory(
+      const ExecutorInfo& executorInfo,
+      const ContainerID& executorContainerId,
+      const Task& task);
+
+  // TODO(qianzhang): Remove the task's volume directory from the /files
+  // endpoint. This is a workaround for MESOS-8279 and MESOS-8565.
+  void detachTaskVolumeDirectories(
+      const ExecutorInfo& executorInfo,
+      const ContainerID& executorContainerId,
+      const std::vector<Task>& tasks);
 
   // Triggers a re-detection of the master when the slave does
   // not receive a ping.
@@ -518,13 +598,6 @@ private:
   void _authenticate();
   void authenticationTimeout(process::Future<bool> future);
 
-  // Shut down an executor. This is a two phase process. First, an
-  // executor receives a shut down message (shut down phase), then
-  // after a configurable timeout the slave actually forces a kill
-  // (kill phase, via the isolator) if the executor has not
-  // exited.
-  void _shutdownExecutor(Framework* framework, Executor* executor);
-
   // Process creation of persistent volumes (for CREATE) and/or deletion
   // of persistent volumes (for DESTROY) as a part of handling
   // checkpointed resources, and commit the checkpointed resources on
@@ -551,6 +624,11 @@ private:
       const FrameworkID& frameworkId,
       const Executor* executor);
 
+  void sendExitedExecutorMessage(
+      const FrameworkID& frameworkId,
+      const ExecutorID& executorId,
+      const Option<int>& status = None());
+
   // Forwards the current total of oversubscribed resources.
   void forwardOversubscribed();
   void _forwardOversubscribed(
@@ -566,22 +644,27 @@ private:
   void handleResourceProviderMessage(
       const process::Future<ResourceProviderMessage>& message);
 
-  void addOfferOperation(OfferOperation* operation);
+  void addOperation(Operation* operation);
 
-  // Transitions the offer operation, and recovers resource if the
-  // offer operation becomes terminal.
-  void updateOfferOperation(
-      OfferOperation* operation,
-      const OfferOperationStatusUpdate& update);
+  // Transitions the operation, and recovers resource if the operation becomes
+  // terminal.
+  void updateOperation(
+      Operation* operation,
+      const UpdateOperationStatusMessage& update);
 
-  void removeOfferOperation(OfferOperation* operation);
+  // Update the `latest_status` of the operation if it is not terminal.
+  void updateOperationLatestStatus(
+      Operation* operation,
+      const OperationStatus& status);
 
-  OfferOperation* getOfferOperation(const id::UUID& uuid) const;
+  void removeOperation(Operation* operation);
+
+  Operation* getOperation(const UUID& uuid) const;
 
   void addResourceProvider(ResourceProvider* resourceProvider);
   ResourceProvider* getResourceProvider(const ResourceProviderID& id) const;
 
-  void apply(OfferOperation* operation);
+  void apply(Operation* operation);
 
   // Publish all resources that are needed to run the current set of
   // tasks and executors on the agent.
@@ -591,7 +674,7 @@ private:
   process::Future<Nothing> publishResources(
       const Option<Resources>& additionalResources = None());
 
-  // Gauge methods.
+  // PullGauge methods.
   double _frameworks_active()
   {
     return static_cast<double>(frameworks.size());
@@ -632,6 +715,10 @@ private:
   Try<Nothing> compatible(
       const SlaveInfo& previous,
       const SlaveInfo& current) const;
+
+  void initializeResourceProviderManager(
+      const Flags& flags,
+      const SlaveID& slaveId);
 
   protobuf::master::Capabilities requiredMasterCapabilities;
 
@@ -724,6 +811,8 @@ private:
 
   mesos::slave::QoSController* qosController;
 
+  std::shared_ptr<DiskProfileAdaptor> diskProfileAdaptor;
+
   mesos::SecretGenerator* secretGenerator;
 
   const Option<Authorizer*> authorizer;
@@ -732,7 +821,7 @@ private:
   // (allocated and oversubscribable) resources.
   Option<Resources> oversubscribedResources;
 
-  ResourceProviderManager resourceProviderManager;
+  process::Owned<ResourceProviderManager> resourceProviderManager;
   process::Owned<LocalResourceProviderDaemon> localResourceProviderDaemon;
 
   // Local resource providers known by the agent.
@@ -749,14 +838,14 @@ private:
   // different resource version UUID than that it maintains, because
   // this means the operation is operating on resources that might
   // have already been invalidated.
-  id::UUID resourceVersion;
+  UUID resourceVersion;
 
   // Keeps track of the following:
   // (1) Pending operations for resources from the agent.
   // (2) Pending operations or terminal operations that have
   //     unacknowledged status updates for resource provider
   //     provided resources.
-  hashmap<id::UUID, OfferOperation*> offerOperations;
+  hashmap<UUID, Operation*> operations;
 };
 
 
@@ -830,6 +919,30 @@ public:
   // Returns true if there are any queued/launched/terminated tasks.
   bool incompleteTasks();
 
+  // Returns true if the agent ever sent any tasks to this executor.
+  // More precisely, this function returns whether either:
+  //
+  //  (1) There are terminated/completed tasks with a
+  //      SOURCE_EXECUTOR status.
+  //
+  //  (2) `launchedTasks` is not empty.
+  //
+  // If this function returns false and there are no queued tasks,
+  // we probably (see TODO below) have killed or dropped all of its
+  // initial tasks, in which case the agent will shut down the executor.
+  //
+  // TODO(mzhu): Note however, that since we look through the cache
+  // of completed tasks, we can have false positives when a task
+  // that was delivered to the executor has been evicted from the
+  // completed task cache by tasks that have been killed by the
+  // agent before delivery. This should be fixed.
+  //
+  // NOTE: This function checks whether any tasks has ever been sent,
+  // this does not necessarily mean the executor has ever received
+  // any tasks. Specifically, tasks in `launchedTasks` may be dropped
+  // before received by the executor if the agent restarts.
+  bool everSentTask() const;
+
   // Sends a message to the connected executor.
   template <typename Message>
   void send(const Message& message)
@@ -852,8 +965,10 @@ public:
     }
   }
 
-  // Returns true if this is a command executor.
-  bool isCommandExecutor() const;
+  // Returns true if this executor is generated by Mesos for a command
+  // task (either command executor for MesosContainerizer or docker
+  // executor for DockerContainerizer).
+  bool isGeneratedForCommandTask() const;
 
   // Closes the HTTP connection.
   void closeHttpConnection();
@@ -919,7 +1034,7 @@ public:
   // Not yet launched task groups. This is needed for correctly sending
   // TASK_KILLED status updates for all tasks in the group if any of the
   // tasks were killed before the executor could register with the agent.
-  std::list<TaskGroupInfo> queuedTaskGroups;
+  std::vector<TaskGroupInfo> queuedTaskGroups;
 
   // Running.
   LinkedHashMap<TaskID, Task*> launchedTasks;
@@ -944,7 +1059,7 @@ private:
   Executor(const Executor&) = delete;
   Executor& operator=(const Executor&) = delete;
 
-  bool commandExecutor;
+  bool isGeneratedForCommandTask_;
 };
 
 
@@ -973,7 +1088,7 @@ public:
 
   const FrameworkID id() const { return info.id(); }
 
-  Executor* addExecutor(const ExecutorInfo& executorInfo);
+  Try<Executor*> addExecutor(const ExecutorInfo& executorInfo);
   Executor* getExecutor(const ExecutorID& executorId) const;
   Executor* getExecutor(const TaskID& taskId) const;
 
@@ -1038,10 +1153,23 @@ public:
   // Executors with pending tasks.
   hashmap<ExecutorID, hashmap<TaskID, TaskInfo>> pendingTasks;
 
+  // Sequences in this map are used to enforce the order of tasks launched on
+  // each executor.
+  //
+  // Note on the lifecycle of the sequence: if the corresponding executor struct
+  // has not been created, we tie the lifecycle of the sequence to the first
+  // task in the sequence (which must have the `launch_executor` flag set to
+  // true modulo MESOS-3870). If the task fails to launch before creating the
+  // executor struct, we will delete the sequence. Once the executor struct is
+  // created, we tie the lifecycle of the sequence to the executor struct.
+  //
+  // TODO(mzhu): Create the executor struct early and put the sequence in it.
+  hashmap<ExecutorID, process::Sequence> taskLaunchSequences;
+
   // Pending task groups. This is needed for correctly sending
   // TASK_KILLED status updates for all tasks in the group if
   // any of the tasks are killed while pending.
-  std::list<TaskGroupInfo> pendingTaskGroups;
+  std::vector<TaskGroupInfo> pendingTaskGroups;
 
   // Current running executors.
   hashmap<ExecutorID, Executor*> executors;
@@ -1059,13 +1187,13 @@ struct ResourceProvider
   ResourceProvider(
       const ResourceProviderInfo& _info,
       const Resources& _totalResources,
-      const id::UUID& _resourceVersion)
+      const UUID& _resourceVersion)
     : info(_info),
       totalResources(_totalResources),
       resourceVersion(_resourceVersion) {}
 
-  void addOfferOperation(OfferOperation* operation);
-  void removeOfferOperation(OfferOperation* operation);
+  void addOperation(Operation* operation);
+  void removeOperation(Operation* operation);
 
   ResourceProviderInfo info;
   Resources totalResources;
@@ -1081,11 +1209,11 @@ struct ResourceProvider
   // different resource version UUID than that it maintains, because
   // this means the operation is operating on resources that might
   // have already been invalidated.
-  id::UUID resourceVersion;
+  UUID resourceVersion;
 
   // Pending operations or terminal operations that have
   // unacknowledged status updates.
-  hashmap<id::UUID, OfferOperation*> offerOperations;
+  hashmap<UUID, Operation*> operations;
 };
 
 

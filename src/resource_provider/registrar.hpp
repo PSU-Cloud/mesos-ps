@@ -19,6 +19,8 @@
 
 #include <memory>
 
+#include <mesos/state/storage.hpp>
+
 #include <process/future.hpp>
 #include <process/owned.hpp>
 
@@ -46,7 +48,7 @@ public:
   class Operation : public process::Promise<bool>
   {
   public:
-    virtual ~Operation() = default;
+    ~Operation() override = default;
 
     // Attempts to invoke the operation on the registry object.
     //
@@ -64,18 +66,21 @@ public:
     bool success = false;
   };
 
-  // Create a registry on top of a master's persistent state.
+  // Create a registry on top of generic storage.
   static Try<process::Owned<Registrar>> create(
-      mesos::internal::master::Registrar* registrar);
+      process::Owned<state::Storage> storage);
 
-  // Create a registry on top of an agent's persistent state.
+  // Create a registry on top of a master's persistent state.
+  //
+  // The created registrar does not take ownership of the passed registrar
+  // which needs to be valid as long as the created registrar is alive.
   static Try<process::Owned<Registrar>> create(
-      const mesos::internal::slave::Flags& slaveFlags,
-      const SlaveID& slaveId);
+      mesos::internal::master::Registrar* registrar,
+      registry::Registry registry);
 
   virtual ~Registrar() = default;
 
-  virtual process::Future<Nothing> recover() = 0;
+  virtual process::Future<registry::Registry> recover() = 0;
   virtual process::Future<bool> apply(process::Owned<Operation> operation) = 0;
 };
 
@@ -83,12 +88,13 @@ public:
 class AdmitResourceProvider : public Registrar::Operation
 {
 public:
-  explicit AdmitResourceProvider(const ResourceProviderID& id);
+  explicit AdmitResourceProvider(
+      const registry::ResourceProvider& resourceProvider);
 
 private:
   Try<bool> perform(registry::Registry* registry) override;
 
-  ResourceProviderID id;
+  registry::ResourceProvider resourceProvider;
 };
 
 
@@ -104,24 +110,22 @@ private:
 };
 
 
-class AgentRegistrarProcess;
+class GenericRegistrarProcess;
 
 
-class AgentRegistrar : public Registrar
+class GenericRegistrar : public Registrar
 {
 public:
-  AgentRegistrar(
-      const mesos::internal::slave::Flags& slaveFlags,
-      const SlaveID& slaveId);
+  GenericRegistrar(process::Owned<state::Storage> storage);
 
-  ~AgentRegistrar() override;
+  ~GenericRegistrar() override;
 
-  process::Future<Nothing> recover() override;
+  process::Future<registry::Registry> recover() override;
 
   process::Future<bool> apply(process::Owned<Operation> operation) override;
 
 private:
-  std::unique_ptr<AgentRegistrarProcess> process;
+  std::unique_ptr<GenericRegistrarProcess> process;
 };
 
 
@@ -131,13 +135,17 @@ class MasterRegistrarProcess;
 class MasterRegistrar : public Registrar
 {
 public:
-  explicit MasterRegistrar(mesos::internal::master::Registrar* Registrar);
+  // The created registrar does not take ownership of the passed registrar
+  // which needs to be valid as long as the created registrar is alive.
+  explicit MasterRegistrar(
+      mesos::internal::master::Registrar* registrar,
+      registry::Registry registry);
 
   ~MasterRegistrar() override;
 
   // This registrar performs no recovery; instead to recover
   // the underlying master registrar needs to be recovered.
-  process::Future<Nothing> recover() override;
+  process::Future<registry::Registry> recover() override;
 
   process::Future<bool> apply(process::Owned<Operation> operation) override;
 

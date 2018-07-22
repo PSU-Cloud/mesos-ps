@@ -129,15 +129,105 @@ TEST_F(FetcherTest, FileURI)
 }
 
 
+TEST_F(FetcherTest, LogSuccessToStderr)
+{
+  // Valid test file with data.
+  string fromDir = path::join(os::getcwd(), "from");
+  ASSERT_SOME(os::mkdir(fromDir));
+  string testFile = path::join(fromDir, "test");
+  EXPECT_SOME(os::write(testFile, "data"));
+
+  string localFile = path::join(os::getcwd(), "test");
+  EXPECT_FALSE(os::exists(localFile));
+
+  // Fetcher stderr file.
+  string stderrFile = path::join(os::getcwd(), "stderr");
+  EXPECT_FALSE(os::exists(stderrFile));
+
+  slave::Flags flags;
+  flags.launcher_dir = getLauncherDir();
+
+  ContainerID containerId;
+  containerId.set_value(id::UUID::random().toString());
+
+  CommandInfo commandInfo;
+  CommandInfo::URI* uri = commandInfo.add_uris();
+  uri->set_value(uri::from_path(testFile));
+
+  Fetcher fetcher(flags);
+
+  Future<Nothing> fetch =
+    fetcher.fetch(containerId, commandInfo, os::getcwd(), None());
+  AWAIT_READY(fetch);
+
+  EXPECT_TRUE(os::exists(localFile));
+
+  // Fetcher created log file.
+  EXPECT_TRUE(os::exists(stderrFile));
+
+  // Fetcher logged success to stderr.
+  const Try<string> stderrContent = os::read(stderrFile);
+  EXPECT_SOME(stderrContent);
+  EXPECT_TRUE(strings::contains(
+      stderrContent.get(), "Fetching directly into the sandbox directory"));
+  EXPECT_TRUE(strings::contains(
+      stderrContent.get(), "Successfully fetched all URIs into"));
+}
+
+
+TEST_F(FetcherTest, LogFailureToStderr)
+{
+  // Purposefully invalid file to fetch.
+  string testFile = path::join(os::getcwd(), "test");
+  EXPECT_FALSE(os::exists(testFile));
+
+  string localFile = path::join(os::getcwd(), "test");
+  EXPECT_FALSE(os::exists(localFile));
+
+  // Fetcher stderr file.
+  string stderrFile = path::join(os::getcwd(), "stderr");
+  EXPECT_FALSE(os::exists(stderrFile));
+
+  slave::Flags flags;
+  flags.launcher_dir = getLauncherDir();
+
+  ContainerID containerId;
+  containerId.set_value(id::UUID::random().toString());
+
+  CommandInfo commandInfo;
+  CommandInfo::URI* uri = commandInfo.add_uris();
+  uri->set_value(uri::from_path(testFile));
+
+  Fetcher fetcher(flags);
+
+  Future<Nothing> fetch =
+    fetcher.fetch(containerId, commandInfo, os::getcwd(), None());
+  AWAIT_FAILED(fetch);
+
+  // Failed to fetch.
+  EXPECT_FALSE(os::exists(localFile));
+
+  // Fetcher created log file.
+  EXPECT_TRUE(os::exists(stderrFile));
+
+  // Fetcher logged failure to stderr.
+  Try<string> stderrContent = os::read(stderrFile);
+  EXPECT_SOME(stderrContent);
+  EXPECT_TRUE(strings::contains(stderrContent.get(), "Failed to fetch"));
+}
+
+
 // TODO(coffler): Test uses os::getuid(), which does not exist on Windows.
 //     Disable test until privilege model is worked out on Windows.
 #ifndef __WINDOWS__
 // Tests that non-root users are unable to fetch root-protected files on the
 // local filesystem.
-TEST_F(FetcherTest, ROOT_RootProtectedFileURI)
+TEST_F(FetcherTest, ROOT_UNPRIVILEGED_USER_RootProtectedFileURI)
 {
-  const string user = "nobody";
-  ASSERT_SOME(os::getuid(user));
+  Option<string> user = os::getenv("SUDO_USER");
+  ASSERT_SOME(user);
+
+  ASSERT_SOME(os::getuid(user.get()));
 
   string fromDir = path::join(os::getcwd(), "from");
   ASSERT_SOME(os::mkdir(fromDir));
@@ -152,7 +242,7 @@ TEST_F(FetcherTest, ROOT_RootProtectedFileURI)
   containerId.set_value(id::UUID::random().toString());
 
   CommandInfo commandInfo;
-  commandInfo.set_user(user);
+  commandInfo.set_user(user.get());
 
   CommandInfo::URI* uri = commandInfo.add_uris();
   uri->set_value(uri::from_path(testFile));
@@ -435,7 +525,7 @@ public:
   MOCK_METHOD1(test, Future<http::Response>(const http::Request&));
 
 protected:
-  virtual void initialize()
+  void initialize() override
   {
     route("/test", None(), &HttpProcess::test);
   }
@@ -668,10 +758,8 @@ TEST_F_TEMP_DISABLED_ON_WINDOWS(FetcherTest, NoExtractExecutable)
 }
 
 
-// NOTE: This is disabled on Windows because `os::shell()` is deleted.
-// Also, permissions handling needs to be worked out, see MESOS-3176.
-#ifndef __WINDOWS__
-TEST_F(FetcherTest, ExtractNotExecutable)
+// NOTE: Permissions handling needs to be worked out, see MESOS-3176.
+TEST_F_TEMP_DISABLED_ON_WINDOWS(FetcherTest, ExtractNotExecutable)
 {
   // First construct a temporary file that can be fetched and archived with tar
   // gzip.
@@ -723,17 +811,14 @@ TEST_F(FetcherTest, ExtractNotExecutable)
 
   verifyMetrics(1, 0);
 }
-#endif // __WINDOWS__
 
 
 // Tests extracting tar file with extension .tar.
-// NOTE: This is disabled on Windows because `os::shell()` is deleted.
 //
 // Won't be supported on Windows for now; long term thoughts are to perhaps
 // use a code library to provide 'tar' functionality programmatically,
 // see MESOS-8064.
-#ifndef __WINDOWS__
-TEST_F(FetcherTest, ExtractTar)
+TEST_F_TEMP_DISABLED_ON_WINDOWS(FetcherTest, ExtractTar)
 {
   // First construct a temporary file that can be fetched and archived with
   // tar.
@@ -776,16 +861,12 @@ TEST_F(FetcherTest, ExtractTar)
 
   verifyMetrics(1, 0);
 }
-#endif // __WINDOWS__
 
 
-// NOTE: This is disabled on Windows because `os::shell()` is deleted.
-//
 // Won't be supported on Windows for now; long term thoughts are to perhaps
 // use a code library to provide 'gzip' functionality programmatically,
 // see MESOS-8064.
-#ifndef __WINDOWS__
-TEST_F(FetcherTest, ExtractGzipFile)
+TEST_F_TEMP_DISABLED_ON_WINDOWS(FetcherTest, ExtractGzipFile)
 {
   // First construct a temporary file that can be fetched and archived with
   // gzip.
@@ -823,10 +904,9 @@ TEST_F(FetcherTest, ExtractGzipFile)
 
   verifyMetrics(1, 0);
 }
-#endif // __WINDOWS__
 
 
-TEST_F(FetcherTest, Unzip_ExtractFile)
+TEST_F(FetcherTest, UNZIP_ExtractFile)
 {
   // Construct a tmp file that can be fetched and archived with zip.
   string fromDir = path::join(os::getcwd(), "from");
@@ -878,7 +958,7 @@ TEST_F(FetcherTest, Unzip_ExtractFile)
 }
 
 
-TEST_F(FetcherTest, Unzip_ExtractInvalidFile)
+TEST_F(FetcherTest, UNZIP_ExtractInvalidFile)
 {
   // Construct a tmp file that can be filled with broken zip.
   string fromDir = path::join(os::getcwd(), "from");
@@ -920,37 +1000,11 @@ TEST_F(FetcherTest, Unzip_ExtractInvalidFile)
       os::getcwd(),
       None());
 
-#ifdef __WINDOWS__
-  // On Windows, PowerShell doesn't consider a CRC error to be an error,
-  // so it succeeds, whereas the zip utility errors.
-  //
-  // TODO(coffler): When we move to programmatically dealing with various
-  // data files (tar, gzip, zip, etc), we should be able to resolve this.
-  // See MESOS-7740 for further details.
-  AWAIT_READY(fetch);
-#else
   AWAIT_FAILED(fetch);
-#endif // __WINDOWS__
-
-  string extractedFile = path::join(os::getcwd(), "world");
-  ASSERT_TRUE(os::exists(extractedFile));
-
-  ASSERT_SOME_EQ("hello hello\n", os::read(extractedFile));
-
-#ifdef __WINDOWS__
-  // TODO(coffler): Eliminate with programmatic decoding of container files.
-  // See MESOS-7740 for further details.
-  //
-  // On Windows, PowerShell doesn't consider a CRC error to be an error.
-  // Adjust metrics appropriately to not expect an error back.
-  verifyMetrics(1, 0);
-#else
-  verifyMetrics(0, 1);
-#endif // __WINDOWS__
 }
 
 
-TEST_F(FetcherTest, Unzip_ExtractFileWithDuplicatedEntries)
+TEST_F(FetcherTest, UNZIP_ExtractFileWithDuplicatedEntries)
 {
   // Construct a tmp file that can be filled with zip containing
   // duplicates.
@@ -1045,8 +1099,6 @@ TEST_F(FetcherTest, UseCustomOutputFile)
 }
 
 
-// NOTE: This is disabled on Windows because `os::shell()` is deleted.
-#ifndef __WINDOWS__
 TEST_F_TEMP_DISABLED_ON_WINDOWS(FetcherTest, CustomGzipOutputFile)
 {
   // First construct a temporary file that can be fetched.
@@ -1086,7 +1138,6 @@ TEST_F_TEMP_DISABLED_ON_WINDOWS(FetcherTest, CustomGzipOutputFile)
 
   verifyMetrics(1, 0);
 }
-#endif // __WINDOWS__
 
 
 // TODO(hausdorff): `os::chmod` does not exist on Windows.
@@ -1187,10 +1238,7 @@ TEST_F(FetcherTest, HdfsURI)
 // agent towards the fetcher. By supplying an invalid SSL setup, we
 // force the fetcher to fail if the parent process does not filter
 // them out.
-//
-// NOTE: This is disabled on Windows because `os::shell()` is deleted.
-#ifndef __WINDOWS__
-TEST_F(FetcherTest, SSLEnvironmentSpillover)
+TEST_F_TEMP_DISABLED_ON_WINDOWS(FetcherTest, SSLEnvironmentSpillover)
 {
   // Patch some critical libprocess environment variables into the
   // parent process of the mesos-fetcher. We expect this test to fail
@@ -1244,7 +1292,6 @@ TEST_F(FetcherTest, SSLEnvironmentSpillover)
     os::setenv("LIBPROCESS_SSL_KEY_FILE", key);
   }
 }
-#endif // __WINDOWS__
 
 } // namespace tests {
 } // namespace internal {

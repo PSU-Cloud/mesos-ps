@@ -149,6 +149,8 @@ int main(int argc, char** argv)
   Future<Nothing> run = server.get()->run();
   run.await();
 
+  server->reset();
+
   if (!run.isReady()) {
     EXIT(EXIT_FAILURE) << "The io switchboard server failed: "
                        << (run.isFailed() ? run.failure() : "discarded");

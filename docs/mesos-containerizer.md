@@ -30,7 +30,7 @@ Mesos supports the following built-in isolators.
 - [cgroups/blkio](isolators/cgroups-blkio.md)
 - [cgroups/cpu](isolators/cgroups-cpu.md)
 - cgroups/cpuset
-- cgroups/devices
+- [cgroups/devices](isolators/cgroups-devices.md)
 - cgroups/hugetlb
 - cgroups/mem
 - [cgroups/net_cls](isolators/cgroups-net-cls.md)
@@ -42,12 +42,13 @@ Mesos supports the following built-in isolators.
 - [docker/runtime](isolators/docker-runtime.md)
 - [docker/volume](isolators/docker-volume.md)
 - [environment\_secret](secrets.md#environment-based-secrets)
-- filesystem/linux
-- filesystem/posix
+- [filesystem/linux](isolators/filesystems.md)
+- [filesystem/posix](isolators/filesystems.md)
 - [filesystem/shared](isolators/filesystem-shared.md)
 - filesystem/windows
 - [gpu/nvidia](gpu-support.md)
 - [linux/capabilities](isolators/linux-capabilities.md)
+- [linux/devices](isolators/linux-devices.md)
 - [namespaces/ipc](isolators/namespaces-ipc.md)
 - [namespaces/pid](isolators/namespaces-pid.md)
 - [network/cni](cni.md)

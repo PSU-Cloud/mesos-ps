@@ -68,7 +68,7 @@ public:
 
     // Verify that the dd command and its flags used in a bit are valid
     // on this system.
-    ASSERT_EQ(0, os::system("dd count=1 bs=1M if=/dev/zero of=/dev/null"))
+    ASSERT_SOME_EQ(0, os::system("dd count=1 bs=1M if=/dev/zero of=/dev/null"))
       << "Cannot find a compatible 'dd' command";
   }
 };
@@ -283,7 +283,7 @@ TEST_F(MemoryPressureMesosTest, CGROUPS_ROOT_SlaveRecovery)
   slave.get()->terminate();
 
   // Set up so we can wait until the new slave updates the container's
-  // resources (this occurs after the executor has re-registered).
+  // resources (this occurs after the executor has reregistered).
   Future<Nothing> update =
     FUTURE_DISPATCH(_, &MesosContainerizerProcess::update);
 

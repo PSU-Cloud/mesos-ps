@@ -7,6 +7,7 @@ layout: documentation
 * [Mesos Architecture](architecture.md) providing an overview of Mesos concepts.
 * [Video and Slides of Mesos Presentations](presentations.md)
 * [Academic Papers and Project History](https://www.usenix.org/conference/nsdi11/mesos-platform-fine-grained-resource-sharing-data-center)
+* [Mesos Release and Support Policy](versioning.md)
 
 ## Build / Installation
 * [Building](building.md) for basic instructions on compiling and installing Mesos.
@@ -23,9 +24,12 @@ layout: documentation
 * [Maintenance](maintenance.md) for performing maintenance on a Mesos cluster.
 * [Upgrades](upgrades.md) for upgrading a Mesos cluster.
 * [Logging](logging.md)
-* [Monitoring](monitoring.md)
+* [Monitoring / Metrics](monitoring.md)
 * [Operational Guide](operational-guide.md)
 * [Fetcher Cache Configuration](fetcher.md)
+* [Fault Domains](fault-domains.md)
+* [Performance Profiling](performance-profiling.md) for debugging performance issues in Mesos.
+* [Memory Profiling](memory-profiling.md) for debugging potential memory leaks in Mesos.
 
 ## Resource Management
 * [Attributes and Resources](attributes-resources.md) for how to describe the agents that comprise a cluster.
@@ -63,11 +67,13 @@ layout: documentation
 ## Storage
 * [Multiple Disks](multiple-disk.md) for how to allow tasks to use multiple isolated disk resources.
 * [Persistent Volume](persistent-volume.md) for how to allow tasks to access persistent storage resources.
+* [Container Storage Interface (CSI) Support](csi.md)
 
 ## APIs
 * [HTTP Endpoints](endpoints/) for available HTTP endpoints.
 * [API Client Libraries](api-client-libraries.md) lists client libraries for the HTTP APIs.
-* [API Versioning](versioning.md) describes HTTP API and release versioning.
+* [API Versioning](versioning.md#api-versioning) describes HTTP API and release versioning.
+* [RecordIO](recordio.md) describes the RecordIO format used by the streaming endpoints of the HTTP API.
 * Writing Frameworks
   * [Framework Development Guide](app-framework-development-guide.md) describes how to build applications on top of Mesos.
   * [Guide for Designing Highly Available Mesos Frameworks](high-availability-framework-guide.md)
@@ -99,6 +105,7 @@ layout: documentation
 * [Engineering Principles and Practices](engineering-principles-and-practices.md) to serve as a shared set of project-level values for the community.
 * Style Guides:
   * [Documentation Style Guide](documentation-guide.md)
+  * [Developer Guide](developer-guide.md) for best practices and patterns used in Mesos.
   * [C++ Style Guide](c++-style-guide.md)
     * [Clang-Format](clang-format.md) for automatic formatting.
   * [Doxygen Style Guide](doxygen-style-guide.md)

@@ -29,7 +29,7 @@
 #include <process/timer.hpp>
 
 #include <process/metrics/counter.hpp>
-#include <process/metrics/gauge.hpp>
+#include <process/metrics/pull_gauge.hpp>
 
 #include <stout/duration.hpp>
 #include <stout/hashmap.hpp>
@@ -45,11 +45,12 @@ class GarbageCollectorProcess :
     public process::Process<GarbageCollectorProcess>
 {
 public:
-  GarbageCollectorProcess()
+  explicit GarbageCollectorProcess(const std::string& _workDir)
     : ProcessBase(process::ID::generate("agent-garbage-collector")),
-      metrics(this) {}
+      metrics(this),
+      workDir(_workDir) {}
 
-  virtual ~GarbageCollectorProcess();
+  ~GarbageCollectorProcess() override;
 
   process::Future<Nothing> schedule(
       const Duration& d,
@@ -94,8 +95,10 @@ private:
 
     process::metrics::Counter path_removals_succeeded;
     process::metrics::Counter path_removals_failed;
-    process::metrics::Gauge path_removals_pending;
+    process::metrics::PullGauge path_removals_pending;
   } metrics;
+
+  const std::string workDir;
 
   // Store all the timeouts and corresponding paths to delete.
   // NOTE: We are using Multimap here instead of Multihashmap, because

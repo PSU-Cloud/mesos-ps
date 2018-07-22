@@ -35,22 +35,22 @@ namespace slave {
 /**
  * Represent cgroups cpuset subsystem.
  */
-class CpusetSubsystem : public Subsystem
+class CpusetSubsystemProcess : public SubsystemProcess
 {
 public:
-  static Try<process::Owned<Subsystem>> create(
+  static Try<process::Owned<SubsystemProcess>> create(
       const Flags& flags,
       const std::string& hierarchy);
 
-  virtual ~CpusetSubsystem() {}
+  ~CpusetSubsystemProcess() override = default;
 
-  virtual std::string name() const
+  std::string name() const override
   {
     return CGROUP_SUBSYSTEM_CPUSET_NAME;
   };
 
 private:
-  CpusetSubsystem(const Flags& flags, const std::string& hierarchy);
+  CpusetSubsystemProcess(const Flags& flags, const std::string& hierarchy);
 };
 
 } // namespace slave {

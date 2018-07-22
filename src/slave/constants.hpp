@@ -35,11 +35,11 @@ namespace slave {
 constexpr Duration EXECUTOR_REGISTRATION_TIMEOUT = Minutes(1);
 constexpr Duration EXECUTOR_REREGISTRATION_TIMEOUT = Seconds(2);
 
-// The maximum timeout within which an executor can re-register.
+// The maximum timeout within which an executor can reregister.
 // Note that this value has to be << 'MIN_AGENT_REREGISTER_TIMEOUT'
 // declared in 'master/constants.hpp'; since agent recovery will only
 // complete after this timeout has elapsed, this ensures that the
-// agent can re-register with the master before it is marked
+// agent can reregister with the master before it is marked
 // unreachable and its tasks are transitioned to TASK_UNREACHABLE or
 // TASK_LOST.
 constexpr Duration MAX_EXECUTOR_REREGISTRATION_TIMEOUT = Seconds(15);
@@ -85,7 +85,19 @@ constexpr size_t MAX_COMPLETED_FRAMEWORKS = 50;
 // to store in memory.
 constexpr size_t DEFAULT_MAX_COMPLETED_EXECUTORS_PER_FRAMEWORK = 150;
 
+// Maximum number of a container id length, according to the
+// max entry length for directory names on AUFS.
+constexpr size_t MAX_CONTAINER_ID_LENGTH = 242;
+
 // Maximum number of completed tasks per executor to store in memory.
+//
+// NOTE: This should be greater than zero because the agent looks
+// for completed tasks to determine (with false positives) whether
+// an executor ever received tasks. See MESOS-8411.
+//
+// TODO(mzhu): Remove this note once we can determine whether an
+// executor ever received tasks without looking through the
+// completed tasks.
 constexpr size_t MAX_COMPLETED_TASKS_PER_EXECUTOR = 200;
 
 // Default cpus offered by the slave.
@@ -127,6 +139,9 @@ constexpr Duration DOCKER_REMOVE_DELAY = Hours(6);
 // container.
 constexpr Duration DOCKER_INSPECT_DELAY = Seconds(1);
 
+// Default duration to wait for `inspect` command completion.
+constexpr Duration DOCKER_INSPECT_TIMEOUT = Seconds(5);
+
 // Default maximum number of docker inspect calls docker ps will invoke
 // in parallel to prevent hitting system's open file descriptor limit.
 constexpr size_t DOCKER_PS_MAX_INSPECT_CALLS = 100;
@@ -156,8 +171,15 @@ constexpr char READWRITE_HTTP_AUTHENTICATION_REALM[] = "mesos-agent-readwrite";
 // Name of the agent HTTP authentication realm for HTTP executors.
 constexpr char EXECUTOR_HTTP_AUTHENTICATION_REALM[] = "mesos-agent-executor";
 
+// Name of the agent HTTP authentication realm for HTTP resource providers.
+constexpr char RESOURCE_PROVIDER_HTTP_AUTHENTICATION_REALM[] =
+  "mesos-agent-resource-provider";
+
 // Default maximum storage space to be used by the fetcher cache.
 constexpr Bytes DEFAULT_FETCHER_CACHE_SIZE = Gigabytes(2);
+
+// Default timeout for the fetcher to wait when a net download stalls.
+constexpr Duration DEFAULT_FETCHER_STALL_TIMEOUT = Minutes(1);
 
 // If no pings received within this timeout, then the slave will
 // trigger a re-detection of the master to cause a re-registration.

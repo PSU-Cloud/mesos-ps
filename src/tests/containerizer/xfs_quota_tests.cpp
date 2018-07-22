@@ -53,6 +53,7 @@ using namespace mesos::internal::xfs;
 
 using namespace process;
 
+using std::list;
 using std::string;
 using std::vector;
 
@@ -77,7 +78,7 @@ static QuotaInfo makeQuotaInfo(
     Bytes limit,
     Bytes used)
 {
-  return {limit, used};
+  return {limit, limit, used};
 }
 
 
@@ -149,6 +150,12 @@ public:
       fs::unmount(mountPoint.get(), MNT_FORCE | MNT_DETACH);
     }
 
+    // Make sure we resume the clock so that we can wait on the
+    // `losetup` process.
+    if (Clock::paused()) {
+      Clock::resume();
+    }
+
     // Make a best effort to tear everything down. We don't make any assertions
     // here because even if something goes wrong we still want to clean up as
     // much as we can.
@@ -158,7 +165,7 @@ public:
           Subprocess::PATH(os::DEV_NULL));
 
       if (cmdProcess.isSome()) {
-        cmdProcess->status().await(Seconds(15));
+        cmdProcess->status().await(process::TEST_AWAIT_TIMEOUT);
       }
     }
 
@@ -217,6 +224,19 @@ public:
     return string("/dev/loop") + stringify(devno);
   }
 
+  Try<list<string>> getSandboxes()
+  {
+    return os::glob(path::join(
+      slave::paths::getSandboxRootDir(mountPoint.get()),
+      "*",
+      "frameworks",
+      "*",
+      "executors",
+      "*",
+      "runs",
+      "*"));
+  }
+
   Option<string> mountOptions;
   Option<string> mkfsOptions;
   Option<string> loopDevice; // The loop device we attached.
@@ -267,7 +287,7 @@ TEST_F(ROOT_XFS_QuotaTest, QuotaGetSet)
   Result<QuotaInfo> info = getProjectQuota(root, projectId);
   ASSERT_SOME(info);
 
-  EXPECT_EQ(limit, info->limit);
+  EXPECT_EQ(limit, info->hardLimit);
   EXPECT_EQ(Bytes(0), info->used);
 
   EXPECT_SOME(clearProjectQuota(root, projectId));
@@ -518,6 +538,101 @@ TEST_F(ROOT_XFS_QuotaTest, DiskUsageExceedsQuotaNoEnforce)
   AWAIT_READY(finishedStatus);
   EXPECT_EQ(task.task_id(), finishedStatus->task_id());
   EXPECT_EQ(TASK_FINISHED, finishedStatus->state());
+
+  driver.stop();
+  driver.join();
+}
+
+
+// Verify that when the `xfs_kill_containers` flag is enabled, tasks that
+// exceed their disk quota are killed with the correct container limitation.
+TEST_F(ROOT_XFS_QuotaTest, DiskUsageExceedsQuotaWithKill)
+{
+  Try<Owned<cluster::Master>> master = StartMaster();
+  ASSERT_SOME(master);
+
+  Owned<MasterDetector> detector = master.get()->createDetector();
+
+  slave::Flags flags = CreateSlaveFlags();
+
+  // Enable killing containers on disk quota violations.
+  flags.xfs_kill_containers = true;
+
+  // Tune the watch interval down so that the isolator will detect
+  // the quota violation as soon as possible.
+  flags.container_disk_watch_interval = Milliseconds(1);
+
+  Try<Owned<cluster::Slave>> slave =
+    StartSlave(detector.get(), flags);
+  ASSERT_SOME(slave);
+
+  MockScheduler sched;
+  MesosSchedulerDriver driver(
+      &sched, DEFAULT_FRAMEWORK_INFO, master.get()->pid, DEFAULT_CREDENTIAL);
+
+  EXPECT_CALL(sched, registered(&driver, _, _));
+
+  Future<vector<Offer>> offers;
+  EXPECT_CALL(sched, resourceOffers(&driver, _))
+    .WillOnce(FutureArg<1>(&offers))
+    .WillRepeatedly(Return()); // Ignore subsequent offers.
+
+  driver.start();
+
+  AWAIT_READY(offers);
+  ASSERT_FALSE(offers->empty());
+
+  const Offer& offer = offers.get()[0];
+
+  // Create a task which requests 1MB disk, but actually uses 2MB. This
+  // waits a long time to ensure that the task lives long enough for the
+  // isolator to impose a container limitation.
+  TaskInfo task = createTask(
+      offer.slave_id(),
+      Resources::parse("cpus:1;mem:128;disk:1").get(),
+      "dd if=/dev/zero of=file bs=1048576 count=2 && sleep 100000");
+
+  Future<TaskStatus> startingStatus;
+  Future<TaskStatus> runningStatus;
+  Future<TaskStatus> killedStatus;
+  EXPECT_CALL(sched, statusUpdate(&driver, _))
+    .WillOnce(FutureArg<1>(&startingStatus))
+    .WillOnce(FutureArg<1>(&runningStatus))
+    .WillOnce(FutureArg<1>(&killedStatus));
+
+  driver.launchTasks(offer.id(), {task});
+
+  AWAIT_READY(startingStatus);
+  EXPECT_EQ(task.task_id(), startingStatus->task_id());
+  EXPECT_EQ(TASK_STARTING, startingStatus->state());
+
+  AWAIT_READY(runningStatus);
+  EXPECT_EQ(task.task_id(), runningStatus->task_id());
+  EXPECT_EQ(TASK_RUNNING, runningStatus->state());
+
+  AWAIT_READY(killedStatus);
+  EXPECT_EQ(task.task_id(), killedStatus->task_id());
+  EXPECT_EQ(TASK_FAILED, killedStatus->state());
+
+  EXPECT_EQ(TaskStatus::SOURCE_SLAVE, killedStatus->source());
+  EXPECT_EQ(
+      TaskStatus::REASON_CONTAINER_LIMITATION_DISK, killedStatus->reason());
+
+  ASSERT_TRUE(killedStatus->has_limitation())
+    << JSON::protobuf(killedStatus.get());
+
+  Resources limit = Resources(killedStatus->limitation().resources());
+
+  // Expect that we were limited on a single disk resource that represents
+  // the amount of disk that the task consumed. The task used up to 2MB
+  // and the the executor logs might use more, but as long we report that
+  // the task used more than the 1MB in its resources, we are happy.
+  EXPECT_EQ(1u, limit.size());
+  ASSERT_SOME(limit.disk());
+
+  // Currently the disk() function performs a static cast to uint64 so
+  // fractional Megabytes are truncated.
+  EXPECT_GE(limit.disk().get(), Megabytes(1));
 
   driver.stop();
   driver.join();
@@ -842,16 +957,7 @@ TEST_F(ROOT_XFS_QuotaTest, NoCheckpointRecovery)
   // We should have no executors left because we didn't checkpoint.
   ASSERT_TRUE(usage2->executors().empty());
 
-  Try<std::list<string>> sandboxes = os::glob(path::join(
-      slave::paths::getSandboxRootDir(mountPoint.get()),
-      "*",
-      "frameworks",
-      "*",
-      "executors",
-      "*",
-      "runs",
-      "*"));
-
+  Try<std::list<string>> sandboxes = getSandboxes();
   ASSERT_SOME(sandboxes);
 
   // One sandbox and one symlink.
@@ -944,7 +1050,7 @@ TEST_F(ROOT_XFS_QuotaTest, CheckpointRecovery)
   slave = StartSlave(detector.get(), flags);
   ASSERT_SOME(slave);
 
-  // Wait for the slave to re-register.
+  // Wait for the slave to reregister.
   AWAIT_READY(slaveReregisteredMessage);
 
   Future<ResourceUsage> usage2 =
@@ -954,16 +1060,7 @@ TEST_F(ROOT_XFS_QuotaTest, CheckpointRecovery)
   // We should have still have 1 executor using resources.
   ASSERT_EQ(1, usage1->executors().size());
 
-  Try<std::list<string>> sandboxes = os::glob(path::join(
-      slave::paths::getSandboxRootDir(mountPoint.get()),
-      "*",
-      "frameworks",
-      "*",
-      "executors",
-      "*",
-      "runs",
-      "*"));
-
+  Try<std::list<string>> sandboxes = getSandboxes();
   ASSERT_SOME(sandboxes);
 
   // One sandbox and one symlink.
@@ -1070,7 +1167,7 @@ TEST_F(ROOT_XFS_QuotaTest, RecoverOldContainers)
   slave = StartSlave(detector.get(), CreateSlaveFlags());
   ASSERT_SOME(slave);
 
-  // Wait for the slave to re-register.
+  // Wait for the slave to reregister.
   AWAIT_READY(slaveReregisteredMessage);
 
   {

@@ -205,7 +205,7 @@ Result<string> Fetcher::uriToLocalPath(
       return Error("File URI only supports absolute paths");
     }
 
-    if (frameworksHome.isNone() || frameworksHome.get().empty()) {
+    if (frameworksHome.isNone() || frameworksHome->empty()) {
       return Error("A relative path was passed for the resource but the "
                    "Mesos framework home was not specified. "
                    "Please either provide this config option "
@@ -258,13 +258,13 @@ FetcherProcess::Metrics::Metrics(FetcherProcess *fetcher)
         "containerizer/fetcher/cache_size_total_bytes",
         [=]() {
           // This value is safe to read while it is concurrently updated.
-          return fetcher->cache.totalSpace().bytes();
+          return static_cast<double>(fetcher->cache.totalSpace().bytes());
         }),
     cache_size_used_bytes(
         "containerizer/fetcher/cache_size_used_bytes",
         [=]() {
           // This value is safe to read while it is concurrently updated.
-          return fetcher->cache.usedSpace().bytes();
+          return static_cast<double>(fetcher->cache.usedSpace().bytes());
         })
 {
   process::metrics::add(task_fetches_succeeded);
@@ -462,7 +462,7 @@ Future<Nothing> FetcherProcess::_fetch(
 {
   // Get out all of the futures we need to wait for so we can wait on
   // them together via 'await'.
-  list<Future<shared_ptr<Cache::Entry>>> futures;
+  vector<Future<shared_ptr<Cache::Entry>>> futures;
 
   foreachvalue (const Option<Future<shared_ptr<Cache::Entry>>>& entry,
                 entries) {
@@ -483,14 +483,14 @@ Future<Nothing> FetcherProcess::_fetch(
                    const Option<Future<shared_ptr<Cache::Entry>>>& entry,
                    entries) {
         if (entry.isSome()) {
-          if (entry.get().isReady()) {
-            result[uri] = entry.get().get();
+          if (entry->isReady()) {
+            result[uri] = entry->get();
           } else {
             LOG(WARNING)
               << "Reverting to fetching directly into the sandbox for '"
               << uri.value()
               << "', due to failure to fetch through the cache, "
-              << "with error: " << entry.get().failure();
+              << "with error: " << entry->failure();
 
             result[uri] = None();
           }
@@ -561,6 +561,9 @@ Future<Nothing> FetcherProcess::__fetch(
     info.set_frameworks_home(flags.frameworks_home);
   }
 
+  info.mutable_stall_timeout()
+    ->set_nanoseconds(flags.fetcher_stall_timeout.ns());
+
   return run(containerId, sandboxDirectory, user, info)
     .repair(defer(self(), [=](const Future<Nothing>& future) {
       ++metrics.task_fetches_failed;
@@ -582,7 +585,7 @@ Future<Nothing> FetcherProcess::__fetch(
       return future; // Always propagate the failure!
     })
     // Call to `operator` here forces the conversion on MSVC. This is implicit
-    // on clang an gcc.
+    // on clang and gcc.
     .operator std::function<process::Future<Nothing>(
         const process::Future<Nothing> &)>())
     .then(defer(self(), [=]() {
@@ -658,10 +661,11 @@ Try<list<Path>> FetcherProcess::cacheFiles() const
                  flags.fetcher_cache_dir + "' with error: " + find.error());
   }
 
-  transform(find.get().begin(),
-            find.get().end(),
-            std::back_inserter(result),
-            [](const string& path) { return Path(path); });
+  transform(
+      find->begin(),
+      find->end(),
+      std::back_inserter(result),
+      [](const string& path) { return Path(path); });
 
   return result;
 }
@@ -857,8 +861,8 @@ Future<Nothing> FetcherProcess::run(
 
   environment["MESOS_FETCHER_INFO"] = stringify(JSON::protobuf(info));
 
-  if (!flags.hadoop_home.empty()) {
-    environment["HADOOP_HOME"] = flags.hadoop_home;
+  if (flags.hadoop_home.isSome()) {
+    environment["HADOOP_HOME"] = flags.hadoop_home.get();
   }
 
   // TODO(jieyu): This is to make sure the libprocess of the fetcher

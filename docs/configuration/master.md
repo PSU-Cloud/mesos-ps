@@ -18,7 +18,8 @@ layout: documentation
       </th>
     </tr>
   </thead>
-<tr>
+
+<tr id="quorum">
   <td>
     --quorum=VALUE
   </td>
@@ -29,7 +30,8 @@ masters i.e., <code>quorum > (number of masters)/2</code>.
 <b>NOTE</b>: Not required if master is run in standalone mode (non-HA).
   </td>
 </tr>
-<tr>
+
+<tr id="work_dir">
   <td>
     --work_dir=VALUE
   </td>
@@ -41,7 +43,8 @@ directory when running in production, since long-running masters could
 lose data when cleanup occurs. (Example: <code>/var/lib/mesos/master</code>)
   </td>
 </tr>
-<tr>
+
+<tr id="zk">
   <td>
     --zk=VALUE
   </td>
@@ -54,6 +57,7 @@ file:///path/to/file (where file contains one of the above)</code></pre>
 <b>NOTE</b>: Not required if master is run in standalone mode (non-HA).
   </td>
 </tr>
+
 </table>
 
 ## Optional Flags
@@ -69,7 +73,8 @@ file:///path/to/file (where file contains one of the above)</code></pre>
       </th>
     </tr>
   </thead>
-<tr>
+
+<tr id="acls">
   <td>
     --acls=VALUE
   </td>
@@ -126,7 +131,8 @@ Example:
 }</code></pre>
   </td>
 </tr>
-<tr>
+
+<tr id="agent_ping_timeout">
   <td>
     --agent_ping_timeout=VALUE,
     <p/>
@@ -135,14 +141,15 @@ Example:
   <td>
 The timeout within which an agent is expected to respond to a
 ping from the master. Agents that do not respond within
-max_agent_ping_timeouts ping retries will be asked to shutdown.
+max_agent_ping_timeouts ping retries will be marked unreachable.
 <b>NOTE</b>: The total ping timeout (<code>agent_ping_timeout</code> multiplied by
 <code>max_agent_ping_timeouts</code>) should be greater than the ZooKeeper
 session timeout to prevent useless re-registration attempts.
 (default: 15secs)
   </td>
 </tr>
-<tr>
+
+<tr id="agent_removal_rate_limit">
   <td>
     --agent_removal_rate_limit=VALUE
     <p/>
@@ -155,23 +162,25 @@ By default, agents will be removed as soon as they fail the health
 checks. The value is of the form <code>(Number of agents)/(Duration)</code>.
   </td>
 </tr>
-<tr>
+
+<tr id="agent_reregister_timeout">
   <td>
     --agent_reregister_timeout=VALUE
     <p/>
     --slave_reregister_timeout=VALUE
   </td>
   <td>
-The timeout within which an agent is expected to re-register.
-Agents re-register when they become disconnected from the master
+The timeout within which an agent is expected to reregister.
+Agents reregister when they become disconnected from the master
 or when a new master is elected as the leader. Agents that do not
-re-register within the timeout will be marked unreachable in the
-registry; if/when the agent re-registers with the master, any
+reregister within the timeout will be marked unreachable in the
+registry; if/when the agent reregisters with the master, any
 non-partition-aware tasks running on the agent will be terminated.
 <b>NOTE</b>: This value has to be at least 10mins. (default: 10mins)
   </td>
 </tr>
-<tr>
+
+<tr id="allocation_interval">
   <td>
     --allocation_interval=VALUE
   </td>
@@ -180,7 +189,8 @@ Amount of time to wait between performing
 (batch) allocations (e.g., 500ms, 1sec, etc). (default: 1secs)
   </td>
 </tr>
-<tr>
+
+<tr id="allocator">
   <td>
     --allocator=VALUE
   </td>
@@ -191,7 +201,25 @@ load an alternate allocator module using <code>--modules</code>.
 (default: HierarchicalDRF)
   </td>
 </tr>
-<tr>
+
+<tr id="min_allocatable_resources">
+  <td>
+    --min_allocatable_resources=VALUE
+  </td>
+  <td>
+One or more sets of resources that define the minimum allocatable
+resources for the allocator. The allocator will only offer resources
+that contain at least one of the specified sets. The resources in each
+set should be delimited by semicolons, and the sets should be delimited
+by the pipe character.
+(Example: <code>disk:1|cpu:1;mem:32</code>
+configures the allocator to only offer resources if they contain a disk
+resource of at least 1 megabyte, or if they contain both 1 cpu and
+32 megabytes of memory.) (default: cpus:0.01|mem:32).
+  </td>
+</tr>
+
+<tr id="authenticate_agents">
   <td>
     --[no-]authenticate_agents,
     <p/>
@@ -202,7 +230,8 @@ If <code>true</code> only authenticated agents are allowed to register.
 If <code>false</code> unauthenticated agents are also allowed to register. (default: false)
   </td>
 </tr>
-<tr>
+
+<tr id="authenticate_frameworks">
   <td>
     --[no-]authenticate_frameworks,
     <p/>
@@ -214,7 +243,8 @@ If <code>true</code>, only authenticated frameworks are allowed to register. If
 HTTP based frameworks use the <code>--authenticate_http_frameworks</code> flag. (default: false)
   </td>
 </tr>
-<tr>
+
+<tr id="authenticate_http_frameworks">
   <td>
     --[no-]authenticate_http_frameworks
   </td>
@@ -223,7 +253,8 @@ If <code>true</code>, only authenticated HTTP based frameworks are allowed to
 register. If <code>false</code>, HTTP frameworks are not authenticated. (default: false)
   </td>
 </tr>
-<tr>
+
+<tr id="authenticators">
   <td>
     --authenticators=VALUE
   </td>
@@ -233,7 +264,8 @@ and/or agents. Use the default <code>crammd5</code>, or
 load an alternate authenticator module using <code>--modules</code>. (default: crammd5)
   </td>
 </tr>
-<tr>
+
+<tr id="authorizers">
   <td>
     --authorizers=VALUE
   </td>
@@ -250,7 +282,8 @@ passed through the <code>--acls</code> flag will be ignored.
 Currently there is no support for multiple authorizers. (default: local)
   </td>
 </tr>
-<tr>
+
+<tr id="cluster">
   <td>
     --cluster=VALUE
   </td>
@@ -258,7 +291,8 @@ Currently there is no support for multiple authorizers. (default: local)
 Human readable name for the cluster, displayed in the webui.
   </td>
 </tr>
-<tr>
+
+<tr id="credentials">
   <td>
     --credentials=VALUE
   </td>
@@ -276,7 +310,8 @@ Example:
 }</code></pre>
   </td>
 </tr>
-<tr>
+
+<tr id="fair_sharing_excluded_resource_names">
   <td>
     --fair_sharing_excluded_resource_names=VALUE
   </td>
@@ -289,7 +324,8 @@ sharing implementation currently has limitations. E.g. See the problem of
     <a href="https://issues.apache.org/jira/browse/MESOS-5377">MESOS-5377</a>
   </td>
 </tr>
-<tr>
+
+<tr id="filter_gpu_resources">
   <td>
     --[no_]filter_gpu_resources
   </td>
@@ -306,7 +342,8 @@ the following for more information:
     <a href="https://issues.apache.org/jira/browse/MESOS-7576">MESOS-7576</a>
   </td>
 </tr>
-<tr>
+
+<tr id="framework_sorter">
   <td>
     --framework_sorter=VALUE
   </td>
@@ -316,7 +353,8 @@ frameworks. Options are the same as for <code>--user_sorter</code>.
 (default: drf)
   </td>
 </tr>
-<tr>
+
+<tr id="http_framework_authenticators">
   <td>
     --http_framework_authenticators=VALUE
   </td>
@@ -329,7 +367,8 @@ module using <code>--modules</code>. This must be used in conjunction with
 Currently there is no support for multiple HTTP authenticators.
   </td>
 </tr>
-<tr>
+
+<tr id="log_auto_initialize">
   <td>
     --[no-]log_auto_initialize
   </td>
@@ -339,7 +378,8 @@ used for the registry. If this is set to false, the log has to be manually
 initialized when used for the very first time. (default: true)
   </td>
 </tr>
-<tr>
+
+<tr id="master_contender">
   <td>
     --master_contender=VALUE
   </td>
@@ -350,7 +390,8 @@ conjunction with <code>--zk</code>. Must be used in conjunction with
 <code>--master_detector</code>.
   </td>
 </tr>
-<tr>
+
+<tr id="master_detector">
   <td>
     --master_detector=VALUE
   </td>
@@ -361,7 +402,8 @@ conjunction with <code>--zk</code>. Must be used in conjunction with
 <code>--master_contender</code>.
   </td>
 </tr>
-<tr>
+
+<tr id="max_agent_ping_timeouts">
   <td>
     --max_agent_ping_timeouts=VALUE,
     <p/>
@@ -370,11 +412,12 @@ conjunction with <code>--zk</code>. Must be used in conjunction with
   <td>
 The number of times an agent can fail to respond to a
 ping from the master. Agents that do not respond within
-<code>max_agent_ping_timeouts</code> ping retries will be asked to shutdown.
+<code>max_agent_ping_timeouts</code> ping retries will be marked unreachable.
 (default: 5)
   </td>
 </tr>
-<tr>
+
+<tr id="max_completed_frameworks">
   <td>
     --max_completed_frameworks=VALUE
   </td>
@@ -382,7 +425,8 @@ ping from the master. Agents that do not respond within
 Maximum number of completed frameworks to store in memory. (default: 50)
   </td>
 </tr>
-<tr>
+
+<tr id="max_completed_tasks_per_framework">
   <td>
     --max_completed_tasks_per_framework=VALUE
   </td>
@@ -390,7 +434,8 @@ Maximum number of completed frameworks to store in memory. (default: 50)
 Maximum number of completed tasks per framework to store in memory. (default: 1000)
   </td>
 </tr>
-<tr>
+
+<tr id="max_unreachable_tasks_per_framework">
   <td>
     --max_unreachable_tasks_per_framework=VALUE
   </td>
@@ -398,7 +443,8 @@ Maximum number of completed tasks per framework to store in memory. (default: 10
 Maximum number of unreachable tasks per framework to store in memory. (default: 1000)
   </td>
 </tr>
-<tr>
+
+<tr id="offer_timeout">
   <td>
     --offer_timeout=VALUE
   </td>
@@ -409,7 +455,8 @@ or frameworks that accidentally drop offers.
 If not set, offers do not timeout.
   </td>
 </tr>
-<tr>
+
+<tr id="rate_limits">
   <td>
     --rate_limits=VALUE
   </td>
@@ -437,7 +484,8 @@ Example:
 }</code></pre>
   </td>
 </tr>
-<tr>
+
+<tr id="recovery_agent_removal_limit">
   <td>
     --recovery_agent_removal_limit=VALUE,
     <p/>
@@ -458,7 +506,8 @@ in the cluster.
 Values: [0%-100%] (default: 100%)
   </td>
 </tr>
-<tr>
+
+<tr id="registry">
   <td>
     --registry=VALUE
   </td>
@@ -467,7 +516,8 @@ Persistence strategy for the registry; available options are
 <code>replicated_log</code>, <code>in_memory</code> (for testing). (default: replicated_log)
   </td>
 </tr>
-<tr>
+
+<tr id="registry_fetch_timeout">
   <td>
     --registry_fetch_timeout=VALUE
   </td>
@@ -476,7 +526,52 @@ Duration of time to wait in order to fetch data from the registry
 after which the operation is considered a failure. (default: 1mins)
   </td>
 </tr>
-<tr>
+
+<tr id="registry_gc_interval">
+  <td>
+    --registry_gc_interval=VALUE
+  </td>
+  <td>
+How often to garbage collect the registry. The current leading
+master will periodically discard information from the registry.
+How long registry state is retained is controlled by other
+parameters (e.g., <code>registry_max_agent_age</code>,
+<code>registry_max_agent_count</code>); this parameter controls
+how often the master will examine the registry to see if data
+should be discarded. (default: 15mins)
+  </td>
+</tr>
+
+<tr id="registry_max_agent_age">
+  <td>
+    --registry_max_agent_age=VALUE
+  </td>
+  <td>
+Maximum length of time to store information in the registry about
+agents that are not currently connected to the cluster. This
+information allows frameworks to determine the status of unreachable
+and gone agents. Note that the registry always stores
+information on all connected agents. If there are more than
+<code>registry_max_agent_count</code> partitioned/gone agents, agent
+information may be discarded from the registry sooner than indicated
+by this parameter. (default: 2weeks)
+  </td>
+</tr>
+
+<tr id="registry_max_agent_count">
+  <td>
+    --registry_max_agent_count=VALUE
+  </td>
+  <td>
+Maximum number of partitioned/gone agents to store in the
+registry. This information allows frameworks to determine the status
+of disconnected agents. Note that the registry always stores
+information about all connected agents. See also the
+<code>registry_max_agent_age</code> flag. (default: 102400)
+  </td>
+</tr>
+
+<tr id="registry_store_timeout">
   <td>
     --registry_store_timeout=VALUE
   </td>
@@ -485,7 +580,17 @@ Duration of time to wait in order to store data in the registry
 after which the operation is considered a failure. (default: 20secs)
   </td>
 </tr>
-<tr>
+
+<tr id="require_agent_domain">
+  <td>
+    --[no-]require_agent_domain
+  </td>
+  <td>
+If true, only agents with a configured domain can register. (default: false)
+  </td>
+</tr>
+
+<tr id="roles">
   <td>
     --roles=VALUE
   </td>
@@ -495,7 +600,8 @@ in this cluster may belong to. This flag is deprecated;
 if it is not specified, any role name can be used.
   </td>
 </tr>
-<tr>
+
+<tr id="root_submissions">
   <td>
     --[no-]root_submissions
   </td>
@@ -503,7 +609,8 @@ if it is not specified, any role name can be used.
 Can root submit frameworks? (default: true)
   </td>
 </tr>
-<tr>
+
+<tr id="user_sorter">
   <td>
     --user_sorter=VALUE
   </td>
@@ -512,7 +619,8 @@ Policy to use for allocating resources between users. May be one of:
   dominant_resource_fairness (drf) (default: drf)
   </td>
 </tr>
-<tr>
+
+<tr id="webui_dir">
   <td>
     --webui_dir=VALUE
   </td>
@@ -520,7 +628,8 @@ Policy to use for allocating resources between users. May be one of:
 Directory path of the webui files/assets (default: /usr/local/share/mesos/webui)
   </td>
 </tr>
-<tr>
+
+<tr id="weights">
   <td>
     --weights=VALUE
   </td>
@@ -532,7 +641,8 @@ flag is deprecated. Instead, operators should configure weights dynamically
 using the <code>/weights</code> HTTP endpoint.
   </td>
 </tr>
-<tr>
+
+<tr id="whitelist">
   <td>
     --whitelist=VALUE
   </td>
@@ -544,6 +654,7 @@ machines are accepted. Path can be of the form
 <code>file:///path/to/file</code> or <code>/path/to/file</code>.
   </td>
 </tr>
+
 </table>
 
 ## Network Isolator Flags
@@ -561,7 +672,8 @@ machines are accepted. Path can be of the form
       </th>
     </tr>
   </thead>
-<tr>
+
+<tr id="max_executors_per_agent">
   <td>
     --max_executors_per_agent=VALUE,
     <p/>
@@ -574,4 +686,5 @@ acquisition on each executor (# ephemeral ports), as a result
 one can only run a certain number of executors on each agent.
   </td>
 </tr>
+
 </table>

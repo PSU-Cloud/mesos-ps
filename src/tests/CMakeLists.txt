@@ -70,6 +70,12 @@ if (LINUX)
     containerizer/setns_test_helper.cpp)
 endif ()
 
+if (ENABLE_GRPC)
+  list(APPEND MESOS_TESTS_UTILS_SRC
+    csi_client_tests.cpp
+    mock_csi_plugin.cpp)
+endif ()
+
 
 # All the test sources.
 #######################
@@ -102,7 +108,8 @@ set(MESOS_TESTS_SRC
   http_fault_tolerance_tests.cpp
   master_maintenance_tests.cpp
   master_slave_reconciliation_tests.cpp
-  offer_operation_status_update_manager_tests.cpp
+  operation_reconciliation_tests.cpp
+  operation_status_update_manager_tests.cpp
   partition_tests.cpp
   paths_tests.cpp
   protobuf_io_tests.cpp
@@ -119,6 +126,7 @@ set(MESOS_TESTS_SRC
   slave_authorization_tests.cpp
   slave_compatibility_tests.cpp
   slave_tests.cpp
+  slave_recovery_tests.cpp
   slave_validation_tests.cpp
   sorter_tests.cpp
   task_status_update_manager_tests.cpp
@@ -149,12 +157,18 @@ list(APPEND MESOS_TESTS_SRC
 list(APPEND MESOS_TESTS_SRC
   containerizer/containerizer_tests.cpp
   containerizer/cpu_isolator_tests.cpp
-  containerizer/memory_isolator_tests.cpp
-  containerizer/docker_tests.cpp)
+  containerizer/docker_tests.cpp
+  containerizer/memory_isolator_tests.cpp)
+
+if (NOT WIN32 OR ENABLE_LIBWINIO)
+  list(APPEND MESOS_TESTS_SRC
+    containerizer/docker_containerizer_tests.cpp)
+endif ()
 
 if (NOT WIN32)
   list(APPEND MESOS_TESTS_SRC
     container_logger_tests.cpp
+    disk_profile_adaptor_tests.cpp
     disk_quota_tests.cpp
     dynamic_weights_tests.cpp
     examples_tests.cpp
@@ -178,7 +192,6 @@ if (NOT WIN32)
     registrar_tests.cpp
     reservation_endpoints_tests.cpp
     reservation_tests.cpp
-    slave_recovery_tests.cpp
     state_tests.cpp
     teardown_tests.cpp
     upgrade_tests.cpp)
@@ -189,7 +202,6 @@ if (NOT WIN32)
   list(APPEND MESOS_TESTS_SRC
     containerizer/appc_spec_tests.cpp
     containerizer/composing_containerizer_tests.cpp
-    containerizer/docker_containerizer_tests.cpp
     containerizer/docker_spec_tests.cpp
     containerizer/environment_secret_isolator_tests.cpp
     containerizer/io_switchboard_tests.cpp
@@ -216,6 +228,7 @@ if (LINUX)
     containerizer/docker_volume_isolator_tests.cpp
     containerizer/fs_tests.cpp
     containerizer/linux_capabilities_isolator_tests.cpp
+    containerizer/linux_devices_isolator_tests.cpp
     containerizer/linux_filesystem_isolator_tests.cpp
     containerizer/memory_pressure_tests.cpp
     containerizer/nested_mesos_containerizer_tests.cpp
@@ -228,20 +241,30 @@ if (LINUX)
     containerizer/volume_host_path_isolator_tests.cpp
     containerizer/volume_image_isolator_tests.cpp
     containerizer/volume_secret_isolator_tests.cpp)
+
+  if (ENABLE_GRPC)
+    list(APPEND MESOS_TESTS_SRC
+      agent_resource_provider_config_api_tests.cpp
+      storage_local_resource_provider_tests.cpp)
+  endif ()
 endif ()
 
 
 # THE TEST AND HELPER EXECUTABLES.
 ##################################
 add_library(mesos-tests-interface INTERFACE)
-target_link_libraries(mesos-tests-interface INTERFACE mesos googletest)
+target_link_libraries(
+  mesos-tests-interface INTERFACE
+  mesos
+  googletest)
 
 if (NOT WIN32)
   target_link_libraries(
     mesos-tests-interface INTERFACE
     load_qos_controller
     fixed_resource_estimator
-    logrotate_container_logger)
+    logrotate_container_logger
+    uri_disk_profile_adaptor)
 endif ()
 
 target_compile_definitions(
@@ -313,8 +336,16 @@ if (NOT WIN32)
     persistent-volume-framework
     test-executor
     test-framework
+    test-csi-user-framework
     test-http-executor
     test-http-framework)
+
+  # SLRP-related tests are Linux only and require the test CSI plugin binary.
+  if (ENABLE_GRPC AND LINUX)
+    add_dependencies(
+      mesos-tests
+      test-csi-plugin)
+  endif ()
 endif ()
 
 

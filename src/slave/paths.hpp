@@ -22,6 +22,7 @@
 
 #include <mesos/mesos.hpp>
 
+#include <stout/nothing.hpp>
 #include <stout/try.hpp>
 #include <stout/uuid.hpp>
 
@@ -353,21 +354,21 @@ std::string getLatestResourceProviderPath(
     const std::string& resourceProviderName);
 
 
-Try<std::list<std::string>> getOfferOperationPaths(
+Try<std::list<std::string>> getOperationPaths(
     const std::string& rootDir);
 
 
-std::string getOfferOperationPath(
+std::string getOperationPath(
     const std::string& rootDir,
     const id::UUID& operationUuid);
 
 
-Try<id::UUID> parseOfferOperationPath(
+Try<id::UUID> parseOperationPath(
     const std::string& rootDir,
     const std::string& dir);
 
 
-std::string getOfferOperationUpdatesPath(
+std::string getOperationUpdatesPath(
     const std::string& rootDir,
     const id::UUID& operationUuid);
 
@@ -391,13 +392,18 @@ std::string getPersistentVolumePath(
     const Resource& resource);
 
 
-std::string createExecutorDirectory(
+Try<std::string> createExecutorDirectory(
     const std::string& rootDir,
     const SlaveID& slaveId,
     const FrameworkID& frameworkId,
     const ExecutorID& executorId,
     const ContainerID& containerId,
     const Option<std::string>& user = None());
+
+
+Try<Nothing> createSandboxDirectory(
+    const std::string& directory,
+    const Option<std::string>& user);
 
 
 std::string createSlaveDirectory(

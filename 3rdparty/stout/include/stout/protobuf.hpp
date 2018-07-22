@@ -52,6 +52,10 @@
 #include <stout/os/read.hpp>
 #include <stout/os/write.hpp>
 
+#ifdef __WINDOWS__
+#include <stout/os/dup.hpp>
+#endif // __WINDOWS__
+
 namespace protobuf {
 
 // TODO(bmahler): Re-use stout's 'recordio' facilities here. Note
@@ -80,12 +84,31 @@ inline Try<Nothing> write(int_fd fd, const google::protobuf::Message& message)
   }
 
 #ifdef __WINDOWS__
-  if (!message.SerializeToFileDescriptor(fd.crt())) {
-#else
-  if (!message.SerializeToFileDescriptor(fd)) {
-#endif
+  // NOTE: On Windows, we need to explicitly allocate a CRT file
+  // descriptor because the Protobuf library requires it. Because
+  // users of `protobuf::write` are likely to call `os::close` on the
+  // `fd` we were given, we need to duplicate it before allocating the
+  // CRT fd. This is because once the CRT fd is allocated, it must be
+  // closed with `_close` instead of `os::close`. Since we need to
+  // call `_close` here, we duplicate the fd to prevent the users call
+  // of `os::close` from closing twice.
+  Try<int_fd> dup = os::dup(fd);
+  if (dup.isError()) {
+    return Error("Failed to duplicate handle: " + dup.error());
+  }
+
+  int crt = dup->crt();
+
+  if (!message.SerializeToFileDescriptor(crt)) {
+    ::_close(crt);
     return Error("Failed to write/serialize message");
   }
+  ::_close(crt);
+#else
+  if (!message.SerializeToFileDescriptor(fd)) {
+    return Error("Failed to write/serialize message");
+  }
+#endif
 
   return Nothing();
 }
@@ -112,16 +135,9 @@ Try<Nothing> write(
 template <typename T>
 Try<Nothing> write(const std::string& path, const T& t)
 {
-  int operation_flags = O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC;
-#ifdef __WINDOWS__
-  // NOTE: Windows does automatic linefeed conversions in I/O on text files.
-  // We include the `_O_BINARY` flag here to avoid this.
-  operation_flags |= _O_BINARY;
-#endif // __WINDOWS__
-
   Try<int_fd> fd = os::open(
       path,
-      operation_flags,
+      O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC,
       S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
 
   if (fd.isError()) {
@@ -143,16 +159,9 @@ inline Try<Nothing> append(
     const std::string& path,
     const google::protobuf::Message& message)
 {
-  int operation_flags = O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC;
-#ifdef __WINDOWS__
-  // NOTE: Windows does automatic linefeed conversions in I/O on text files.
-  // We include the `_O_BINARY` flag here to avoid this.
-  operation_flags |= _O_BINARY;
-#endif // __WINDOWS__
-
   Try<int_fd> fd = os::open(
       path,
-      operation_flags,
+      O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC,
       S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
 
   if (fd.isError()) {
@@ -237,7 +246,7 @@ struct Read
       return Error("Failed to read size: " + result.error());
     } else if (result.isNone()) {
       return None(); // No more protobufs to read.
-    } else if (result.get().size() < sizeof(size)) {
+    } else if (result->size() < sizeof(size)) {
       // Hit EOF unexpectedly.
       if (undoFailed) {
         // Restore the offset to before the size read.
@@ -251,7 +260,7 @@ struct Read
     }
 
     // Parse the size from the bytes.
-    memcpy((void*) &size, (void*) result.get().data(), sizeof(size));
+    memcpy((void*)&size, (void*)result->data(), sizeof(size));
 
     // NOTE: Instead of specifically checking for corruption in 'size',
     // we simply try to read 'size' bytes. If we hit EOF early, it is an
@@ -264,7 +273,7 @@ struct Read
         os::lseek(fd, offset, SEEK_SET);
       }
       return Error("Failed to read message: " + result.error());
-    } else if (result.isNone() || result.get().size() < size) {
+    } else if (result.isNone() || result->size() < size) {
       // Hit EOF unexpectedly.
       if (undoFailed) {
         // Restore the offset to before the size read.
@@ -356,16 +365,9 @@ Result<T> read(int_fd fd, bool ignorePartial = false, bool undoFailed = false)
 template <typename T>
 Result<T> read(const std::string& path)
 {
-  int operation_flags = O_RDONLY | O_CLOEXEC;
-#ifdef __WINDOWS__
-  // NOTE: Windows does automatic linefeed conversions in I/O on text files.
-  // We include the `_O_BINARY` flag here to avoid this.
-  operation_flags |= _O_BINARY;
-#endif // __WINDOWS__
-
   Try<int_fd> fd = os::open(
       path,
-      operation_flags,
+      O_RDONLY | O_CLOEXEC,
       S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
 
   if (fd.isError()) {
@@ -403,12 +405,51 @@ struct Parser : boost::static_visitor<Try<Nothing>>
   {
     switch (field->type()) {
       case google::protobuf::FieldDescriptor::TYPE_MESSAGE:
-        // TODO(gilbert): We currently push up the nested error
-        // messages without wrapping the error message (due to
-        // the recursive nature of parse). We should pass along
-        // variable information in order to construct a helpful
-        // error message, e.g. "Failed to parse field 'a.b.c': ...".
-        if (field->is_repeated()) {
+        if (field->is_map()) {
+          foreachpair (
+              const std::string& name,
+              const JSON::Value& value,
+              object.values) {
+            google::protobuf::Message* entry =
+              reflection->AddMessage(message, field);
+
+            // A map is equivalent to:
+            //
+            //   message MapFieldEntry {
+            //     optional key_type key = 1;
+            //     optional value_type value = 2;
+            //   }
+            //
+            //   repeated MapFieldEntry map_field = N;
+            //
+            // See the link below for details:
+            // https://developers.google.com/protocol-buffers/docs/proto#maps
+            const google::protobuf::FieldDescriptor* key_field =
+              entry->GetDescriptor()->FindFieldByNumber(1);
+
+            JSON::Value key(name);
+
+            Try<Nothing> apply =
+              boost::apply_visitor(Parser(entry, key_field), key);
+
+            if (apply.isError()) {
+              return Error(apply.error());
+            }
+
+            const google::protobuf::FieldDescriptor* value_field =
+              entry->GetDescriptor()->FindFieldByNumber(2);
+
+            apply = boost::apply_visitor(Parser(entry, value_field), value);
+            if (apply.isError()) {
+              return Error(apply.error());
+            }
+          }
+        } else if (field->is_repeated()) {
+          // TODO(gilbert): We currently push up the nested error
+          // messages without wrapping the error message (due to
+          // the recursive nature of parse). We should pass along
+          // variable information in order to construct a helpful
+          // error message, e.g. "Failed to parse field 'a.b.c': ...".
           return parse(reflection->AddMessage(message, field), object);
         } else {
           return parse(reflection->MutableMessage(message, field), object);
@@ -433,7 +474,6 @@ struct Parser : boost::static_visitor<Try<Nothing>>
         break;
       case google::protobuf::FieldDescriptor::TYPE_BYTES: {
         Try<std::string> decode = base64::decode(string.value);
-
         if (decode.isError()) {
           return Error("Failed to base64 decode bytes field"
                        " '" + field->name() + "': " + decode.error());
@@ -472,6 +512,37 @@ struct Parser : boost::static_visitor<Try<Nothing>>
           reflection->SetEnum(message, field, descriptor);
         }
         break;
+      }
+      case google::protobuf::FieldDescriptor::TYPE_DOUBLE:
+      case google::protobuf::FieldDescriptor::TYPE_FLOAT:
+      case google::protobuf::FieldDescriptor::TYPE_INT64:
+      case google::protobuf::FieldDescriptor::TYPE_SINT64:
+      case google::protobuf::FieldDescriptor::TYPE_SFIXED64:
+      case google::protobuf::FieldDescriptor::TYPE_UINT64:
+      case google::protobuf::FieldDescriptor::TYPE_FIXED64:
+      case google::protobuf::FieldDescriptor::TYPE_INT32:
+      case google::protobuf::FieldDescriptor::TYPE_SINT32:
+      case google::protobuf::FieldDescriptor::TYPE_SFIXED32:
+      case google::protobuf::FieldDescriptor::TYPE_UINT32:
+      case google::protobuf::FieldDescriptor::TYPE_FIXED32: {
+        Try<JSON::Number> number = JSON::parse<JSON::Number>(string.value);
+        if (number.isError()) {
+          return Error(
+              "Failed to parse '" + string.value + "' as a JSON number "
+              "for field '" + field->name() + "': " + number.error());
+        }
+
+        return operator()(number.get());
+      }
+      case google::protobuf::FieldDescriptor::TYPE_BOOL: {
+        Try<JSON::Boolean> boolean = JSON::parse<JSON::Boolean>(string.value);
+        if (boolean.isError()) {
+          return Error(
+              "Failed to parse '" + string.value + "' as a JSON boolean "
+              "for field '" + field->name() + "': " + boolean.error());
+        }
+
+        return operator()(boolean.get());
       }
       default:
         return Error("Not expecting a JSON string for field '" +
@@ -855,6 +926,56 @@ inline Object protobuf(const google::protobuf::Message& message)
   const google::protobuf::Descriptor* descriptor = message.GetDescriptor();
   const google::protobuf::Reflection* reflection = message.GetReflection();
 
+  auto value_for_field = [](
+      const google::protobuf::Message& message,
+      const google::protobuf::FieldDescriptor* field) -> JSON::Value {
+    const google::protobuf::Reflection* reflection = message.GetReflection();
+
+    switch (field->type()) {
+      case google::protobuf::FieldDescriptor::TYPE_DOUBLE:
+        return JSON::Number(reflection->GetDouble(message, field));
+      case google::protobuf::FieldDescriptor::TYPE_FLOAT:
+        return JSON::Number(reflection->GetFloat(message, field));
+      case google::protobuf::FieldDescriptor::TYPE_INT64:
+      case google::protobuf::FieldDescriptor::TYPE_SINT64:
+      case google::protobuf::FieldDescriptor::TYPE_SFIXED64:
+        return JSON::Number(reflection->GetInt64(message, field));
+      case google::protobuf::FieldDescriptor::TYPE_UINT64:
+      case google::protobuf::FieldDescriptor::TYPE_FIXED64:
+        return JSON::Number(reflection->GetUInt64(message, field));
+      case google::protobuf::FieldDescriptor::TYPE_INT32:
+      case google::protobuf::FieldDescriptor::TYPE_SINT32:
+      case google::protobuf::FieldDescriptor::TYPE_SFIXED32:
+        return JSON::Number(reflection->GetInt32(message, field));
+      case google::protobuf::FieldDescriptor::TYPE_UINT32:
+      case google::protobuf::FieldDescriptor::TYPE_FIXED32:
+        return JSON::Number(reflection->GetUInt32(message, field));
+      case google::protobuf::FieldDescriptor::TYPE_BOOL:
+        if (reflection->GetBool(message, field)) {
+          return JSON::Boolean(true);
+        } else {
+          return JSON::Boolean(false);
+        }
+        break;
+      case google::protobuf::FieldDescriptor::TYPE_STRING:
+        return JSON::String(reflection->GetString(message, field));
+      case google::protobuf::FieldDescriptor::TYPE_BYTES:
+        return JSON::String(
+            base64::encode(reflection->GetString(message, field)));
+      case google::protobuf::FieldDescriptor::TYPE_MESSAGE:
+        return protobuf(reflection->GetMessage(message, field));
+      case google::protobuf::FieldDescriptor::TYPE_ENUM:
+        return JSON::String(reflection->GetEnum(message, field)->name());
+      case google::protobuf::FieldDescriptor::TYPE_GROUP:
+        // Deprecated! We abort here instead of using a Try as return value,
+        // because we expect this code path to never be taken.
+        ABORT("Unhandled protobuf field type: " +
+              stringify(field->type()));
+    }
+
+    UNREACHABLE();
+  };
+
   // We first look through all the possible fields to determine both
   // the set fields _and_ the optional fields with a default that
   // are not set. Reflection::ListFields() alone will only include
@@ -877,7 +998,44 @@ inline Object protobuf(const google::protobuf::Message& message)
   }
 
   foreach (const google::protobuf::FieldDescriptor* field, fields) {
-    if (field->is_repeated()) {
+    if (field->is_map()) {
+      JSON::Object map;
+
+      int fieldSize = reflection->FieldSize(message, field);
+      for (int i = 0; i < fieldSize; ++i) {
+        const google::protobuf::Message& entry =
+          reflection->GetRepeatedMessage(message, field, i);
+
+        // A map is equivalent to:
+        //
+        //   message MapFieldEntry {
+        //     optional key_type key = 1;
+        //     optional value_type value = 2;
+        //   }
+        //
+        //   repeated MapFieldEntry map_field = N;
+        //
+        // See the link below for details:
+        // https://developers.google.com/protocol-buffers/docs/proto#maps
+        const google::protobuf::FieldDescriptor* key_field =
+          entry.GetDescriptor()->FindFieldByNumber(1);
+
+        const google::protobuf::FieldDescriptor* value_field =
+          entry.GetDescriptor()->FindFieldByNumber(2);
+
+        JSON::Value key = value_for_field(entry, key_field);
+
+        std::string name;
+        if (key.is<JSON::String>()) {
+          name = key.as<JSON::String>().value;
+        } else {
+          name = jsonify(key);
+        }
+
+        map.values[name] = value_for_field(entry, value_field);
+      }
+      object.values[field->name()] = map;
+    } else if (field->is_repeated()) {
       JSON::Array array;
       int fieldSize = reflection->FieldSize(message, field);
       array.values.reserve(fieldSize);
@@ -915,9 +1073,9 @@ inline Object protobuf(const google::protobuf::Message& message)
             break;
           case google::protobuf::FieldDescriptor::TYPE_BOOL:
             if (reflection->GetRepeatedBool(message, field, i)) {
-              array.values.push_back(JSON::True());
+              array.values.push_back(JSON::Boolean(true));
             } else {
-              array.values.push_back(JSON::False());
+              array.values.push_back(JSON::Boolean(false));
             }
             break;
           case google::protobuf::FieldDescriptor::TYPE_STRING:
@@ -945,66 +1103,7 @@ inline Object protobuf(const google::protobuf::Message& message)
       }
       object.values[field->name()] = array;
     } else {
-      switch (field->type()) {
-        case google::protobuf::FieldDescriptor::TYPE_DOUBLE:
-          object.values[field->name()] =
-              JSON::Number(reflection->GetDouble(message, field));
-          break;
-        case google::protobuf::FieldDescriptor::TYPE_FLOAT:
-          object.values[field->name()] =
-              JSON::Number(reflection->GetFloat(message, field));
-          break;
-        case google::protobuf::FieldDescriptor::TYPE_INT64:
-        case google::protobuf::FieldDescriptor::TYPE_SINT64:
-        case google::protobuf::FieldDescriptor::TYPE_SFIXED64:
-          object.values[field->name()] =
-              JSON::Number(reflection->GetInt64(message, field));
-          break;
-        case google::protobuf::FieldDescriptor::TYPE_UINT64:
-        case google::protobuf::FieldDescriptor::TYPE_FIXED64:
-          object.values[field->name()] =
-              JSON::Number(reflection->GetUInt64(message, field));
-          break;
-        case google::protobuf::FieldDescriptor::TYPE_INT32:
-        case google::protobuf::FieldDescriptor::TYPE_SINT32:
-        case google::protobuf::FieldDescriptor::TYPE_SFIXED32:
-          object.values[field->name()] =
-              JSON::Number(reflection->GetInt32(message, field));
-          break;
-        case google::protobuf::FieldDescriptor::TYPE_UINT32:
-        case google::protobuf::FieldDescriptor::TYPE_FIXED32:
-          object.values[field->name()] =
-              JSON::Number(reflection->GetUInt32(message, field));
-          break;
-        case google::protobuf::FieldDescriptor::TYPE_BOOL:
-          if (reflection->GetBool(message, field)) {
-            object.values[field->name()] = JSON::True();
-          } else {
-            object.values[field->name()] = JSON::False();
-          }
-          break;
-        case google::protobuf::FieldDescriptor::TYPE_STRING:
-          object.values[field->name()] =
-              JSON::String(reflection->GetString(message, field));
-          break;
-        case google::protobuf::FieldDescriptor::TYPE_BYTES:
-          object.values[field->name()] = JSON::String(
-              base64::encode(reflection->GetString(message, field)));
-          break;
-        case google::protobuf::FieldDescriptor::TYPE_MESSAGE:
-          object.values[field->name()] =
-            protobuf(reflection->GetMessage(message, field));
-          break;
-        case google::protobuf::FieldDescriptor::TYPE_ENUM:
-          object.values[field->name()] =
-              JSON::String(reflection->GetEnum(message, field)->name());
-          break;
-        case google::protobuf::FieldDescriptor::TYPE_GROUP:
-          // Deprecated! We abort here instead of using a Try as return value,
-          // because we expect this code path to never be taken.
-          ABORT("Unhandled protobuf field type: " +
-                stringify(field->type()));
-      }
+      object.values[field->name()] = value_for_field(message, field);
     }
   }
 

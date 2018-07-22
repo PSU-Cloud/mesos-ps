@@ -342,16 +342,12 @@ private:
       return pid;
     }
 
-    // Set the basic process information.
-    Tree::Memory process;
-    process.pid = getpid();
-    process.parent = getppid();
-    process.group = getpgid(0);
-    process.session = getsid(0);
-    process.set.store(true);
-
-    // Copy it into shared memory.
-    memcpy(tree.memory.get(), &process, sizeof(Tree::Memory));
+    // Set the basic process information into shared memory.
+    tree.memory->pid = getpid();
+    tree.memory->parent = getppid();
+    tree.memory->group = getpgid(0);
+    tree.memory->session = getsid(0);
+    tree.memory->set.store(true);
 
     // Execute the function, if any.
     if (function.isSome()) {
@@ -368,7 +364,7 @@ private:
     // Execute or wait.
     if (exec.isSome()) {
       // Execute the command (via '/bin/sh -c command').
-      const char* command = exec.get().command.c_str();
+      const char* command = exec->command.c_str();
       execlp("sh", "sh", "-c", command, (char*) nullptr);
       EXIT(EXIT_FAILURE)
         << "Failed to execute '" << command << "': " << os::strerror(errno);
@@ -406,7 +402,7 @@ private:
         None(),
         None(),
         None(),
-        self.isSome() ? self.get().command : "",
+        self.isSome() ? self->command : "",
         false);
 
     std::list<ProcessTree> children;

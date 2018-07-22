@@ -19,7 +19,7 @@
 #include <stout/strings.hpp>
 #include <stout/try.hpp>
 
-#include "slave/containerizer/mesos/provisioner/docker/local_puller.hpp"
+#include "slave/containerizer/mesos/provisioner/docker/image_tar_puller.hpp"
 #include "slave/containerizer/mesos/provisioner/docker/puller.hpp"
 #include "slave/containerizer/mesos/provisioner/docker/registry_puller.hpp"
 
@@ -36,11 +36,18 @@ Try<Owned<Puller>> Puller::create(
     const Shared<uri::Fetcher>& fetcher,
     SecretResolver* secretResolver)
 {
-  // TODO(tnachen): Support multiple registries in the puller.
-  if (strings::startsWith(flags.docker_registry, "/")) {
-    Try<Owned<Puller>> puller = LocalPuller::create(flags);
+  // TODO(gilbert): Consider to introduce a new protobuf API to
+  // represent docker image by an optional URI in Image::Docker,
+  // so that the source of docker images are not necessarily from
+  // the agent flag.
+  // TODO(gilbert): Support multiple pullers simultaneously in
+  // docker store, so that users could prefer pulling from either
+  // image tarballs or the remote docker registry.
+  if (strings::startsWith(flags.docker_registry, "/") ||
+      strings::startsWith(flags.docker_registry, "hdfs://")) {
+    Try<Owned<Puller>> puller = ImageTarPuller::create(flags, fetcher);
     if (puller.isError()) {
-      return Error("Failed to create local puller: " + puller.error());
+      return Error("Failed to create image tar puller " + puller.error());
     }
 
     return puller.get();

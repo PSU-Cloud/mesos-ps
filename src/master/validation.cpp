@@ -124,6 +124,9 @@ Option<Error> validate(
     case mesos::master::Call::GET_EXECUTORS:
       return None();
 
+    case mesos::master::Call::GET_OPERATIONS:
+      return None();
+
     case mesos::master::Call::GET_TASKS:
       return None();
 
@@ -185,6 +188,32 @@ Option<Error> validate(
       if (!call.has_destroy_volumes()) {
         return Error("Expecting 'destroy_volumes' to be present");
       }
+      return None();
+
+    case mesos::master::Call::GROW_VOLUME:
+      if (!call.has_grow_volume()) {
+        return Error("Expecting 'grow_volume' to be present");
+      }
+
+      if (!call.grow_volume().has_slave_id()) {
+        return Error(
+            "Expecting 'agent_id' to be present; only agent default resources "
+            "are supported right now");
+      }
+
+      return None();
+
+    case mesos::master::Call::SHRINK_VOLUME:
+      if (!call.has_shrink_volume()) {
+        return Error("Expecting 'shrink_volume' to be present");
+      }
+
+      if (!call.shrink_volume().has_slave_id()) {
+        return Error(
+            "Expecting 'agent_id' to be present; only agent default resources "
+            "are supported right now");
+      }
+
       return None();
 
     case mesos::master::Call::GET_MAINTENANCE_STATUS:
@@ -591,17 +620,31 @@ Option<Error> validate(
       return None();
     }
 
-    case mesos::scheduler::Call::ACKNOWLEDGE_OFFER_OPERATION_UPDATE: {
-      if (!call.has_acknowledge_offer_operation_update()) {
-        return Error(
-            "Expecting 'acknowledge_offer_operation_update' to be present");
+    case mesos::scheduler::Call::ACKNOWLEDGE_OPERATION_STATUS: {
+      if (!call.has_acknowledge_operation_status()) {
+        return Error("Expecting 'acknowledge_operation_status' to be present");
       }
 
-      Try<id::UUID> uuid = id::UUID::fromBytes(
-          call.acknowledge_offer_operation_update().status_uuid());
+      const mesos::scheduler::Call::AcknowledgeOperationStatus& acknowledge =
+        call.acknowledge_operation_status();
+
+      Try<id::UUID> uuid = id::UUID::fromBytes(acknowledge.uuid());
       if (uuid.isError()) {
         return uuid.error();
       }
+
+      // TODO(gkleiman): Revisit this once we introduce support for external
+      // resource providers.
+      if (!acknowledge.has_slave_id()) {
+        return Error("Expecting 'agent_id' to be present");
+      }
+
+      // TODO(gkleiman): Revisit this once agent supports sending status
+      // updates for operations affecting default resources (MESOS-8194).
+      if (!acknowledge.has_resource_provider_id()) {
+        return Error("Expecting 'resource_provider_id' to be present");
+      }
+
       return None();
     }
 
@@ -611,9 +654,9 @@ Option<Error> validate(
       }
       return None();
 
-    case mesos::scheduler::Call::RECONCILE_OFFER_OPERATIONS:
-      if (!call.has_reconcile_offer_operations()) {
-        return Error("Expecting 'reconcile_offer_operations' to be present");
+    case mesos::scheduler::Call::RECONCILE_OPERATIONS:
+      if (!call.has_reconcile_operations()) {
+        return Error("Expecting 'reconcile_operations' to be present");
       }
       return None();
 
@@ -847,22 +890,22 @@ Option<Error> validate(const RepeatedPtrField<Resource>& resources)
 {
   Option<Error> error = Resources::validate(resources);
   if (error.isSome()) {
-    return Error("Invalid resources: " + error.get().message);
+    return Error("Invalid resources: " + error->message);
   }
 
   error = common::validation::validateGpus(resources);
   if (error.isSome()) {
-    return Error("Invalid 'gpus' resource: " + error.get().message);
+    return Error("Invalid 'gpus' resource: " + error->message);
   }
 
   error = validateDiskInfo(resources);
   if (error.isSome()) {
-    return Error("Invalid DiskInfo: " + error.get().message);
+    return Error("Invalid DiskInfo: " + error->message);
   }
 
   error = validateDynamicReservationInfo(resources);
   if (error.isSome()) {
-    return Error("Invalid ReservationInfo: " + error.get().message);
+    return Error("Invalid ReservationInfo: " + error->message);
   }
 
   return None();
@@ -1170,10 +1213,22 @@ Option<Error> validateKillPolicy(const TaskInfo& task)
 }
 
 
+Option<Error> validateMaxCompletionTime(const TaskInfo& task)
+{
+  if (task.has_max_completion_time() &&
+      Nanoseconds(task.max_completion_time().nanoseconds()) <
+        Duration::zero()) {
+    return Error("Task's `max_completion_time` must be non-negative");
+  }
+
+  return None();
+}
+
+
 Option<Error> validateCheck(const TaskInfo& task)
 {
   if (task.has_check()) {
-    Option<Error> error = checks::validation::checkInfo(task.check());
+    Option<Error> error = common::validation::validateCheckInfo(task.check());
     if (error.isSome()) {
       return Error("Task uses invalid check: " + error->message);
     }
@@ -1186,7 +1241,8 @@ Option<Error> validateCheck(const TaskInfo& task)
 Option<Error> validateHealthCheck(const TaskInfo& task)
 {
   if (task.has_health_check()) {
-    Option<Error> error = checks::validation::healthCheck(task.health_check());
+    Option<Error> error =
+      common::validation::validateHealthCheck(task.health_check());
     if (error.isSome()) {
       return Error("Task uses invalid health check: " + error->message);
     }
@@ -1304,6 +1360,7 @@ Option<Error> validateTask(
     lambda::bind(internal::validateUniqueTaskID, task, framework),
     lambda::bind(internal::validateSlaveID, task, slave),
     lambda::bind(internal::validateKillPolicy, task),
+    lambda::bind(internal::validateMaxCompletionTime, task),
     lambda::bind(internal::validateCheck, task),
     lambda::bind(internal::validateHealthCheck, task),
     lambda::bind(internal::validateResources, task),
@@ -1400,7 +1457,7 @@ Option<Error> validateExecutor(
         << "Executor '" << task.executor().executor_id()
         << "' for task '" << task.task_id()
         << "' uses less memory ("
-        << (mem.isSome() ? stringify(mem.get().megabytes()) : "None")
+        << (mem.isSome() ? stringify(mem.get()) : "None")
         << ") than the minimum required (" << MIN_MEM
         << "). Please update your executor, as this will be mandatory "
         << "in future releases.";
@@ -1484,8 +1541,13 @@ Option<Error> validateTask(
   }
 
   if (task.has_container()) {
-    if (task.container().network_infos().size() > 0) {
-      return Error("NetworkInfos must not be set on the task");
+    if (!task.container().network_infos().empty()) {
+      if (task.has_health_check() &&
+          (task.health_check().type() == HealthCheck::HTTP ||
+           task.health_check().type() == HealthCheck::TCP)) {
+        return Error("HTTP and TCP health checks are not supported for "
+                     "nested containers not joining parent's network");
+      }
     }
 
     if (task.container().type() == ContainerInfo::DOCKER) {
@@ -1583,7 +1645,7 @@ Option<Error> validateExecutor(
     return Error(
       "Executor '" + stringify(executor.executor_id()) +
       "' uses less memory (" +
-      (mem.isSome() ? stringify(mem.get().megabytes()) : "None") +
+      (mem.isSome() ? stringify(mem.get()) : "None") +
       ") than the minimum required (" + stringify(MIN_MEM) + ")");
   }
 
@@ -1940,7 +2002,13 @@ Option<Error> validate(
   // NOTE: this ensures the reservation is not being made to the "*" role.
   Option<Error> error = resource::validate(reserve.resources());
   if (error.isSome()) {
-    return Error("Invalid resources: " + error.get().message);
+    return Error("Invalid resources: " + error->message);
+  }
+
+  error =
+    resource::internal::validateSingleResourceProvider(reserve.resources());
+  if (error.isSome()) {
+    return Error("Invalid resources: " + error->message);
   }
 
   Option<hashset<string>> frameworkRoles;
@@ -2078,7 +2146,13 @@ Option<Error> validate(
 {
   Option<Error> error = resource::validate(unreserve.resources());
   if (error.isSome()) {
-    return Error("Invalid resources: " + error.get().message);
+    return Error("Invalid resources: " + error->message);
+  }
+
+  error =
+    resource::internal::validateSingleResourceProvider(unreserve.resources());
+  if (error.isSome()) {
+    return Error("Invalid resources: " + error->message);
   }
 
   // NOTE: We don't check that 'FrameworkInfo.principal' matches
@@ -2115,12 +2189,17 @@ Option<Error> validate(
 {
   Option<Error> error = resource::validate(create.volumes());
   if (error.isSome()) {
-    return Error("Invalid resources: " + error.get().message);
+    return Error("Invalid resources: " + error->message);
+  }
+
+  error = resource::internal::validateSingleResourceProvider(create.volumes());
+  if (error.isSome()) {
+    return Error("Invalid resources: " + error->message);
   }
 
   error = resource::validatePersistentVolume(create.volumes());
   if (error.isSome()) {
-    return Error("Not a persistent volume: " + error.get().message);
+    return Error("Not a persistent volume: " + error->message);
   }
 
   error = resource::validateUniquePersistenceID(
@@ -2141,7 +2220,7 @@ Option<Error> validate(
       return Error(
           "Create volume operation for '" + stringify(volume) +
           "' has been attempted by framework '" +
-          stringify(frameworkInfo.get().id()) +
+          stringify(frameworkInfo->id()) +
           "' with no SHARED_RESOURCES capability");
     }
 
@@ -2230,12 +2309,17 @@ Option<Error> validate(
 
   Option<Error> error = resource::validate(volumes);
   if (error.isSome()) {
-    return Error("Invalid resources: " + error.get().message);
+    return Error("Invalid resources: " + error->message);
+  }
+
+  error = resource::internal::validateSingleResourceProvider(volumes);
+  if (error.isSome()) {
+    return Error("Invalid resources: " + error->message);
   }
 
   error = resource::validatePersistentVolume(volumes);
   if (error.isSome()) {
-    return Error("Not a persistent volume: " + error.get().message);
+    return Error("Not a persistent volume: " + error->message);
   }
 
   foreach (const Resource volume, volumes) {
@@ -2285,9 +2369,138 @@ Option<Error> validate(
 }
 
 
-Option<Error> validate(const Offer::Operation::CreateVolume& createVolume)
+Option<Error> validate(
+    const Offer::Operation::GrowVolume& growVolume,
+    const protobuf::slave::Capabilities& agentCapabilities)
 {
-  const Resource& source = createVolume.source();
+  Option<Error> error = Resources::validate(growVolume.volume());
+  if (error.isSome()) {
+    return Error(
+        "Invalid resource in the 'GrowVolume.volume' field: " +
+        error->message);
+  }
+
+  error = Resources::validate(growVolume.addition());
+  if (error.isSome()) {
+    return Error(
+        "Invalid resource in the 'GrowVolume.addition' field: " +
+        error->message);
+  }
+
+  Value::Scalar zero;
+  zero.set_value(0);
+
+  // The `Scalar` comparison contains a fixed-point conversion.
+  if (growVolume.addition().scalar() <= zero) {
+    return Error(
+        "The size of 'GrowVolume.addition' field must be greater than zero");
+  }
+
+  if (Resources::hasResourceProvider(growVolume.volume())) {
+    return Error("Growing a volume from a resource provider is not supported");
+  }
+
+  error = resource::validatePersistentVolume(Resources(growVolume.volume()));
+  if (error.isSome()) {
+    return Error(
+        "Invalid persistent volume in the 'GrowVolume.volume' field: " +
+        error->message);
+  }
+
+  if (growVolume.volume().has_shared()) {
+    return Error("Growing a shared persistent volume is not supported");
+  }
+
+  // TODO(zhitao): Move this to a helper function
+  // `Resources::stripPersistentVolume`.
+  Resource stripped = growVolume.volume();
+
+  if (stripped.disk().has_source()) {
+    // PATH/MOUNT disk.
+    stripped.mutable_disk()->clear_persistence();
+    stripped.mutable_disk()->clear_volume();
+  } else {
+    // ROOT disk.
+    stripped.clear_disk();
+  }
+
+  if ((Resources(stripped) + growVolume.addition()).size() != 1) {
+    return Error(
+        "Incompatible resources in the 'GrowVolume.volume' and "
+        "'GrowVolume.addition' fields");
+  }
+
+  if (!agentCapabilities.resizeVolume) {
+    return Error(
+        "Volume " + stringify(growVolume.volume()) +
+        " cannot be grown on an agent without RESIZE_VOLUME capability");
+  }
+
+  return None();
+}
+
+
+Option<Error> validate(
+    const Offer::Operation::ShrinkVolume& shrinkVolume,
+    const protobuf::slave::Capabilities& agentCapabilities)
+{
+  Option<Error> error = Resources::validate(shrinkVolume.volume());
+  if (error.isSome()) {
+    return Error(
+        "Invalid resource in the 'ShrinkVolume.volume' field: " +
+        error->message);
+  }
+
+  Value::Scalar zero;
+  zero.set_value(0);
+
+  // The `Scalar` comparison contains a fixed-point conversion.
+  if (shrinkVolume.subtract() <= zero) {
+    return Error(
+        "Value of 'ShrinkVolume.subtract' must be greater than zero");
+  }
+
+  if (shrinkVolume.volume().scalar() <= shrinkVolume.subtract()) {
+    return Error(
+        "Value of 'ShrinkVolume.subtract' must be smaller than the size "
+        "of 'ShrinkVolume.volume'");
+  }
+
+  if (Resources::hasResourceProvider(shrinkVolume.volume())) {
+    return Error(
+        "Shrinking a volume from a resource provider is not supported");
+  }
+
+  if (shrinkVolume.volume().disk().source().type() ==
+      Resource::DiskInfo::Source::MOUNT) {
+    return Error(
+        "Shrinking a volume on a MOUNT disk is not supported");
+  }
+
+  error = resource::validatePersistentVolume(Resources(shrinkVolume.volume()));
+  if (error.isSome()) {
+    return Error(
+        "Invalid persistent volume in the 'ShrinkVolume.volume' field: " +
+        error->message);
+  }
+
+  if (shrinkVolume.volume().has_shared()) {
+    return Error("Shrinking a shared persistent volume is not supported");
+  }
+
+  if (!agentCapabilities.resizeVolume) {
+    return Error(
+        "Volume " + stringify(shrinkVolume.volume()) +
+        " cannot be shrunk on an agent without RESIZE_VOLUME capability");
+  }
+
+  return None();
+}
+
+
+Option<Error> validate(const Offer::Operation::CreateDisk& createDisk)
+{
+  const Resource& source = createDisk.source();
 
   Option<Error> error = resource::validate(Resources(source));
   if (error.isSome()) {
@@ -2295,80 +2508,38 @@ Option<Error> validate(const Offer::Operation::CreateVolume& createVolume)
   }
 
   if (!Resources::hasResourceProvider(source)) {
-    return Error("Does not have a resource provider");
+    return Error("'source' is not managed by a resource provider");
   }
 
   if (!Resources::isDisk(source, Resource::DiskInfo::Source::RAW)) {
     return Error("'source' is not a RAW disk resource");
   }
 
-  if (createVolume.target_type() != Resource::DiskInfo::Source::MOUNT &&
-      createVolume.target_type() != Resource::DiskInfo::Source::PATH) {
-    return Error("'target_type' is neither MOUNT or PATH");
+  if (createDisk.target_type() != Resource::DiskInfo::Source::MOUNT &&
+      createDisk.target_type() != Resource::DiskInfo::Source::BLOCK) {
+    return Error("'target_type' is neither MOUNT or BLOCK");
   }
 
   return None();
 }
 
 
-Option<Error> validate(const Offer::Operation::DestroyVolume& destroyVolume)
+Option<Error> validate(const Offer::Operation::DestroyDisk& destroyDisk)
 {
-  const Resource& volume = destroyVolume.volume();
+  const Resource& source = destroyDisk.source();
 
-  Option<Error> error = resource::validate(Resources(volume));
+  Option<Error> error = resource::validate(Resources(source));
   if (error.isSome()) {
     return Error("Invalid resource: " + error->message);
   }
 
-  if (!Resources::hasResourceProvider(volume)) {
-    return Error("Does not have a resource provider");
-  }
-
-  if (!Resources::isDisk(volume, Resource::DiskInfo::Source::MOUNT) &&
-      !Resources::isDisk(volume, Resource::DiskInfo::Source::PATH)) {
-    return Error("'volume' is neither a MOUTN or PATH disk resource");
-  }
-
-  return None();
-}
-
-
-Option<Error> validate(const Offer::Operation::CreateBlock& createBlock)
-{
-  const Resource& source = createBlock.source();
-
-  Option<Error> error = resource::validate(Resources(source));
-  if (error.isSome()) {
-    return Error("Invalid resource: " + error.get().message);
-  }
-
   if (!Resources::hasResourceProvider(source)) {
-    return Error("Does not have a resource provider");
+    return Error("'source' is not managed by a resource provider");
   }
 
-  if (!Resources::isDisk(source, Resource::DiskInfo::Source::RAW)) {
-    return Error("'source' is not a RAW disk resource");
-  }
-
-  return None();
-}
-
-
-Option<Error> validate(const Offer::Operation::DestroyBlock& destroyBlock)
-{
-  const Resource& block = destroyBlock.block();
-
-  Option<Error> error = resource::validate(Resources(block));
-  if (error.isSome()) {
-    return Error("Invalid resource: " + error.get().message);
-  }
-
-  if (!Resources::hasResourceProvider(block)) {
-    return Error("Does not have a resource provider");
-  }
-
-  if (!Resources::isDisk(block, Resource::DiskInfo::Source::BLOCK)) {
-    return Error("'block' is not a BLOCK disk resource");
+  if (!Resources::isDisk(source, Resource::DiskInfo::Source::MOUNT) &&
+      !Resources::isDisk(source, Resource::DiskInfo::Source::BLOCK)) {
+    return Error("'source' is neither a MOUNT or BLOCK disk resource");
   }
 
   return None();

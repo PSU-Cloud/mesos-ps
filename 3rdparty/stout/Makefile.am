@@ -53,6 +53,7 @@ GLOG = $(BUNDLED_DIR)/glog-$(GLOG_VERSION)
 GOOGLETEST = $(BUNDLED_DIR)/googletest-release-$(GOOGLETEST_VERSION)
 GMOCK = $(GOOGLETEST)/googlemock
 GTEST = $(GOOGLETEST)/googletest
+LIBARCHIVE = $(BUNDLED_DIR)/libarchive-$(LIBARCHIVE_VERSION)
 PROTOBUF = $(BUNDLED_DIR)/protobuf-$(PROTOBUF_VERSION)
 PICOJSON = $(BUNDLED_DIR)/picojson-$(PICOJSON_VERSION)
 
@@ -64,11 +65,8 @@ BUNDLED_DEPS = # Initialize BUNDLED_DEPS so we can add to it.
 %-stamp:
 	@cd $(BUNDLED_DIR) && $(MAKE) $(AM_MAKEFLAGS) $(@:$(BUNDLED_DIR)/%=%)
 
-# We use "-isystem" instead of "-I" to add Boost to the include search
-# path. This disables compiler warnings inside Boost headers since we
-# can't easily fix them. See MESOS-3799.
 if WITH_BUNDLED_BOOST
-BOOST_INCLUDE_FLAGS = -isystem $(BOOST)
+BOOST_INCLUDE_FLAGS = -I$(BOOST)
 BUNDLED_DEPS += $(BOOST)-stamp
 endif
 
@@ -95,10 +93,16 @@ $(LIB_GMOCK): $(GMOCK)-build-stamp
 BUNDLED_DEPS += $(GMOCK)-build-stamp
 endif
 
-# Enable the INT64 support for PicoJSON.
-PICOJSON_INCLUDE_FLAGS =	\
-  -DPICOJSON_USE_INT64		\
-  -D__STDC_FORMAT_MACROS
+PICOJSON_INCLUDE_FLAGS = -D__STDC_FORMAT_MACROS
+
+if WITH_BUNDLED_LIBARCHIVE
+LIBARCHIVE_INCLUDE_FLAGS = -I$(LIBARCHIVE)/libarchive
+LIB_LIBARCHIVE = $(LIBARCHIVE)/.libs/libarchive.la
+$(LIB_LIBARCHIVE): $(LIBARCHIVE)-build-stamp
+BUNDLED_DEPS += $(LIBARCHIVE)-build-stamp
+else
+LIB_LIBARCHIVE = -larchive
+endif
 
 if WITH_BUNDLED_PICOJSON
 PICOJSON_INCLUDE_FLAGS += -I$(PICOJSON)
@@ -127,6 +131,7 @@ check_PROGRAMS = stout-tests
 
 stout_tests_SOURCES =			\
   tests/adaptor_tests.cpp		\
+  tests/archiver_tests.cpp		\
   tests/base64_tests.cpp		\
   tests/bits_tests.cpp			\
   tests/boundedhashmap_tests.cpp	\
@@ -192,6 +197,7 @@ stout_tests_CPPFLAGS =			\
   $(GLOG_INCLUDE_FLAGS)			\
   $(GMOCK_INCLUDE_FLAGS)		\
   $(GTEST_INCLUDE_FLAGS)		\
+  $(LIBARCHIVE_INCLUDE_FLAGS)		\
   $(PICOJSON_INCLUDE_FLAGS)		\
   $(PROTOBUF_INCLUDE_FLAGS)		\
   $(AM_CPPFLAGS)
@@ -202,6 +208,7 @@ stout_tests_CPPFLAGS =			\
 stout_tests_LDADD =			\
   $(LIB_GMOCK)				\
   $(LIB_GLOG)				\
+  $(LIB_LIBARCHIVE)			\
   $(LIB_PROTOBUF)			\
   -lsvn_subr-1				\
   -lsvn_delta-1				\
@@ -234,7 +241,7 @@ CLEANFILES =				\
 check-local: tests
 	$(TEST_DRIVER) ./stout-tests
 
-tests: $(BUNDLED_DEPS)
+tests: $(BUNDLED_DEPS) $(BUILT_SOURCES)
 	$(MAKE) $(AM_MAKEFLAGS) stout-tests
 
 PHONY_TARGETS += tests

@@ -17,7 +17,6 @@
 #ifndef __TEST_LAUNCHER_HPP__
 #define __TEST_LAUNCHER_HPP__
 
-#include <list>
 #include <map>
 #include <string>
 #include <vector>
@@ -49,26 +48,25 @@ class TestLauncher : public slave::Launcher
 public:
   TestLauncher(const process::Owned<slave::Launcher>& _real);
 
-  ~TestLauncher();
+  ~TestLauncher() override;
 
   MOCK_METHOD1(
       recover,
       process::Future<hashset<ContainerID>>(
-          const std::list<mesos::slave::ContainerState>& states));
+          const std::vector<mesos::slave::ContainerState>& states));
 
-  MOCK_METHOD10(
+  MOCK_METHOD9(
       fork,
       Try<pid_t>(
           const ContainerID& containerId,
           const std::string& path,
           const std::vector<std::string>& argv,
-          const process::Subprocess::IO& in,
-          const process::Subprocess::IO& out,
-          const process::Subprocess::IO& err,
+          const mesos::slave::ContainerIO& containerIO,
           const flags::FlagsBase* flags,
           const Option<std::map<std::string, std::string>>& env,
           const Option<int>& enterNamespaces,
-          const Option<int>& cloneNamespaces));
+          const Option<int>& cloneNamespaces,
+          const std::vector<int_fd>& whitelistFds));
 
   MOCK_METHOD1(
       destroy,

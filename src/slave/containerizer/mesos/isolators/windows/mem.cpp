@@ -24,11 +24,12 @@
 #include <stout/duration.hpp>
 #include <stout/hashset.hpp>
 #include <stout/nothing.hpp>
+#include <stout/os.hpp>
 #include <stout/stringify.hpp>
 #include <stout/try.hpp>
 #include <stout/windows.hpp>
 
-#include <stout/windows/os.hpp>
+#include <stout/os/windows/jobobject.hpp>
 
 #include "slave/flags.hpp"
 
@@ -44,8 +45,8 @@ using process::Failure;
 using process::Future;
 using process::Owned;
 
-using std::list;
 using std::max;
+using std::vector;
 
 namespace mesos {
 namespace internal {
@@ -62,7 +63,7 @@ bool WindowsMemIsolatorProcess::supportsStandalone() { return true; }
 // When recovering, this ensures that our ContainerID -> PID mapping is
 // recreated.
 Future<Nothing> WindowsMemIsolatorProcess::recover(
-    const list<ContainerState>& state, const hashset<ContainerID>& orphans)
+    const vector<ContainerState>& state, const hashset<ContainerID>& orphans)
 {
   foreach (const ContainerState& run, state) {
     // This should (almost) never occur: see comment in
@@ -71,7 +72,7 @@ Future<Nothing> WindowsMemIsolatorProcess::recover(
       return Failure("Container already recovered");
     }
 
-    infos[run.container_id()] = {run.pid(), None()};
+    infos[run.container_id()] = {static_cast<pid_t>(run.pid()), None()};
   }
 
   return Nothing();
@@ -209,7 +210,7 @@ Future<ResourceStatistics> WindowsMemIsolatorProcess::usage(
   const Try<Bytes> mem_total_bytes =
     os::get_job_mem(infos[containerId].pid.get());
   if (mem_total_bytes.isSome()) {
-    result.set_mem_total_bytes(mem_total_bytes.get().bytes());
+    result.set_mem_total_bytes(mem_total_bytes->bytes());
   }
 
   return result;

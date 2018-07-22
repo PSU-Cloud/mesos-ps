@@ -17,7 +17,6 @@
 #ifndef __DOCKER_VOLUME_ISOLATOR_HPP__
 #define __DOCKER_VOLUME_ISOLATOR_HPP__
 
-#include <list>
 #include <string>
 #include <vector>
 
@@ -50,21 +49,21 @@ public:
       const Flags& flags,
       const process::Owned<docker::volume::DriverClient>& client);
 
-  virtual ~DockerVolumeIsolatorProcess();
+  ~DockerVolumeIsolatorProcess() override;
 
-  virtual bool supportsNesting();
-  virtual bool supportsStandalone();
+  bool supportsNesting() override;
+  bool supportsStandalone() override;
 
-  virtual process::Future<Nothing> recover(
-      const std::list<mesos::slave::ContainerState>& states,
-      const hashset<ContainerID>& orphans);
+  process::Future<Nothing> recover(
+      const std::vector<mesos::slave::ContainerState>& states,
+      const hashset<ContainerID>& orphans) override;
 
-  virtual process::Future<Option<mesos::slave::ContainerLaunchInfo>> prepare(
+  process::Future<Option<mesos::slave::ContainerLaunchInfo>> prepare(
       const ContainerID& containerId,
-      const mesos::slave::ContainerConfig& containerConfig);
+      const mesos::slave::ContainerConfig& containerConfig) override;
 
-  virtual process::Future<Nothing> cleanup(
-      const ContainerID& containerId);
+  process::Future<Nothing> cleanup(
+      const ContainerID& containerId) override;
 
 private:
   struct Info
@@ -83,11 +82,11 @@ private:
   process::Future<Option<mesos::slave::ContainerLaunchInfo>> _prepare(
       const ContainerID& containerId,
       const std::vector<std::string>& targets,
-      const std::list<process::Future<std::string>>& futures);
+      const std::vector<process::Future<std::string>>& futures);
 
   process::Future<Nothing> _cleanup(
       const ContainerID& containerId,
-      const std::list<process::Future<Nothing>>& futures);
+      const std::vector<process::Future<Nothing>>& futures);
 
   Try<Nothing> _recover(const ContainerID& containerId);
 

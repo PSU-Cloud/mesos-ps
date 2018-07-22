@@ -31,6 +31,8 @@
 
 #include <mesos/v1/resources.hpp>
 
+#include "common/resources_utils.hpp"
+
 #include "internal/evolve.hpp"
 
 #include "master/master.hpp"
@@ -65,7 +67,7 @@ TEST(ResourcesTest, Parsing)
   Resource cpus = Resources::parse("cpus", "45.55", "*").get();
 
   ASSERT_EQ(Value::SCALAR, cpus.type());
-  EXPECT_FLOAT_EQ(45.55, cpus.scalar().value());
+  EXPECT_DOUBLE_EQ(45.55, cpus.scalar().value());
 
   Resource ports = Resources::parse(
       "ports", "[10000-20000, 30000-50000]", "*").get();
@@ -774,7 +776,7 @@ TEST(ResourcesTest, Resources)
       "cpus:45.55;mem:1024;ports:[10000-20000, 30000-50000];disk:512").get();
 
   EXPECT_SOME(r.cpus());
-  EXPECT_FLOAT_EQ(45.55, r.cpus().get());
+  EXPECT_DOUBLE_EQ(45.55, r.cpus().get());
   EXPECT_SOME_EQ(Megabytes(1024), r.mem());
   EXPECT_SOME_EQ(Megabytes(512), r.disk());
 
@@ -788,10 +790,10 @@ TEST(ResourcesTest, Resources)
   r = Resources::parse("cpus:45.55;disk:512").get();
 
   EXPECT_SOME(r.cpus());
-  EXPECT_FLOAT_EQ(45.55, r.cpus().get());
+  EXPECT_DOUBLE_EQ(45.55, r.cpus().get());
   EXPECT_SOME_EQ(Megabytes(512), r.disk());
-  EXPECT_TRUE(r.mem().isNone());
-  EXPECT_TRUE(r.ports().isNone());
+  EXPECT_NONE(r.mem());
+  EXPECT_NONE(r.ports());
 }
 
 
@@ -1925,16 +1927,50 @@ TEST(ResourcesTest, PrecisionRounding)
 }
 
 
-TEST(ResourcesTest, PrecisionVerySmallValue)
+TEST(ResourcesTest, VerySmallValue)
 {
-  Resources r1 = Resources::parse("cpus:2;mem:1024").get();
-  Resources r2 = Resources::parse("cpus:0.00001;mem:1").get();
+  Try<Resources> resources = Resources::parse("cpus:0.00001");
+  EXPECT_ERROR(resources);
+}
 
-  Resources r3 = r1 - (r1 - r2);
-  EXPECT_TRUE(r3.contains(r2));
 
-  Resources r4 = Resources::parse("cpus:0;mem:1").get();
-  EXPECT_EQ(r2, r4);
+TEST(ResourcesTest, AbsentResources)
+{
+  Try<Resources> resources = Resources::parse("gpus:0");
+  ASSERT_SOME(resources);
+
+  EXPECT_EQ(0u, resources->size());
+}
+
+
+TEST(ResourcesTest, isScalarQuantity)
+{
+  Resources scalarQuantity1 = Resources::parse("cpus:1").get();
+  EXPECT_TRUE(Resources::isScalarQuantity(scalarQuantity1));
+
+  Resources scalarQuantity2 = Resources::parse("cpus:1;mem:1").get();
+  EXPECT_TRUE(Resources::isScalarQuantity(scalarQuantity2));
+
+  Resources range = Resources::parse("ports", "[1-16000]", "*").get();
+  EXPECT_FALSE(Resources::isScalarQuantity(range));
+
+  Resources set = Resources::parse("names:{foo,bar}").get();
+  EXPECT_FALSE(Resources::isScalarQuantity(set));
+
+  Resources reserved = createReservedResource(
+      "cpus", "1", createDynamicReservationInfo("role", "principal"));
+  EXPECT_FALSE(Resources::isScalarQuantity(reserved));
+
+  Resources disk = createDiskResource("10", "role1", "1", "path");
+  EXPECT_FALSE(Resources::isScalarQuantity(disk));
+
+  Resources allocated = Resources::parse("cpus:1;mem:512").get();
+  allocated.allocate("role");
+  EXPECT_FALSE(Resources::isScalarQuantity(allocated));
+
+  Resource revocable = Resources::parse("cpus", "1", "*").get();
+  revocable.mutable_revocable();
+  EXPECT_FALSE(Resources::isScalarQuantity(revocable));
 }
 
 
@@ -2601,19 +2637,14 @@ TEST(ResourcesOperationTest, StrippedResourcesVolume)
   Resources stripped = volume.createStrippedScalarQuantity();
 
   EXPECT_TRUE(stripped.persistentVolumes().empty());
+  EXPECT_TRUE(stripped.reserved().empty());
   EXPECT_EQ(Megabytes(200), stripped.disk().get());
-
-  // `createStrippedScalarQuantity` doesn't remove the `role` from a
-  // reserved resource.
-  EXPECT_FALSE(stripped.reserved("role").empty());
 
   Resource strippedVolume = *(stripped.begin());
 
   ASSERT_EQ(Value::SCALAR, strippedVolume.type());
-  EXPECT_FLOAT_EQ(200, strippedVolume.scalar().value());
-  EXPECT_EQ("role", Resources::reservationRole(strippedVolume));
+  EXPECT_DOUBLE_EQ(200, strippedVolume.scalar().value());
   EXPECT_EQ("disk", strippedVolume.name());
-  EXPECT_EQ(1, strippedVolume.reservations_size());
   EXPECT_FALSE(strippedVolume.has_disk());
   EXPECT_FALSE(Resources::isPersistentVolume(strippedVolume));
 }
@@ -2642,13 +2673,11 @@ TEST(ResourcesOperationTest, StrippedResourcesReserved)
 
   Resources stripped = dynamicallyReserved.createStrippedScalarQuantity();
 
-  EXPECT_FALSE(stripped.reserved("role").empty());
+  EXPECT_TRUE(stripped.reserved("role").empty());
 
   foreach (const Resource& resource, stripped) {
-    EXPECT_EQ("role", Resources::reservationRole(resource));
-    EXPECT_FALSE(resource.reservations().empty());
     EXPECT_FALSE(Resources::isDynamicallyReserved(resource));
-    EXPECT_FALSE(Resources::isUnreserved(resource));
+    EXPECT_TRUE(Resources::isUnreserved(resource));
   }
 }
 
@@ -2675,6 +2704,19 @@ TEST(ResourcesOperationTest, StrippedResourcesNonScalar)
   Resources names = Resources::parse("names:{foo,bar}").get();
 
   EXPECT_TRUE(names.createStrippedScalarQuantity().empty());
+}
+
+
+TEST(ResourceOperationTest, StrippedResourcesRevocable)
+{
+  Resource plain = Resources::parse("cpus", "1", "*").get();
+
+  Resource revocable = plain;
+  revocable.mutable_revocable();
+
+  Resources stripped = Resources(revocable).createStrippedScalarQuantity();
+
+  EXPECT_EQ(Resources(plain), stripped);
 }
 
 
@@ -2888,6 +2930,26 @@ TEST(RevocableResourceTest, Filter)
 }
 
 
+// This test verifies that `Resources::find()` correctly distinguishes
+// between revocable and non-revocable resources.
+TEST(RevocableResourceTest, Find)
+{
+  Resources r1 = createRevocableResource("cpus", "1", "*", true);
+  EXPECT_EQ(r1, r1.revocable());
+  EXPECT_TRUE(r1.nonRevocable().empty());
+
+  Resources r2 = Resources::parse("cpus:1").get();
+  EXPECT_EQ(r2, r2.nonRevocable());
+  EXPECT_TRUE(r2.revocable().empty());
+
+  EXPECT_SOME_EQ(r1, (r1 + r2).find(r1));
+  EXPECT_SOME_EQ(r2, (r1 + r2).find(r2));
+
+  EXPECT_NONE(r1.find(r2));
+  EXPECT_NONE(r2.find(r1));
+}
+
+
 // This test checks that the resources in the "pre-reservation-refinement"
 // format are valid. In the "pre-reservation-refinement" format, the reservation
 // state is represented by `Resource.role` and `Resource.reservation` fields.
@@ -3011,6 +3073,176 @@ TEST(ResourceFormatTest, Endpoint)
   refinedReservation2->set_principal("principal1");
 
   EXPECT_SOME(Resources::validate(resource));
+}
+
+
+TEST(ResourceFormatTest, DowngradeWithoutResources)
+{
+  FrameworkInfo frameworkInfo = DEFAULT_FRAMEWORK_INFO;
+  EXPECT_SOME(downgradeResources(&frameworkInfo));
+  EXPECT_EQ(DEFAULT_FRAMEWORK_INFO, frameworkInfo);
+}
+
+
+TEST(ResourceFormatTest, DowngradeWithResourcesWithoutRefinedReservations)
+{
+  SlaveID slaveId;
+  slaveId.set_value("agent");
+
+  TaskInfo actual;
+  {
+    actual.set_name("task");
+    actual.mutable_task_id()->set_value("task_id");
+    actual.mutable_slave_id()->CopyFrom(slaveId);
+
+    Resource resource;
+    resource.set_name("cpus");
+    resource.set_type(Value::SCALAR);
+    resource.mutable_scalar()->set_value(555.5);
+
+    // Add "post-reservation-refinement" resources.
+
+    // Unreserved resource.
+    actual.add_resources()->CopyFrom(resource);
+
+    Resource::ReservationInfo* reservation = resource.add_reservations();
+
+    // Statically reserved resource.
+    reservation->set_type(Resource::ReservationInfo::STATIC);
+    reservation->set_role("foo");
+    actual.add_resources()->CopyFrom(resource);
+
+    // Dynamically reserved resource.
+    reservation->set_type(Resource::ReservationInfo::DYNAMIC);
+    reservation->set_role("bar");
+    reservation->set_principal("principal1");
+    actual.add_resources()->CopyFrom(resource);
+  }
+
+  TaskInfo expected;
+  {
+    expected.set_name("task");
+    expected.mutable_task_id()->set_value("task_id");
+    expected.mutable_slave_id()->CopyFrom(slaveId);
+
+    Resource resource;
+    resource.set_name("cpus");
+    resource.set_type(Value::SCALAR);
+    resource.mutable_scalar()->set_value(555.5);
+
+    // Add "pre-reservation-refinement" resources.
+
+    // Unreserved resource.
+    resource.set_role("*");
+    expected.add_resources()->CopyFrom(resource);
+
+    // Statically reserved resource.
+    resource.set_role("foo");
+    expected.add_resources()->CopyFrom(resource);
+
+    // Dynamically reserved resource.
+    resource.set_role("bar");
+    Resource::ReservationInfo* reservation = resource.mutable_reservation();
+    reservation->set_principal("principal1");
+    expected.add_resources()->CopyFrom(resource);
+  }
+
+  EXPECT_SOME(downgradeResources(&actual));
+  EXPECT_EQ(expected, actual);
+}
+
+
+TEST(ResourceFormatTest, DowngradeWithResourcesWithRefinedReservations)
+{
+  SlaveID slaveId;
+  slaveId.set_value("agent");
+
+  TaskInfo actual;
+  {
+    actual.set_name("task");
+    actual.mutable_task_id()->set_value("task_id");
+    actual.mutable_slave_id()->CopyFrom(slaveId);
+
+    Resource resource;
+    resource.set_name("cpus");
+    resource.set_type(Value::SCALAR);
+    resource.mutable_scalar()->set_value(555.5);
+
+    // Add "post-reservation-refinement" resources.
+
+    // Unreserved resource.
+    actual.add_resources()->CopyFrom(resource);
+
+    Resource::ReservationInfo* reservation = resource.add_reservations();
+
+    // Statically reserved resource.
+    reservation->set_type(Resource::ReservationInfo::STATIC);
+    reservation->set_role("foo");
+    actual.add_resources()->CopyFrom(resource);
+
+    // Dynamically reserved resource.
+    reservation->set_type(Resource::ReservationInfo::DYNAMIC);
+    reservation->set_role("bar");
+    reservation->set_principal("principal1");
+    actual.add_resources()->CopyFrom(resource);
+
+    // Dynamically refined reservation on top of dynamic reservation.
+    Resource::ReservationInfo* refinedReservation = resource.add_reservations();
+    refinedReservation->set_type(Resource::ReservationInfo::DYNAMIC);
+    refinedReservation->set_role("bar/baz");
+    refinedReservation->set_principal("principal2");
+    actual.add_resources()->CopyFrom(resource);
+  }
+
+  TaskInfo expected;
+  {
+    expected.set_name("task");
+    expected.mutable_task_id()->set_value("task_id");
+    expected.mutable_slave_id()->CopyFrom(slaveId);
+
+    Resource resource;
+    resource.set_name("cpus");
+    resource.set_type(Value::SCALAR);
+    resource.mutable_scalar()->set_value(555.5);
+
+    // Add "pre-reservation-refinement" resources.
+
+    // Unreserved resource.
+    resource.set_role("*");
+    expected.add_resources()->CopyFrom(resource);
+
+    // Statically reserved resource.
+    resource.set_role("foo");
+    expected.add_resources()->CopyFrom(resource);
+
+    // Dynamically reserved resource.
+    resource.set_role("bar");
+    Resource::ReservationInfo* reservation = resource.mutable_reservation();
+    reservation->set_principal("principal1");
+    expected.add_resources()->CopyFrom(resource);
+
+    // Add non-downgradable resources. Note that the non-downgradable
+    // resources remain in "post-reservation-refinement" format.
+
+    // Dynamically refined reservation on top of dynamic reservation.
+    resource.clear_role();
+    resource.clear_reservation();
+
+    Resource::ReservationInfo* dynamicReservation = resource.add_reservations();
+    dynamicReservation->set_type(Resource::ReservationInfo::DYNAMIC);
+    dynamicReservation->set_role("bar");
+    dynamicReservation->set_principal("principal1");
+
+    Resource::ReservationInfo* refinedReservation = resource.add_reservations();
+    refinedReservation->set_type(Resource::ReservationInfo::DYNAMIC);
+    refinedReservation->set_role("bar/baz");
+    refinedReservation->set_principal("principal2");
+
+    expected.add_resources()->CopyFrom(resource);
+  }
+
+  EXPECT_ERROR(downgradeResources(&actual));
+  EXPECT_EQ(expected, actual);
 }
 
 
@@ -3412,24 +3644,6 @@ public:
     }
     reservations.totalOperations = 10;
 
-    // Test the performance of ranges using a fragmented range of
-    // ports: [1-2,4-5,7-8,...,1000]. Note that the benchmark will
-    // continuously sum together the same port range, which does
-    // not preserve arithmetic invariants (a+a-a != a).
-    string ports;
-    for (int portBegin = 1; portBegin < 1000-1; portBegin = portBegin + 3) {
-      if (!ports.empty()) {
-        ports += ",";
-      }
-      ports += stringify(portBegin) + "-" + stringify(portBegin+1);
-    }
-
-    // TODO(gyliu513): Move the ports resources benchmark test
-    // to a separate test class.
-    ScalarArithmeticParameter ranges;
-    ranges.resources = Resources::parse("ports:[" + ports + "]").get();
-    ranges.totalOperations = 1000;
-
     // Test a typical vector of scalars which include shared resources
     // (viz, shared persistent volumes).
     Resource disk = createDiskResource(
@@ -3441,7 +3655,6 @@ public:
 
     parameters_.push_back(std::move(scalars));
     parameters_.push_back(std::move(reservations));
-    parameters_.push_back(std::move(ranges));
     parameters_.push_back(std::move(shared));
 
     return parameters_;
@@ -3754,6 +3967,104 @@ TEST_P(Resources_Parse_BENCHMARK_Test, Parse)
     Try<Resources> resource = Resources::parse(inputString);
     EXPECT_SOME(resource);
   }
+}
+
+
+class Resources_Ranges_BENCHMARK_Test
+  : public MesosTest,
+    public ::testing::WithParamInterface<size_t> {};
+
+
+// Size "100" here means 100 sub-ranges. We choose to parameterize on number of
+// subranges because it's a dominant factor in the performance of range
+// arithmetic operations.
+INSTANTIATE_TEST_CASE_P(
+    ResourcesRangesSizes,
+    Resources_Ranges_BENCHMARK_Test,
+    ::testing::Values(10U, 100U, 1000U));
+
+
+// This test benchmarks the range arithmetic performance when the two
+// range operands have partial overlappings.
+TEST_P(Resources_Ranges_BENCHMARK_Test, ArithmeticOverlapping)
+{
+  const size_t totalOperations = 1000;
+
+  // We construct `ports1` and `ports2` such that each of their
+  // intervals partially overlaps with the other:
+  // ports1 = [1-6, 11-16, 21-26, ..., 991-996] (100 sub-ranges of [1-996])
+  // ports2 = [3-8, 13-18, 23-28, ..., 993-998] (100 sub-ranges of [1-998])
+  Value::Ranges ranges1, ranges2;
+  for (size_t i = 0, port1Index = 1, port2Index = 3, stride = 5; i < GetParam();
+       i++) {
+    *ranges1.add_range() = createRange(port1Index, port1Index + stride);
+    *ranges2.add_range() = createRange(port2Index, port2Index + stride);
+
+    port1Index += stride * 2;
+    port2Index += stride * 2;
+  }
+
+  Resources ports1 = createPorts(ranges1);
+  Resources ports2 = createPorts(ranges2);
+
+  auto printResult = [&](const string& operation, const Duration& elapsedTime) {
+    cout << "Took " << elapsedTime << " to perform " << totalOperations << " '"
+         << operation << "' operations on " << abbreviate(stringify(ports1), 27)
+         << ranges1.range(GetParam() - 1).begin() << "-"
+         << ranges1.range(GetParam() - 1).end() << "] and "
+         << abbreviate(stringify(ports2), 27) << ", "
+         << ranges2.range(GetParam() - 1).begin() << "-"
+         << ranges2.range(GetParam() - 1).end() << "] with " << GetParam()
+         << " sub-ranges" << endl;
+  };
+
+  Resources result;
+
+  Stopwatch watch;
+
+  Duration elapsedTime;
+
+  for (size_t i = 0; i < totalOperations; i++) {
+    result = ports1;
+
+    watch.start();
+    result += ports2;
+    watch.stop();
+
+    elapsedTime += watch.elapsed();
+  }
+
+  printResult("a += b", elapsedTime);
+
+  elapsedTime = Duration::zero();
+
+  for (size_t i = 0; i < totalOperations; i++) {
+    result = ports1;
+
+    watch.start();
+    result -= ports2;
+    watch.stop();
+
+    elapsedTime += watch.elapsed();
+  }
+
+  printResult("a -= b", elapsedTime);
+
+  watch.start();
+  for (size_t i = 0; i < totalOperations; i++) {
+    result = ports1 + ports2;
+  }
+  watch.stop();
+
+  printResult("a + b", watch.elapsed());
+
+  watch.start();
+  for (size_t i = 0; i < totalOperations; i++) {
+    result = ports1 - ports2;
+  }
+  watch.stop();
+
+  printResult("a - b", watch.elapsed());
 }
 
 } // namespace tests {

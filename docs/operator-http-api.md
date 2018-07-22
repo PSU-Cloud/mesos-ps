@@ -13,7 +13,7 @@ Similar to the [Scheduler](scheduler-http-api.md) and [Executor](executor-http-a
 
 For requests that Mesos can answer synchronously and immediately, an HTTP response will be sent with status **200 OK**, possibly including a response body encoded in JSON or Protobuf. The encoding depends on the **Accept** header present in the request (the default encoding is JSON). Responses will be gzip compressed if the **Accept-Encoding** header is set to "gzip".
 
-For requests that require asynchronous processing (e.g., `RESERVE_RESOURCES`), an HTTP response will be sent with status **202 Accepted**. For requests that result in a stream of events (`SUBSCRIBE`), a streaming HTTP response with [RecordIO](scheduler-http-api.md#recordio-response-format) encoding is sent. Currently, gzip compression is not supported for streaming responses.
+For requests that require asynchronous processing (e.g., `RESERVE_RESOURCES`), an HTTP response will be sent with status **202 Accepted**. For requests that result in a stream of events (`SUBSCRIBE`), a streaming HTTP response with [RecordIO](recordio.md) encoding is sent. Currently, gzip compression is not supported for streaming responses.
 
 ## Master API
 
@@ -674,6 +674,10 @@ Content-Type: application/json
       },
       {
         "name": "master/tasks_lost",
+        "value": 0.0
+      },
+      {
+        "name": "master/messages_reconcile_operations",
         "value": 0.0
       },
       {
@@ -1879,11 +1883,11 @@ HTTP/1.1 202 Accepted
 
 ### CREATE_VOLUMES
 
-This call create persistent volumes on reserved resources. The request is
-forwarded asynchronously to the Mesos agent where the reserved resources are
-located. That asynchronous message may not be delivered or creating the volumes
-at the agent might fail. This call takes `agent_id` and `volumes` details like
-the following.
+This call create [persistent volumes](persistent-volume.md) on reserved
+resources. The request is forwarded asynchronously to the Mesos agent where the
+reserved resources are located. That asynchronous message may not be delivered
+or creating the volumes at the agent might fail. This call takes `agent_id`
+and `volumes` details like the following.
 
 ```
 CREATE_VOLUMES HTTP Request (JSON):
@@ -1932,8 +1936,8 @@ HTTP/1.1 202 Accepted
 
 ### DESTROY_VOLUMES
 
-This call destroys persistent volumes. The request is forwarded asynchronously to the
-Mesos agent where the reserved resources are located.
+This call destroys [persistent volumes](persistent-volume.md). The request is
+forwarded asynchronously to the Mesos agent where the volumes are located.
 
 ```
 DESTROY_VOLUMES HTTP Request (JSON):
@@ -1979,6 +1983,116 @@ DESTROY_VOLUMES HTTP Response:
 HTTP/1.1 202 Accepted
 
 ```
+
+### GROW_VOLUME
+
+This call grows the size of a [persistent volume](persistent-volume.md). The
+request is forwarded asynchronously to the Mesos agent where the volume is
+located.
+
+```
+GROW_VOLUME HTTP Request (JSON):
+
+POST /api/v1  HTTP/1.1
+
+Host: masterhost:5050
+Content-Type: application/json
+Accept: application/json
+
+{
+  "type": "GROW_VOLUME",
+  "grow_volume": {
+    "agent_id": {
+      "value": "919141a8-b434-4946-86b9-e1b65c8171f6-S0"
+    },
+    "volume": {
+      "disk": {
+        "persistence": {
+          "id": "id1",
+          "principal": "my-principal"
+        },
+        "volume": {
+          "container_path": "path1",
+          "mode": "RW"
+        }
+      },
+      "name": "disk",
+      "role": "role1",
+      "scalar": {
+        "value": 64.0
+      },
+      "type": "SCALAR"
+    },
+    "addition": {
+      "name": "disk",
+      "role": "role1",
+      "scalar": {
+        "value": 64.0
+      },
+      "type": "SCALAR"
+    }
+  }
+}
+
+
+GROW_VOLUME HTTP Response:
+
+HTTP/1.1 202 Accepted
+
+```
+
+### SHRINK_VOLUME
+
+This call shrinks the size of a [persistent volume](persistent-volume.md).
+The request is forwarded asynchronously to the Mesos agent where the volume
+is located.
+
+```
+SHRINK_VOLUME HTTP Request (JSON):
+
+POST /api/v1  HTTP/1.1
+
+Host: masterhost:5050
+Content-Type: application/json
+Accept: application/json
+
+{
+  "type": "SHRINK_VOLUME",
+  "shrink_volume": {
+    "agent_id": {
+      "value": "919141a8-b434-4946-86b9-e1b65c8171f6-S0"
+    },
+    "volume": {
+      "disk": {
+        "persistence": {
+          "id": "id1",
+          "principal": "my-principal"
+        },
+        "volume": {
+          "container_path": "path1",
+          "mode": "RW"
+        }
+      },
+      "name": "disk",
+      "role": "role1",
+      "scalar": {
+        "value": 128.0
+      },
+      "type": "SCALAR"
+    },
+    "subtract": {
+      "value": 64.0
+    }
+  }
+}
+
+
+SHRINK_VOLUME HTTP Response:
+
+HTTP/1.1 202 Accepted
+
+```
+
 
 ### GET_MAINTENANCE_STATUS
 
@@ -2330,7 +2444,7 @@ for all the running tasks. This signal can be used by stateful frameworks to
 re-schedule their workloads (volumes, reservations etc.) to other agent
 instances. It is possible that the tasks might still be running if the
 operator's assertion was wrong and the agent was partitioned away from
-the master. The agent would be shutdown when it tries to re-register with the
+the master. The agent would be shutdown when it tries to reregister with the
 master when the partition heals. This call is idempotent.
 
 ```
@@ -2390,7 +2504,7 @@ Transfer-Encoding: chunked
 <more events>
 ```
 
-The client is expected to keep a **persistent** connection open to the endpoint even after getting a `SUBSCRIBED` HTTP Response event. This is indicated by "Connection: keep-alive" and "Transfer-Encoding: chunked" headers with *no* "Content-Length" header set. All subsequent events generated by Mesos are streamed on this connection. The master encodes each Event in [RecordIO](scheduler-http-api.md#recordio-response-format) format, i.e., string representation of length of the event in bytes followed by JSON or binary Protobuf encoded event.
+The client is expected to keep a **persistent** connection open to the endpoint even after getting a `SUBSCRIBED` HTTP Response event. This is indicated by "Connection: keep-alive" and "Transfer-Encoding: chunked" headers with *no* "Content-Length" header set. All subsequent events generated by Mesos are streamed on this connection. The master encodes each Event in [RecordIO](recordio.md) format, i.e., string representation of length of the event in bytes followed by JSON or binary Protobuf encoded event.
 
 The following events are currently sent by the master. The canonical source of this information is at [master.proto](https://github.com/apache/mesos/blob/master/include/mesos/v1/master/master.proto). Note that when sending JSON encoded events, master encodes raw bytes in Base64 and strings in UTF-8.
 
@@ -2413,7 +2527,7 @@ HEARTBEAT Event (JSON)
 
 ### TASK_ADDED
 
-Sent whenever a task has been added to the master. This can happen either when a new task launch is processed by the master or when an agent re-registers with a failed over master.
+Sent whenever a task has been added to the master. This can happen either when a new task launch is processed by the master or when an agent reregisters with a failed over master.
 
 ```
 TASK_ADDED Event (JSON)
@@ -2521,7 +2635,7 @@ FRAMEWORK_ADDED Event (JSON)
 
 ### FRAMEWORK_UPDATED
 
-Sent whenever a framework re-registers with the master upon a disconnection (network error) or upon a master failover.
+Sent whenever a framework reregisters with the master upon a disconnection (network error) or upon a master failover.
 
 ```
 FRAMEWORK_UPDATED Event (JSON)
@@ -2565,7 +2679,7 @@ FRAMEWORK_UPDATED Event (JSON)
 
 ### FRAMEWORK_REMOVED
 
-Sent whenever a framework is removed. This can happen when a framework is explicitly teardown by the operator or if it fails to re-register with the master within the failover timeout.
+Sent whenever a framework is removed. This can happen when a framework is explicitly teardown by the operator or if it fails to reregister with the master within the failover timeout.
 
 ```
 FRAMEWORK_REMOVED Event (JSON)
@@ -2837,10 +2951,6 @@ Content-Type: application/json
       {
         "name": "gc_disk_headroom",
         "value": "0.1"
-      },
-      {
-        "name": "hadoop_home",
-        "value": ""
       },
       {
         "name": "help",
@@ -3169,6 +3279,11 @@ Content-Type: application/json
 This call retrieves information about containers running on this agent. It contains
 ContainerStatus and ResourceStatistics along with some metadata of the containers.
 
+There are two knobs in the request to control the types of the containers this
+API will return:
+* `show_nested`: Whether to show nested containers [default: false].
+* `show_standalone`: Whether to show standalone containers [default: false].
+
 ```
 GET_CONTAINERS HTTP Request (JSON):
 
@@ -3179,7 +3294,11 @@ Content-Type: application/json
 Accept: application/json
 
 {
-  "type": "GET_CONTAINERS"
+  "type": "GET_CONTAINERS",
+  "get_containers": {
+    "show_nested": true,
+    "show_standalone": false
+  }
 }
 
 
@@ -3836,6 +3955,234 @@ Accept: application/json
 }
 
 REMOVE_NESTED_CONTAINER HTTP Response (JSON):
+
+HTTP/1.1 200 OK
+```
+
+### ADD_RESOURCE_PROVIDER_CONFIG
+
+This call launches a Local Resource Provider on the agent with the specified
+`ResourceProviderInfo`.
+
+```
+ADD_RESOURCE_PROVIDER_CONFIG HTTP Request (JSON):
+
+POST /api/v1  HTTP/1.1
+
+Host: agenthost:5051
+Content-Type: application/json
+Accept: application/json
+
+{
+  "type": "ADD_RESOURCE_PROVIDER_CONFIG",
+  "add_resource_provider_config": {
+    "info": {
+      "type": "org.apache.mesos.rp.local.storage",
+      "name": "test_slrp",
+      "default_reservations": [
+        {
+          "type": "DYNAMIC",
+          "role": "test-role"
+        }
+      ],
+      "storage": {
+        "plugin": {
+          "type": "org.apache.mesos.csi.test",
+          "name": "test_plugin",
+          "containers": [
+            {
+              "services": [
+                "CONTROLLER_SERVICE",
+                "NODE_SERVICE"
+              ],
+              "command": {
+                "shell": true,
+                "value": "./test-csi-plugin --available_capacity=2GB --work_dir=workdir",
+                "uris": [
+                  {
+                    "value": "/PATH/TO/test-csi-plugin",
+                    "executable": true
+                  }
+                ]
+              },
+              "resources": [
+                { "name": "cpus", "type": "SCALAR", "scalar": { "value": 0.1 } },
+                { "name": "mem", "type": "SCALAR", "scalar": { "value": 200.0 } }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  }
+}
+
+ADD_RESOURCE_PROVIDER_CONFIG HTTP Response (JSON):
+
+HTTP/1.1 200 OK
+```
+
+Possible responses:
+
+* `200 OK`: If a new config file is created.
+* `400 Bad Request`: If the request is not well-formed.
+* `401 Unauthorized`: If HTTP authentication fails.
+* `403 Forbidden`: If the call is not authorized.
+* `409 Conflict`: If another config file that describes a resource provider of the same type and name exists.
+* `500 Internal Server Error`: If an unexpected error occurs.
+
+
+### UPDATE_RESOURCE_PROVIDER_CONFIG
+
+This call updates a Local Resource Provider on the agent with the specified
+`ResourceProviderInfo`.
+
+```
+UPDATE_RESOURCE_PROVIDER_CONFIG HTTP Request (JSON):
+
+POST /api/v1  HTTP/1.1
+
+Host: agenthost:5051
+Content-Type: application/json
+Accept: application/json
+
+{
+  "type": "UPDATE_RESOURCE_PROVIDER_CONFIG",
+  "update_resource_provider_config": {
+    "info": {
+      "type": "org.apache.mesos.rp.local.storage",
+      "name": "test_slrp",
+      "default_reservations": [
+        {
+          "type": "DYNAMIC",
+          "role": "test-role"
+        }
+      ],
+      "storage": {
+        "plugin": {
+          "type": "org.apache.mesos.csi.test",
+          "name": "test_plugin",
+          "containers": [
+            {
+              "services": [
+                "CONTROLLER_SERVICE",
+                "NODE_SERVICE"
+              ],
+              "command": {
+                "shell": true,
+                "value": "./test-csi-plugin --available_capacity=2GB --work_dir=workdir",
+                "uris": [
+                  {
+                    "value": "/PATH/TO/test-csi-plugin",
+                    "executable": true
+                  }
+                ]
+              },
+              "resources": [
+                { "name": "cpus", "type": "SCALAR", "scalar": { "value": 0.1 } },
+                { "name": "mem", "type": "SCALAR", "scalar": { "value": 200.0 } }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  }
+}
+
+UPDATE_RESOURCE_PROVIDER_CONFIG HTTP Response (JSON):
+
+HTTP/1.1 200 OK
+```
+
+Possible responses:
+
+* `200 OK`: If an existing config file is updated.
+* `400 Bad Request`: If the request is not well-formed.
+* `401 Unauthorized`: If HTTP authentication fails.
+* `403 Forbidden`: If the call is not authorized.
+* `404 Not Found`: If no config file describes a resource provider of the same type and name exists.
+* `500 Internal Server Error`: If an unexpected error occurs.
+
+
+### REMOVE_RESOURCE_PROVIDER_CONFIG
+
+This call terminates a given Local Resource Provider on the agent and prevents
+it from being launched again until the config is added back. The master and the
+agent will think the resource provider has disconnected, similar to agent
+disconnection.
+
+If there exists a task that is using the resources provided by the resource
+provider, its execution will not be affected. However, offer operations for the
+local resource provider will not be successful. In fact, if a local resource
+provider is disconnected, the master will rescind the offers related to that
+local resource provider, effectively disallowing frameworks to perform
+operations on the disconnected local resource provider.
+
+The local resource provider can be re-added after its removal using
+[`ADD_RESOURCE_PROVIDER_CONFIG`](#add_resource_provider_config). Note that
+removing a local resource provider is different than marking a local resource
+provider as gone, in which case the local resource provider will not be allowed
+to be re-added.  Marking a local resource provider as gone is not yet supported.
+
+```
+REMOVE_RESOURCE_PROVIDER_CONFIG HTTP Request (JSON):
+
+POST /api/v1  HTTP/1.1
+
+Host: agenthost:5051
+Content-Type: application/json
+Accept: application/json
+
+{
+  "type": "REMOVE_RESOURCE_PROVIDER_CONFIG",
+  "remove_resource_provider_config": {
+    "type": "org.apache.mesos.rp.local.storage",
+    "name": "test_slrp"
+  }
+}
+
+REMOVE_RESOURCE_PROVIDER_CONFIG HTTP Response (JSON):
+
+HTTP/1.1 200 OK
+```
+
+Possible responses:
+
+* `200 OK`: If the config file is removed.
+* `400 Bad Request`: If the request is not well-formed.
+* `401 Unauthorized`: If HTTP authentication fails.
+* `403 Forbidden`: If the call is not authorized.
+* `404 Not Found`: If the config file does not exist.
+* `500 Internal Server Error`: If an unexpected error occurs.
+
+
+### PRUNE_IMAGES
+
+This call triggers garbage collection for container images. This call can
+only be made when all running containers are launched with Mesos version 1.5
+or newer. An optional list of excluded images from GC can be speficied via
+`prune_images.excluded_images` field.
+
+```
+PRUNE_IMAGES HTTP Request (JSON):
+
+POST /api/v1  HTTP/1.1
+
+Host: agenthost:5051
+Content-Type: application/json
+Accept: application/json
+
+{
+  "type": "PRUNE_IMAGES",
+  "prune_images": {
+    "excluded_images": [
+      {"type":"DOCKER","docker":{"name":"mysql:latest"}}
+    ]
+  }
+}
+
+PRUNE_IMAGES HTTP Response (JSON):
 
 HTTP/1.1 200 OK
 ```

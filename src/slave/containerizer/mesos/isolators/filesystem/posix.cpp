@@ -14,8 +14,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <list>
 #include <string>
+#include <vector>
 
 #include <process/id.hpp>
 
@@ -31,8 +31,8 @@
 
 using namespace process;
 
-using std::list;
 using std::string;
+using std::vector;
 
 using mesos::slave::ContainerConfig;
 using mesos::slave::ContainerLaunchInfo;
@@ -63,7 +63,7 @@ Try<Isolator*> PosixFilesystemIsolatorProcess::create(const Flags& flags)
 
 
 Future<Nothing> PosixFilesystemIsolatorProcess::recover(
-    const list<ContainerState>& states,
+    const vector<ContainerState>& states,
     const hashset<ContainerID>& orphans)
 {
   foreach (const ContainerState& state, states) {
@@ -185,7 +185,14 @@ Future<Nothing> PosixFilesystemIsolatorProcess::update(
 
     bool isVolumeInUse = false;
 
-    foreachvalue (const Owned<Info>& info, infos) {
+    foreachpair (const ContainerID& _containerId,
+                 const Owned<Info>& info,
+                 infos) {
+      // Skip self.
+      if (_containerId == containerId) {
+        continue;
+      }
+
       if (info->resources.contains(resource)) {
         isVolumeInUse = true;
         break;
@@ -222,7 +229,7 @@ Future<Nothing> PosixFilesystemIsolatorProcess::update(
     if (os::exists(link)) {
       // NOTE: This is possible because 'info->resources' will be
       // reset when slave restarts and recovers. When the slave calls
-      // 'containerizer->update' after the executor re-registers,
+      // 'containerizer->update' after the executor reregisters,
       // we'll try to relink all the already symlinked volumes.
       Result<string> realpath = os::realpath(link);
       if (!realpath.isSome()) {

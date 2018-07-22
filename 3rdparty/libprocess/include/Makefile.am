@@ -32,6 +32,7 @@ nobase_include_HEADERS =		\
   process/gmock.hpp			\
   process/grpc.hpp			\
   process/gtest.hpp			\
+  process/gtest_constants.hpp		\
   process/help.hpp			\
   process/http.hpp			\
   process/id.hpp			\
@@ -45,7 +46,8 @@ nobase_include_HEADERS =		\
   process/mime.hpp			\
   process/mutex.hpp			\
   process/metrics/counter.hpp		\
-  process/metrics/gauge.hpp		\
+  process/metrics/pull_gauge.hpp	\
+  process/metrics/push_gauge.hpp	\
   process/metrics/metric.hpp		\
   process/metrics/metrics.hpp		\
   process/metrics/timer.hpp		\

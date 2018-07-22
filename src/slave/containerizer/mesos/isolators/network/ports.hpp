@@ -52,51 +52,54 @@ public:
 
   static Try<mesos::slave::Isolator*> create(const Flags& flags);
 
-  virtual ~NetworkPortsIsolatorProcess() {}
+  ~NetworkPortsIsolatorProcess() override {}
 
-  virtual bool supportsNesting();
+  bool supportsNesting() override;
 
-  virtual process::Future<Nothing> recover(
-      const std::list<mesos::slave::ContainerState>& states,
-      const hashset<ContainerID>& orphans);
+  process::Future<Nothing> recover(
+      const std::vector<mesos::slave::ContainerState>& states,
+      const hashset<ContainerID>& orphans) override;
 
-  virtual process::Future<Option<mesos::slave::ContainerLaunchInfo>> prepare(
+  process::Future<Option<mesos::slave::ContainerLaunchInfo>> prepare(
       const ContainerID& containerId,
-      const mesos::slave::ContainerConfig& containerConfig);
+      const mesos::slave::ContainerConfig& containerConfig) override;
 
-  virtual process::Future<mesos::slave::ContainerLimitation> watch(
-      const ContainerID& containerId);
+  process::Future<mesos::slave::ContainerLimitation> watch(
+      const ContainerID& containerId) override;
 
-  virtual process::Future<Nothing> update(
+  process::Future<Nothing> update(
       const ContainerID& containerId,
-      const Resources& resources);
+      const Resources& resources) override;
 
-  virtual process::Future<Nothing> cleanup(
-      const ContainerID& containerId);
+  process::Future<Nothing> cleanup(
+      const ContainerID& containerId) override;
 
   // Public only for testing.
   process::Future<Nothing> check(
       const hashmap<ContainerID, IntervalSet<uint16_t>>& listeners);
 
 protected:
-  virtual void initialize();
+  void initialize() override;
 
 private:
   NetworkPortsIsolatorProcess(
       bool _cniIsolatorEnabled,
       const Duration& _watchInterval,
+      const bool& _enforcePortsEnabled,
       const std::string& _cgroupsRoot,
       const std::string& _freezerHierarchy,
       const Option<IntervalSet<uint16_t>>& agentPorts);
 
   struct Info
   {
-    Option<IntervalSet<uint16_t>> ports;
+    Option<IntervalSet<uint16_t>> allocatedPorts;
+    Option<IntervalSet<uint16_t>> activePorts;
     process::Promise<mesos::slave::ContainerLimitation> limitation;
   };
 
   const bool cniIsolatorEnabled;
   const Duration watchInterval;
+  const bool enforceContainerPorts;
   const std::string cgroupsRoot;
   const std::string freezerHierarchy;
   const Option<IntervalSet<uint16_t>> agentPorts;

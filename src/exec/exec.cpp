@@ -88,7 +88,7 @@ public:
       gracePeriod(_gracePeriod) {}
 
 protected:
-  virtual void initialize()
+  void initialize() override
   {
     VLOG(1) << "Scheduling shutdown of the executor in " << gracePeriod;
 
@@ -204,13 +204,12 @@ public:
         &ExecutorProcess::shutdown);
   }
 
-  virtual ~ExecutorProcess() {}
+  ~ExecutorProcess() override {}
 
 protected:
-  virtual void initialize()
+  void initialize() override
   {
-    VLOG(1) << "Executor started at: " << self()
-            << " with pid " << getpid();
+    VLOG(1) << "Executor started at: " << self() << " with pid " << getpid();
 
     link(slave);
 
@@ -252,12 +251,12 @@ protected:
   void reregistered(const SlaveID& slaveId, const SlaveInfo& slaveInfo)
   {
     if (aborted.load()) {
-      VLOG(1) << "Ignoring re-registered message from agent " << slaveId
+      VLOG(1) << "Ignoring reregistered message from agent " << slaveId
               << " because the driver is aborted!";
       return;
     }
 
-    LOG(INFO) << "Executor re-registered on agent " << slaveId;
+    LOG(INFO) << "Executor reregistered on agent " << slaveId;
 
     connected = true;
     connection = id::UUID::random();
@@ -318,8 +317,8 @@ protected:
     }
 
     if (!connected) {
-      VLOG(1) << "Ignoring run task message for task " << task.task_id()
-              << " because the driver is disconnected!";
+      LOG(WARNING) << "Ignoring run task message for task " << task.task_id()
+                   << " because the driver is disconnected!";
       return;
     }
 
@@ -346,6 +345,17 @@ protected:
       VLOG(1) << "Ignoring kill task message for task " << taskId
               << " because the driver is aborted!";
       return;
+    }
+
+    // A kill task request is received when the driver is not connected. This
+    // can happen, for example, if `ExecutorRegisteredMessage` has not been
+    // delivered. We do not shutdown the driver because there might be other
+    // still running tasks and the executor might eventually reconnect, e.g.,
+    // after the agent failover. We do not drop ignore the message because the
+    // actual executor may still want to react, e.g., commit suicide.
+    if (!connected) {
+      LOG(WARNING) << "Executor received kill task message for task " << taskId
+                   << " while disconnected from the agent!";
     }
 
     VLOG(1) << "Executor asked to kill task '" << taskId << "'";
@@ -378,10 +388,10 @@ protected:
     }
 
     if (!connected) {
-      VLOG(1) << "Ignoring status update acknowledgement "
-              << uuid_.get() << " for task " << taskId
-              << " of framework " << frameworkId
-              << " because the driver is disconnected!";
+      LOG(WARNING) << "Ignoring status update acknowledgement "
+                   << uuid_.get() << " for task " << taskId
+                   << " of framework " << frameworkId
+                   << " because the driver is disconnected!";
       return;
     }
 
@@ -408,8 +418,8 @@ protected:
     }
 
     if (!connected) {
-      VLOG(1) << "Ignoring framework message because "
-              << "the driver is disconnected!";
+      LOG(WARNING) << "Ignoring framework message because"
+                   << " the driver is disconnected!";
       return;
     }
 
@@ -492,7 +502,7 @@ protected:
     }
   }
 
-  virtual void exited(const UPID& pid)
+  void exited(const UPID& pid) override
   {
     if (aborted.load()) {
       VLOG(1) << "Ignoring exited event because the driver is aborted!";
@@ -623,17 +633,36 @@ private:
 
 
 MesosExecutorDriver::MesosExecutorDriver(mesos::Executor* _executor)
+  : MesosExecutorDriver(_executor, os::environment())
+{}
+
+
+MesosExecutorDriver::MesosExecutorDriver(
+    mesos::Executor* _executor,
+    const std::map<std::string, std::string>& _environment)
   : executor(_executor),
     process(nullptr),
     latch(nullptr),
-    status(DRIVER_NOT_STARTED)
+    status(DRIVER_NOT_STARTED),
+    environment(_environment)
 {
   GOOGLE_PROTOBUF_VERIFY_VERSION;
 
   // Load any logging flags from the environment.
   logging::Flags flags;
 
-  Try<flags::Warnings> load = flags.load("MESOS_");
+  // Filter out environment variables whose keys don't start with "MESOS_".
+  //
+  // TODO(alexr): This should be supported by `FlagsBase`, see MESOS-9001.
+  std::map<std::string, std::string> env;
+
+  foreachpair (const string& key, const string& value, environment) {
+    if (strings::startsWith(key, "MESOS_")) {
+      env.emplace(key, value);
+    }
+  }
+
+  Try<flags::Warnings> load = flags.load(env, true);
 
   if (load.isError()) {
     status = DRIVER_ABORTED;
@@ -709,12 +738,13 @@ Status MesosExecutorDriver::start()
 
     Option<string> value;
     std::istringstream iss;
+    hashmap<string, string> env(environment);
 
     // Check if this is local (for example, for testing).
-    local = os::getenv("MESOS_LOCAL").isSome();
+    local = env.get("MESOS_LOCAL").isSome();
 
     // Get slave PID from environment.
-    value = os::getenv("MESOS_SLAVE_PID");
+    value = env.get("MESOS_SLAVE_PID");
     if (value.isNone()) {
       EXIT(EXIT_FAILURE)
         << "Expecting 'MESOS_SLAVE_PID' to be set in the environment";
@@ -724,7 +754,7 @@ Status MesosExecutorDriver::start()
     CHECK(slave) << "Cannot parse MESOS_SLAVE_PID '" << value.get() << "'";
 
     // Get slave ID from environment.
-    value = os::getenv("MESOS_SLAVE_ID");
+    value = env.get("MESOS_SLAVE_ID");
     if (value.isNone()) {
       EXIT(EXIT_FAILURE)
         << "Expecting 'MESOS_SLAVE_ID' to be set in the environment";
@@ -732,7 +762,7 @@ Status MesosExecutorDriver::start()
     slaveId.set_value(value.get());
 
     // Get framework ID from environment.
-    value = os::getenv("MESOS_FRAMEWORK_ID");
+    value = env.get("MESOS_FRAMEWORK_ID");
     if (value.isNone()) {
       EXIT(EXIT_FAILURE)
         << "Expecting 'MESOS_FRAMEWORK_ID' to be set in the environment";
@@ -740,7 +770,7 @@ Status MesosExecutorDriver::start()
     frameworkId.set_value(value.get());
 
     // Get executor ID from environment.
-    value = os::getenv("MESOS_EXECUTOR_ID");
+    value = env.get("MESOS_EXECUTOR_ID");
     if (value.isNone()) {
       EXIT(EXIT_FAILURE)
         << "Expecting 'MESOS_EXECUTOR_ID' to be set in the environment";
@@ -748,7 +778,7 @@ Status MesosExecutorDriver::start()
     executorId.set_value(value.get());
 
     // Get working directory from environment.
-    value = os::getenv("MESOS_DIRECTORY");
+    value = env.get("MESOS_DIRECTORY");
     if (value.isNone()) {
       EXIT(EXIT_FAILURE)
         << "Expecting 'MESOS_DIRECTORY' to be set in the environment";
@@ -761,7 +791,7 @@ Status MesosExecutorDriver::start()
     // (in contrast to the others above) for backwards
     // compatibility: agents < 0.28.0 do not set it.
     Duration shutdownGracePeriod = DEFAULT_EXECUTOR_SHUTDOWN_GRACE_PERIOD;
-    value = os::getenv("MESOS_EXECUTOR_SHUTDOWN_GRACE_PERIOD");
+    value = env.get("MESOS_EXECUTOR_SHUTDOWN_GRACE_PERIOD");
     if (value.isSome()) {
       Try<Duration> parse = Duration::parse(value.get());
       if (parse.isError()) {
@@ -774,14 +804,14 @@ Status MesosExecutorDriver::start()
     }
 
     // Get checkpointing status from environment.
-    value = os::getenv("MESOS_CHECKPOINT");
+    value = env.get("MESOS_CHECKPOINT");
     checkpoint = value.isSome() && value.get() == "1";
 
     Duration recoveryTimeout = RECOVERY_TIMEOUT;
 
     // Get the recovery timeout if checkpointing is enabled.
     if (checkpoint) {
-      value = os::getenv("MESOS_RECOVERY_TIMEOUT");
+      value = env.get("MESOS_RECOVERY_TIMEOUT");
 
       if (value.isSome()) {
         Try<Duration> parse = Duration::parse(value.get());

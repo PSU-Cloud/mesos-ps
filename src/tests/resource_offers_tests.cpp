@@ -239,7 +239,7 @@ TEST_F(ResourceOffersTest, ResourcesGetReofferedAfterTaskInfoError)
   Resource* mem = task.add_resources();
   mem->set_name("mem");
   mem->set_type(Value::SCALAR);
-  mem->mutable_scalar()->set_value(Gigabytes(1).bytes());
+  mem->mutable_scalar()->set_value(static_cast<double>(Gigabytes(1).bytes()));
 
   vector<TaskInfo> tasks;
   tasks.push_back(task);
@@ -284,7 +284,7 @@ TEST_F(ResourceOffersTest, Request)
 {
   TestAllocator<master::allocator::HierarchicalDRFAllocator> allocator;
 
-  EXPECT_CALL(allocator, initialize(_, _, _, _, _, _));
+  EXPECT_CALL(allocator, initialize(_, _, _, _, _, _, _));
 
   Try<Owned<cluster::Master>> master = StartMaster(&allocator);
   ASSERT_SOME(master);

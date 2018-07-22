@@ -39,34 +39,34 @@ namespace slave {
 /**
  * Represent cgroups devices subsystem.
  */
-class DevicesSubsystem: public Subsystem
+class DevicesSubsystemProcess: public SubsystemProcess
 {
 public:
-  static Try<process::Owned<Subsystem>> create(
+  static Try<process::Owned<SubsystemProcess>> create(
       const Flags& flags,
       const std::string& hierarchy);
 
-  virtual ~DevicesSubsystem() {}
+  ~DevicesSubsystemProcess() override = default;
 
-  virtual std::string name() const
+  std::string name() const override
   {
     return CGROUP_SUBSYSTEM_DEVICES_NAME;
   }
 
-  virtual process::Future<Nothing> prepare(
+  process::Future<Nothing> prepare(
       const ContainerID& containerId,
-      const std::string& cgroup);
+      const std::string& cgroup) override;
 
-  virtual process::Future<Nothing> recover(
+  process::Future<Nothing> recover(
       const ContainerID& containerId,
-      const std::string& cgroup);
+      const std::string& cgroup) override;
 
-  virtual process::Future<Nothing> cleanup(
+  process::Future<Nothing> cleanup(
       const ContainerID& containerId,
-      const std::string& cgroup);
+      const std::string& cgroup) override;
 
 private:
-  DevicesSubsystem(
+  DevicesSubsystemProcess(
       const Flags& flags,
       const std::string& hierarchy,
       const std::vector<cgroups::devices::Entry>& whitelistDeviceEntries);

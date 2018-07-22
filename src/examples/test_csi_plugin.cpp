@@ -14,10 +14,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <grpc++/server.h>
-#include <grpc++/server_builder.h>
-#include <grpc++/server_context.h>
-#include <grpc++/security/server_credentials.h>
+#include <csi/spec.hpp>
+
+#include <grpcpp/server.h>
+#include <grpcpp/server_builder.h>
+#include <grpcpp/server_context.h>
+#include <grpcpp/security/server_credentials.h>
 
 #include <stout/bytes.hpp>
 #include <stout/flags.hpp>
@@ -32,7 +34,6 @@
 #include <stout/os/mkdir.hpp>
 #include <stout/os/rmdir.hpp>
 
-#include "csi/spec.hpp"
 #include "csi/utils.hpp"
 
 #include "linux/fs.hpp"
@@ -79,7 +80,7 @@ public:
     add(&Flags::available_capacity,
         "available_capacity",
         "The available disk capacity managed by the plugin, in addition\n"
-        "to the pre-existing volumes.");
+        "to the pre-existing volumes specified in the --volumes flag.");
 
     add(&Flags::volumes,
         "volumes",
@@ -97,20 +98,18 @@ public:
 
 
 class TestCSIPlugin
-  : public csi::Identity::Service,
-    public csi::Controller::Service,
-    public csi::Node::Service
+  : public csi::v0::Identity::Service,
+    public csi::v0::Controller::Service,
+    public csi::v0::Node::Service
 {
 public:
   TestCSIPlugin(
       const string& _workDir,
       const string& _endpoint,
-      const csi::Version& _version,
       const Bytes& _availableCapacity,
       const hashmap<string, Bytes>& _volumes)
     : workDir(_workDir),
       endpoint(_endpoint),
-      version(_version),
       availableCapacity(_availableCapacity)
   {
     // TODO(jieyu): Consider not using CHECKs here.
@@ -118,11 +117,16 @@ public:
     CHECK_SOME(paths);
 
     foreach (const string& path, paths.get()) {
-      Try<Volume> volume = parseVolumePath(path);
-      CHECK_SOME(volume);
+      Try<VolumeInfo> volumeInfo = parseVolumePath(path);
+      CHECK_SOME(volumeInfo);
 
-      CHECK(!volumes.contains(volume->id));
-      volumes.put(volume->id, volume.get());
+      CHECK(!volumes.contains(volumeInfo->id));
+      volumes.put(volumeInfo->id, volumeInfo.get());
+
+      if (!_volumes.contains(volumeInfo->id)) {
+        CHECK_GE(availableCapacity, volumeInfo->size);
+        availableCapacity -= volumeInfo->size;
+      }
     }
 
     foreachpair (const string& name, const Bytes& capacity, _volumes) {
@@ -130,23 +134,23 @@ public:
         continue;
       }
 
-      Volume volume;
-      volume.id = name;
-      volume.size = capacity;
+      VolumeInfo volumeInfo;
+      volumeInfo.id = name;
+      volumeInfo.size = capacity;
 
-      const string path = getVolumePath(volume);
+      const string path = getVolumePath(volumeInfo);
 
       Try<Nothing> mkdir = os::mkdir(path);
       CHECK_SOME(mkdir);
 
-      volumes.put(volume.id, volume);
+      volumes.put(volumeInfo.id, volumeInfo);
     }
 
     ServerBuilder builder;
     builder.AddListeningPort(endpoint, InsecureServerCredentials());
-    builder.RegisterService(static_cast<csi::Identity::Service*>(this));
-    builder.RegisterService(static_cast<csi::Controller::Service*>(this));
-    builder.RegisterService(static_cast<csi::Node::Service*>(this));
+    builder.RegisterService(static_cast<csi::v0::Identity::Service*>(this));
+    builder.RegisterService(static_cast<csi::v0::Controller::Service*>(this));
+    builder.RegisterService(static_cast<csi::v0::Node::Service*>(this));
     server = builder.BuildAndStart();
   }
 
@@ -157,133 +161,117 @@ public:
     }
   }
 
-  virtual Status GetSupportedVersions(
+  Status GetPluginInfo(
       ServerContext* context,
-      const csi::GetSupportedVersionsRequest* request,
-      csi::GetSupportedVersionsResponse* response) override;
+      const csi::v0::GetPluginInfoRequest* request,
+      csi::v0::GetPluginInfoResponse* response) override;
 
-  virtual Status GetPluginInfo(
+  Status GetPluginCapabilities(
       ServerContext* context,
-      const csi::GetPluginInfoRequest* request,
-      csi::GetPluginInfoResponse* response) override;
+      const csi::v0::GetPluginCapabilitiesRequest* request,
+      csi::v0::GetPluginCapabilitiesResponse* response) override;
 
-  virtual Status CreateVolume(
+  Status Probe(
       ServerContext* context,
-      const csi::CreateVolumeRequest* request,
-      csi::CreateVolumeResponse* response) override;
+      const csi::v0::ProbeRequest* request,
+      csi::v0::ProbeResponse* response) override;
 
-  virtual Status DeleteVolume(
+  Status CreateVolume(
       ServerContext* context,
-      const csi::DeleteVolumeRequest* request,
-      csi::DeleteVolumeResponse* response) override;
+      const csi::v0::CreateVolumeRequest* request,
+      csi::v0::CreateVolumeResponse* response) override;
 
-  virtual Status ControllerPublishVolume(
+  Status DeleteVolume(
       ServerContext* context,
-      const csi::ControllerPublishVolumeRequest* request,
-      csi::ControllerPublishVolumeResponse* response) override;
+      const csi::v0::DeleteVolumeRequest* request,
+      csi::v0::DeleteVolumeResponse* response) override;
 
-  virtual Status ControllerUnpublishVolume(
+  Status ControllerPublishVolume(
       ServerContext* context,
-      const csi::ControllerUnpublishVolumeRequest* request,
-      csi::ControllerUnpublishVolumeResponse* response) override;
+      const csi::v0::ControllerPublishVolumeRequest* request,
+      csi::v0::ControllerPublishVolumeResponse* response) override;
 
-  virtual Status ValidateVolumeCapabilities(
+  Status ControllerUnpublishVolume(
       ServerContext* context,
-      const csi::ValidateVolumeCapabilitiesRequest* request,
-      csi::ValidateVolumeCapabilitiesResponse* response) override;
+      const csi::v0::ControllerUnpublishVolumeRequest* request,
+      csi::v0::ControllerUnpublishVolumeResponse* response) override;
 
-  virtual Status ListVolumes(
+  Status ValidateVolumeCapabilities(
       ServerContext* context,
-      const csi::ListVolumesRequest* request,
-      csi::ListVolumesResponse* response) override;
+      const csi::v0::ValidateVolumeCapabilitiesRequest* request,
+      csi::v0::ValidateVolumeCapabilitiesResponse* response) override;
 
-  virtual Status GetCapacity(
+  Status ListVolumes(
       ServerContext* context,
-      const csi::GetCapacityRequest* request,
-      csi::GetCapacityResponse* response) override;
+      const csi::v0::ListVolumesRequest* request,
+      csi::v0::ListVolumesResponse* response) override;
 
-  virtual Status ControllerProbe(
+  Status GetCapacity(
       ServerContext* context,
-      const csi::ControllerProbeRequest* request,
-      csi::ControllerProbeResponse* response) override;
+      const csi::v0::GetCapacityRequest* request,
+      csi::v0::GetCapacityResponse* response) override;
 
-  virtual Status ControllerGetCapabilities(
+  Status ControllerGetCapabilities(
       ServerContext* context,
-      const csi::ControllerGetCapabilitiesRequest* request,
-      csi::ControllerGetCapabilitiesResponse* response) override;
+      const csi::v0::ControllerGetCapabilitiesRequest* request,
+      csi::v0::ControllerGetCapabilitiesResponse* response) override;
 
-  virtual Status NodePublishVolume(
+  Status NodeStageVolume(
       ServerContext* context,
-      const csi::NodePublishVolumeRequest* request,
-      csi::NodePublishVolumeResponse* response) override;
+      const csi::v0::NodeStageVolumeRequest* request,
+      csi::v0::NodeStageVolumeResponse* response) override;
 
-  virtual Status NodeUnpublishVolume(
+  Status NodeUnstageVolume(
       ServerContext* context,
-      const csi::NodeUnpublishVolumeRequest* request,
-      csi::NodeUnpublishVolumeResponse* response) override;
+      const csi::v0::NodeUnstageVolumeRequest* request,
+      csi::v0::NodeUnstageVolumeResponse* response) override;
 
-  virtual Status GetNodeID(
+  Status NodePublishVolume(
       ServerContext* context,
-      const csi::GetNodeIDRequest* request,
-      csi::GetNodeIDResponse* response) override;
+      const csi::v0::NodePublishVolumeRequest* request,
+      csi::v0::NodePublishVolumeResponse* response) override;
 
-  virtual Status NodeProbe(
+  Status NodeUnpublishVolume(
       ServerContext* context,
-      const csi::NodeProbeRequest* request,
-      csi::NodeProbeResponse* response) override;
+      const csi::v0::NodeUnpublishVolumeRequest* request,
+      csi::v0::NodeUnpublishVolumeResponse* response) override;
 
-  virtual Status NodeGetCapabilities(
+  Status NodeGetId(
       ServerContext* context,
-      const csi::NodeGetCapabilitiesRequest* request,
-      csi::NodeGetCapabilitiesResponse* response) override;
+      const csi::v0::NodeGetIdRequest* request,
+      csi::v0::NodeGetIdResponse* response) override;
+
+  Status NodeGetCapabilities(
+      ServerContext* context,
+      const csi::v0::NodeGetCapabilitiesRequest* request,
+      csi::v0::NodeGetCapabilitiesResponse* response) override;
 
 private:
-  struct Volume
+  struct VolumeInfo
   {
     string id;
     Bytes size;
   };
 
-  Option<Error> validateVersion(const csi::Version& _version);
-
-  string getVolumePath(const Volume& volume);
-  Try<Volume> parseVolumePath(const string& path);
+  string getVolumePath(const VolumeInfo& volumeInfo);
+  Try<VolumeInfo> parseVolumePath(const string& path);
 
   const string workDir;
   const string endpoint;
-  const csi::Version version;
 
   Bytes availableCapacity;
-  hashmap<string, Volume> volumes;
+  hashmap<string, VolumeInfo> volumes;
 
   unique_ptr<Server> server;
 };
 
 
-Status TestCSIPlugin::GetSupportedVersions(
-    ServerContext* context,
-    const csi::GetSupportedVersionsRequest* request,
-    csi::GetSupportedVersionsResponse* response)
-{
-  LOG(INFO) << request->GetDescriptor()->name() << " '" << *request << "'";
-
-  response->add_supported_versions()->CopyFrom(version);
-
-  return Status::OK;
-}
-
-
 Status TestCSIPlugin::GetPluginInfo(
     ServerContext* context,
-    const csi::GetPluginInfoRequest* request,
-    csi::GetPluginInfoResponse* response)
+    const csi::v0::GetPluginInfoRequest* request,
+    csi::v0::GetPluginInfoResponse* response)
 {
   LOG(INFO) << request->GetDescriptor()->name() << " '" << *request << "'";
-
-  Option<Error> error = validateVersion(request->version());
-  if (error.isSome()) {
-    return Status(grpc::INVALID_ARGUMENT, error->message);
-  }
 
   response->set_name(PLUGIN_NAME);
   response->set_vendor_version(MESOS_VERSION);
@@ -292,19 +280,39 @@ Status TestCSIPlugin::GetPluginInfo(
 }
 
 
+Status TestCSIPlugin::GetPluginCapabilities(
+    ServerContext* context,
+    const csi::v0::GetPluginCapabilitiesRequest* request,
+    csi::v0::GetPluginCapabilitiesResponse* response)
+{
+  LOG(INFO) << request->GetDescriptor()->name() << " '" << *request << "'";
+
+  response->add_capabilities()->mutable_service()->set_type(
+      csi::v0::PluginCapability::Service::CONTROLLER_SERVICE);
+
+  return Status::OK;
+}
+
+
+Status TestCSIPlugin::Probe(
+    ServerContext* context,
+    const csi::v0::ProbeRequest* request,
+    csi::v0::ProbeResponse* response)
+{
+  LOG(INFO) << request->GetDescriptor()->name() << " '" << *request << "'";
+
+  return Status::OK;
+}
+
+
 Status TestCSIPlugin::CreateVolume(
     ServerContext* context,
-    const csi::CreateVolumeRequest* request,
-    csi::CreateVolumeResponse* response)
+    const csi::v0::CreateVolumeRequest* request,
+    csi::v0::CreateVolumeResponse* response)
 {
   LOG(INFO) << request->GetDescriptor()->name() << " '" << *request << "'";
 
   // TODO(chhsiao): Validate required fields.
-
-  Option<Error> error = validateVersion(request->version());
-  if (error.isSome()) {
-    return Status(grpc::INVALID_ARGUMENT, error->message);
-  }
 
   if (request->name().empty()) {
     return Status(grpc::INVALID_ARGUMENT, "Volume name cannot be empty");
@@ -321,12 +329,12 @@ Status TestCSIPlugin::CreateVolume(
       return Status(grpc::OUT_OF_RANGE, "Insufficient capacity");
     }
 
-    Volume volume;
-    volume.id = request->name();
-    volume.size = min(DEFAULT_VOLUME_CAPACITY, availableCapacity);
+    VolumeInfo volumeInfo;
+    volumeInfo.id = request->name();
+    volumeInfo.size = min(DEFAULT_VOLUME_CAPACITY, availableCapacity);
 
     if (request->has_capacity_range()) {
-      const csi::CapacityRange& range = request->capacity_range();
+      const csi::v0::CapacityRange& range = request->capacity_range();
 
       // The highest we can pick.
       Bytes limit = availableCapacity;
@@ -335,34 +343,35 @@ Status TestCSIPlugin::CreateVolume(
       }
 
       if (range.required_bytes() != 0 &&
-          range.required_bytes() > limit.bytes()) {
+          static_cast<size_t>(range.required_bytes()) > limit.bytes()) {
         return Status(grpc::OUT_OF_RANGE, "Cannot satisfy 'required_bytes'");
       }
 
-      volume.size = min(
+      volumeInfo.size = min(
           limit,
           max(DEFAULT_VOLUME_CAPACITY, Bytes(range.required_bytes())));
     }
 
-    const string path = getVolumePath(volume);
+    const string path = getVolumePath(volumeInfo);
 
     Try<Nothing> mkdir = os::mkdir(path);
     if (mkdir.isError()) {
       return Status(
           grpc::INTERNAL,
-          "Failed to create volume '" + volume.id + "': " + mkdir.error());
+          "Failed to create volume '" + volumeInfo.id + "': " + mkdir.error());
     }
 
-    availableCapacity -= volume.size;
-    volumes.put(volume.id, volume);
+    CHECK_GE(availableCapacity, volumeInfo.size);
+    availableCapacity -= volumeInfo.size;
+    volumes.put(volumeInfo.id, volumeInfo);
   }
 
-  const Volume& volume = volumes.at(request->name());
+  const VolumeInfo& volumeInfo = volumes.at(request->name());
 
-  response->mutable_volume_info()->set_id(volume.id);
-  response->mutable_volume_info()->set_capacity_bytes(volume.size.bytes());
-  (*response->mutable_volume_info()->mutable_attributes())["path"] =
-    getVolumePath(volume);
+  response->mutable_volume()->set_id(volumeInfo.id);
+  response->mutable_volume()->set_capacity_bytes(volumeInfo.size.bytes());
+  (*response->mutable_volume()->mutable_attributes())["path"] =
+    getVolumePath(volumeInfo);
 
   if (alreadyExists) {
     return Status(
@@ -376,26 +385,19 @@ Status TestCSIPlugin::CreateVolume(
 
 Status TestCSIPlugin::DeleteVolume(
     ServerContext* context,
-    const csi::DeleteVolumeRequest* request,
-    csi::DeleteVolumeResponse* response)
+    const csi::v0::DeleteVolumeRequest* request,
+    csi::v0::DeleteVolumeResponse* response)
 {
   LOG(INFO) << request->GetDescriptor()->name() << " '" << *request << "'";
 
   // TODO(chhsiao): Validate required fields.
 
-  Option<Error> error = validateVersion(request->version());
-  if (error.isSome()) {
-    return Status(grpc::INVALID_ARGUMENT, error->message);
-  }
-
   if (!volumes.contains(request->volume_id())) {
-    return Status(
-        grpc::NOT_FOUND,
-        "Volume '" + request->volume_id() + "' is not found");
+    return Status::OK;
   }
 
-  const Volume& volume = volumes.at(request->volume_id());
-  const string path = getVolumePath(volume);
+  const VolumeInfo& volumeInfo = volumes.at(request->volume_id());
+  const string path = getVolumePath(volumeInfo);
 
   Try<Nothing> rmdir = os::rmdir(path);
   if (rmdir.isError()) {
@@ -405,8 +407,8 @@ Status TestCSIPlugin::DeleteVolume(
         rmdir.error());
   }
 
-  availableCapacity -= volume.size;
-  volumes.erase(volume.id);
+  availableCapacity += volumeInfo.size;
+  volumes.erase(volumeInfo.id);
 
   return Status::OK;
 }
@@ -414,17 +416,12 @@ Status TestCSIPlugin::DeleteVolume(
 
 Status TestCSIPlugin::ControllerPublishVolume(
     ServerContext* context,
-    const csi::ControllerPublishVolumeRequest* request,
-    csi::ControllerPublishVolumeResponse* response)
+    const csi::v0::ControllerPublishVolumeRequest* request,
+    csi::v0::ControllerPublishVolumeResponse* response)
 {
   LOG(INFO) << request->GetDescriptor()->name() << " '" << *request << "'";
 
   // TODO(chhsiao): Validate required fields.
-
-  Option<Error> error = validateVersion(request->version());
-  if (error.isSome()) {
-    return Status(grpc::INVALID_ARGUMENT, error->message);
-  }
 
   if (!volumes.contains(request->volume_id())) {
     return Status(
@@ -432,8 +429,8 @@ Status TestCSIPlugin::ControllerPublishVolume(
         "Volume '" + request->volume_id() + "' is not found");
   }
 
-  const Volume& volume = volumes.at(request->volume_id());
-  const string path = getVolumePath(volume);
+  const VolumeInfo& volumeInfo = volumes.at(request->volume_id());
+  const string path = getVolumePath(volumeInfo);
 
   auto it = request->volume_attributes().find("path");
   if (it == request->volume_attributes().end() || it->second != path) {
@@ -453,17 +450,12 @@ Status TestCSIPlugin::ControllerPublishVolume(
 
 Status TestCSIPlugin::ControllerUnpublishVolume(
     ServerContext* context,
-    const csi::ControllerUnpublishVolumeRequest* request,
-    csi::ControllerUnpublishVolumeResponse* response)
+    const csi::v0::ControllerUnpublishVolumeRequest* request,
+    csi::v0::ControllerUnpublishVolumeResponse* response)
 {
   LOG(INFO) << request->GetDescriptor()->name() << " '" << *request << "'";
 
   // TODO(chhsiao): Validate required fields.
-
-  Option<Error> error = validateVersion(request->version());
-  if (error.isSome()) {
-    return Status(grpc::INVALID_ARGUMENT, error->message);
-  }
 
   if (!volumes.contains(request->volume_id())) {
     return Status(
@@ -484,17 +476,12 @@ Status TestCSIPlugin::ControllerUnpublishVolume(
 
 Status TestCSIPlugin::ValidateVolumeCapabilities(
     ServerContext* context,
-    const csi::ValidateVolumeCapabilitiesRequest* request,
-    csi::ValidateVolumeCapabilitiesResponse* response)
+    const csi::v0::ValidateVolumeCapabilitiesRequest* request,
+    csi::v0::ValidateVolumeCapabilitiesResponse* response)
 {
   LOG(INFO) << request->GetDescriptor()->name() << " '" << *request << "'";
 
   // TODO(chhsiao): Validate required fields.
-
-  Option<Error> error = validateVersion(request->version());
-  if (error.isSome()) {
-    return Status(grpc::INVALID_ARGUMENT, error->message);
-  }
 
   if (!volumes.contains(request->volume_id())) {
     return Status(
@@ -502,15 +489,15 @@ Status TestCSIPlugin::ValidateVolumeCapabilities(
         "Volume '" + request->volume_id() + "' is not found");
   }
 
-  const Volume& volume = volumes.at(request->volume_id());
-  const string path = getVolumePath(volume);
+  const VolumeInfo& volumeInfo = volumes.at(request->volume_id());
+  const string path = getVolumePath(volumeInfo);
 
   auto it = request->volume_attributes().find("path");
   if (it == request->volume_attributes().end() || it->second != path) {
     return Status(grpc::INVALID_ARGUMENT, "Invalid volume attributes");
   }
 
-  foreach (const csi::VolumeCapability& capability,
+  foreach (const csi::v0::VolumeCapability& capability,
            request->volume_capabilities()) {
     if (capability.has_mount() &&
         (!capability.mount().fs_type().empty() ||
@@ -522,7 +509,7 @@ Status TestCSIPlugin::ValidateVolumeCapabilities(
     }
 
     if (capability.access_mode().mode() !=
-        csi::VolumeCapability::AccessMode::SINGLE_NODE_WRITER) {
+        csi::v0::VolumeCapability::AccessMode::SINGLE_NODE_WRITER) {
       response->set_supported(false);
       response->set_message("Access mode is not supported");
 
@@ -538,15 +525,10 @@ Status TestCSIPlugin::ValidateVolumeCapabilities(
 
 Status TestCSIPlugin::ListVolumes(
     ServerContext* context,
-    const csi::ListVolumesRequest* request,
-    csi::ListVolumesResponse* response)
+    const csi::v0::ListVolumesRequest* request,
+    csi::v0::ListVolumesResponse* response)
 {
   LOG(INFO) << request->GetDescriptor()->name() << " '" << *request << "'";
-
-  Option<Error> error = validateVersion(request->version());
-  if (error.isSome()) {
-    return Status(grpc::INVALID_ARGUMENT, error->message);
-  }
 
   // TODO(chhsiao): Support the `max_entries` field.
   if (request->max_entries() > 0) {
@@ -558,11 +540,11 @@ Status TestCSIPlugin::ListVolumes(
     return Status(grpc::ABORTED, "Field 'starting_token' is not supported");
   }
 
-  foreachvalue (const Volume& volume, volumes) {
-    csi::VolumeInfo* info = response->add_entries()->mutable_volume_info();
-    info->set_id(volume.id);
-    info->set_capacity_bytes(volume.size.bytes());
-    (*info->mutable_attributes())["path"] = getVolumePath(volume);
+  foreachvalue (const VolumeInfo& volumeInfo, volumes) {
+    csi::v0::Volume* volume = response->add_entries()->mutable_volume();
+    volume->set_id(volumeInfo.id);
+    volume->set_capacity_bytes(volumeInfo.size.bytes());
+    (*volume->mutable_attributes())["path"] = getVolumePath(volumeInfo);
   }
 
   return Status::OK;
@@ -571,26 +553,26 @@ Status TestCSIPlugin::ListVolumes(
 
 Status TestCSIPlugin::GetCapacity(
     ServerContext* context,
-    const csi::GetCapacityRequest* request,
-    csi::GetCapacityResponse* response)
+    const csi::v0::GetCapacityRequest* request,
+    csi::v0::GetCapacityResponse* response)
 {
   LOG(INFO) << request->GetDescriptor()->name() << " '" << *request << "'";
 
-  Option<Error> error = validateVersion(request->version());
-  if (error.isSome()) {
-    return Status(grpc::INVALID_ARGUMENT, error->message);
-  }
-
-  foreach (const csi::VolumeCapability& capability,
+  foreach (const csi::v0::VolumeCapability& capability,
            request->volume_capabilities()) {
-    if (!capability.has_mount()) {
+    // We report zero capacity for any capability other than the
+    // default-constructed `MountVolume` capability since this plugin
+    // does not support any filesystem types and mount flags.
+    if (!capability.has_mount() ||
+        !capability.mount().fs_type().empty() ||
+        !capability.mount().mount_flags().empty()) {
       response->set_available_capacity(0);
 
       return Status::OK;
     }
 
     if (capability.access_mode().mode() !=
-        csi::VolumeCapability::AccessMode::SINGLE_NODE_WRITER) {
+        csi::v0::VolumeCapability::AccessMode::SINGLE_NODE_WRITER) {
       response->set_available_capacity(0);
 
       return Status::OK;
@@ -603,60 +585,34 @@ Status TestCSIPlugin::GetCapacity(
 }
 
 
-Status TestCSIPlugin::ControllerProbe(
-    ServerContext* context,
-    const csi::ControllerProbeRequest* request,
-    csi::ControllerProbeResponse* response)
-{
-  LOG(INFO) << request->GetDescriptor()->name() << " '" << *request << "'";
-
-  Option<Error> error = validateVersion(request->version());
-  if (error.isSome()) {
-    return Status(grpc::INVALID_ARGUMENT, error->message);
-  }
-
-  return Status::OK;
-}
-
-
 Status TestCSIPlugin::ControllerGetCapabilities(
     ServerContext* context,
-    const csi::ControllerGetCapabilitiesRequest* request,
-    csi::ControllerGetCapabilitiesResponse* response)
+    const csi::v0::ControllerGetCapabilitiesRequest* request,
+    csi::v0::ControllerGetCapabilitiesResponse* response)
 {
   LOG(INFO) << request->GetDescriptor()->name() << " '" << *request << "'";
 
-  Option<Error> error = validateVersion(request->version());
-  if (error.isSome()) {
-    return Status(grpc::INVALID_ARGUMENT, error->message);
-  }
-
   response->add_capabilities()->mutable_rpc()->set_type(
-      csi::ControllerServiceCapability::RPC::CREATE_DELETE_VOLUME);
+      csi::v0::ControllerServiceCapability::RPC::CREATE_DELETE_VOLUME);
   response->add_capabilities()->mutable_rpc()->set_type(
-      csi::ControllerServiceCapability::RPC::PUBLISH_UNPUBLISH_VOLUME);
+      csi::v0::ControllerServiceCapability::RPC::PUBLISH_UNPUBLISH_VOLUME);
   response->add_capabilities()->mutable_rpc()->set_type(
-      csi::ControllerServiceCapability::RPC::GET_CAPACITY);
+      csi::v0::ControllerServiceCapability::RPC::GET_CAPACITY);
   response->add_capabilities()->mutable_rpc()->set_type(
-      csi::ControllerServiceCapability::RPC::LIST_VOLUMES);
+      csi::v0::ControllerServiceCapability::RPC::LIST_VOLUMES);
 
   return Status::OK;
 }
 
 
-Status TestCSIPlugin::NodePublishVolume(
+Status TestCSIPlugin::NodeStageVolume(
     ServerContext* context,
-    const csi::NodePublishVolumeRequest* request,
-    csi::NodePublishVolumeResponse* response)
+    const csi::v0::NodeStageVolumeRequest* request,
+    csi::v0::NodeStageVolumeResponse* response)
 {
   LOG(INFO) << request->GetDescriptor()->name() << " '" << *request << "'";
 
   // TODO(chhsiao): Validate required fields.
-
-  Option<Error> error = validateVersion(request->version());
-  if (error.isSome()) {
-    return Status(grpc::INVALID_ARGUMENT, error->message);
-  }
 
   if (!volumes.contains(request->volume_id())) {
     return Status(
@@ -664,8 +620,114 @@ Status TestCSIPlugin::NodePublishVolume(
         "Volume '" + request->volume_id() + "' is not found");
   }
 
-  const Volume& volume = volumes.at(request->volume_id());
-  const string path = getVolumePath(volume);
+  const VolumeInfo& volumeInfo = volumes.at(request->volume_id());
+  const string path = getVolumePath(volumeInfo);
+
+  auto it = request->volume_attributes().find("path");
+  if (it == request->volume_attributes().end() || it->second != path) {
+    return Status(grpc::INVALID_ARGUMENT, "Invalid volume attributes");
+  }
+
+  if (!os::exists(request->staging_target_path())) {
+    return Status(
+        grpc::INVALID_ARGUMENT,
+        "Target path '" + request->staging_target_path() + "' is not found");
+  }
+
+  Try<fs::MountInfoTable> table = fs::MountInfoTable::read();
+  if (table.isError()) {
+    return Status(
+        grpc::INTERNAL,
+        "Failed to get mount table: " + table.error());
+  }
+
+  foreach (const fs::MountInfoTable::Entry& entry, table->entries) {
+    if (entry.target == request->staging_target_path()) {
+      return Status::OK;
+    }
+  }
+
+  Try<Nothing> mount = fs::mount(
+      path,
+      request->staging_target_path(),
+      None(),
+      MS_BIND,
+      None());
+
+  if (mount.isError()) {
+    return Status(
+        grpc::INTERNAL,
+        "Failed to mount from '" + path + "' to '" +
+        request->staging_target_path() + "': " + mount.error());
+  }
+
+  return Status::OK;
+}
+
+
+Status TestCSIPlugin::NodeUnstageVolume(
+    ServerContext* context,
+    const csi::v0::NodeUnstageVolumeRequest* request,
+    csi::v0::NodeUnstageVolumeResponse* response)
+{
+  LOG(INFO) << request->GetDescriptor()->name() << " '" << *request << "'";
+
+  // TODO(chhsiao): Validate required fields.
+
+  if (!volumes.contains(request->volume_id())) {
+    return Status(
+        grpc::NOT_FOUND,
+        "Volume '" + request->volume_id() + "' is not found");
+  }
+
+  Try<fs::MountInfoTable> table = fs::MountInfoTable::read();
+  if (table.isError()) {
+    return Status(
+        grpc::INTERNAL,
+        "Failed to get mount table: " + table.error());
+  }
+
+  bool found = false;
+  foreach (const fs::MountInfoTable::Entry& entry, table->entries) {
+    if (entry.target == request->staging_target_path()) {
+      found = true;
+      break;
+    }
+  }
+
+  if (!found) {
+    return Status::OK;
+  }
+
+  Try<Nothing> unmount = fs::unmount(request->staging_target_path());
+  if (unmount.isError()) {
+    return Status(
+        grpc::INTERNAL,
+        "Failed to unmount '" + request->staging_target_path() +
+        "': " + unmount.error());
+  }
+
+  return Status::OK;
+}
+
+
+Status TestCSIPlugin::NodePublishVolume(
+    ServerContext* context,
+    const csi::v0::NodePublishVolumeRequest* request,
+    csi::v0::NodePublishVolumeResponse* response)
+{
+  LOG(INFO) << request->GetDescriptor()->name() << " '" << *request << "'";
+
+  // TODO(chhsiao): Validate required fields.
+
+  if (!volumes.contains(request->volume_id())) {
+    return Status(
+        grpc::NOT_FOUND,
+        "Volume '" + request->volume_id() + "' is not found");
+  }
+
+  const VolumeInfo& volumeInfo = volumes.at(request->volume_id());
+  const string path = getVolumePath(volumeInfo);
 
   auto it = request->volume_attributes().find("path");
   if (it == request->volume_attributes().end() || it->second != path) {
@@ -678,11 +740,31 @@ Status TestCSIPlugin::NodePublishVolume(
         "Target path '" + request->target_path() + "' is not found");
   }
 
+  if (request->staging_target_path().empty()) {
+    return Status(
+        grpc::FAILED_PRECONDITION,
+        "Expecting 'staging_target_path' to be set");
+  }
+
   Try<fs::MountInfoTable> table = fs::MountInfoTable::read();
   if (table.isError()) {
     return Status(
         grpc::INTERNAL,
         "Failed to get mount table: " + table.error());
+  }
+
+  bool found = false;
+  foreach (const fs::MountInfoTable::Entry& entry, table->entries) {
+    if (entry.target == request->staging_target_path()) {
+      found = true;
+      break;
+    }
+  }
+
+  if (!found) {
+    return Status(
+        grpc::FAILED_PRECONDITION,
+        "Volume '" + request->volume_id() + "' has not been staged yet");
   }
 
   foreach (const fs::MountInfoTable::Entry& entry, table->entries) {
@@ -692,7 +774,7 @@ Status TestCSIPlugin::NodePublishVolume(
   }
 
   Try<Nothing> mount = fs::mount(
-      path,
+      request->staging_target_path(),
       request->target_path(),
       None(),
       MS_BIND,
@@ -725,15 +807,10 @@ Status TestCSIPlugin::NodePublishVolume(
 
 Status TestCSIPlugin::NodeUnpublishVolume(
     ServerContext* context,
-    const csi::NodeUnpublishVolumeRequest* request,
-    csi::NodeUnpublishVolumeResponse* response)
+    const csi::v0::NodeUnpublishVolumeRequest* request,
+    csi::v0::NodeUnpublishVolumeResponse* response)
 {
   LOG(INFO) << request->GetDescriptor()->name() << " '" << *request << "'";
-
-  Option<Error> error = validateVersion(request->version());
-  if (error.isSome()) {
-    return Status(grpc::INVALID_ARGUMENT, error->message);
-  }
 
   if (!volumes.contains(request->volume_id())) {
     return Status(
@@ -760,9 +837,6 @@ Status TestCSIPlugin::NodeUnpublishVolume(
     return Status::OK;
   }
 
-  const Volume& volume = volumes.at(request->volume_id());
-  const string path = getVolumePath(volume);
-
   Try<Nothing> unmount = fs::unmount(request->target_path());
   if (unmount.isError()) {
     return Status(
@@ -775,17 +849,12 @@ Status TestCSIPlugin::NodeUnpublishVolume(
 }
 
 
-Status TestCSIPlugin::GetNodeID(
+Status TestCSIPlugin::NodeGetId(
     ServerContext* context,
-    const csi::GetNodeIDRequest* request,
-    csi::GetNodeIDResponse* response)
+    const csi::v0::NodeGetIdRequest* request,
+    csi::v0::NodeGetIdResponse* response)
 {
   LOG(INFO) << request->GetDescriptor()->name() << " '" << *request << "'";
-
-  Option<Error> error = validateVersion(request->version());
-  if (error.isSome()) {
-    return Status(grpc::INVALID_ARGUMENT, error->message);
-  }
 
   response->set_node_id(NODE_ID);
 
@@ -793,57 +862,30 @@ Status TestCSIPlugin::GetNodeID(
 }
 
 
-Status TestCSIPlugin::NodeProbe(
-    ServerContext* context,
-    const csi::NodeProbeRequest* request,
-    csi::NodeProbeResponse* response)
-{
-  LOG(INFO) << request->GetDescriptor()->name() << " '" << *request << "'";
-
-  Option<Error> error = validateVersion(request->version());
-  if (error.isSome()) {
-    return Status(grpc::INVALID_ARGUMENT, error->message);
-  }
-
-  return Status::OK;
-}
-
-
 Status TestCSIPlugin::NodeGetCapabilities(
     ServerContext* context,
-    const csi::NodeGetCapabilitiesRequest* request,
-    csi::NodeGetCapabilitiesResponse* response)
+    const csi::v0::NodeGetCapabilitiesRequest* request,
+    csi::v0::NodeGetCapabilitiesResponse* response)
 {
   LOG(INFO) << request->GetDescriptor()->name() << " '" << *request << "'";
 
-  Option<Error> error = validateVersion(request->version());
-  if (error.isSome()) {
-    return Status(grpc::INVALID_ARGUMENT, error->message);
-  }
+  response->add_capabilities()->mutable_rpc()->set_type(
+      csi::v0::NodeServiceCapability::RPC::STAGE_UNSTAGE_VOLUME);
 
   return Status::OK;
 }
 
 
-Option<Error> TestCSIPlugin::validateVersion(const csi::Version& _version)
-{
-  if (version != _version) {
-    return Error("Version " + stringify(_version) + " is not supported");
-  }
-
-  return None();
-}
-
-
-string TestCSIPlugin::getVolumePath(const Volume& volume)
+string TestCSIPlugin::getVolumePath(const VolumeInfo& volumeInfo)
 {
   return path::join(
       workDir,
-      strings::join("-", stringify(volume.size), volume.id));
+      strings::join("-", stringify(volumeInfo.size), volumeInfo.id));
 }
 
 
-Try<TestCSIPlugin::Volume> TestCSIPlugin::parseVolumePath(const string& path)
+Try<TestCSIPlugin::VolumeInfo> TestCSIPlugin::parseVolumePath(
+    const string& path)
 {
   size_t pos = path.find_first_of("-");
   if (pos == string::npos) {
@@ -858,11 +900,11 @@ Try<TestCSIPlugin::Volume> TestCSIPlugin::parseVolumePath(const string& path)
     return Error("Failed to parse bytes: " + bytes.error());
   }
 
-  Volume volume;
-  volume.id = id;
-  volume.size = bytes.get();
+  VolumeInfo volumeInfo;
+  volumeInfo.id = id;
+  volumeInfo.size = bytes.get();
 
-  return volume;
+  return volumeInfo;
 }
 
 
@@ -895,11 +937,6 @@ int main(int argc, char** argv)
     return EXIT_FAILURE;
   }
 
-  csi::Version version;
-  version.set_major(0);
-  version.set_minor(1);
-  version.set_patch(0);
-
   hashmap<string, Bytes> volumes;
 
   if (flags.volumes.isSome()) {
@@ -920,8 +957,6 @@ int main(int argc, char** argv)
         Try<Bytes> capacity = Bytes::parse(pair[1]);
         if (capacity.isError()) {
           error = capacity.error();
-        } else if (capacity.get() == 0) {
-          error = "Volume capacity cannot be zero";
         } else {
           volumes.put(pair[0], capacity.get());
         }
@@ -938,7 +973,6 @@ int main(int argc, char** argv)
   unique_ptr<TestCSIPlugin> plugin(new TestCSIPlugin(
       flags.work_dir,
       flags.endpoint,
-      version,
       flags.available_capacity,
       volumes));
 

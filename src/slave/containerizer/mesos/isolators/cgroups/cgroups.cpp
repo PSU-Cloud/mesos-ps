@@ -14,6 +14,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <set>
 #include <vector>
 
 #include <process/collect.hpp>
@@ -31,6 +32,12 @@
 #include "common/protobuf_utils.hpp"
 
 #include "linux/cgroups.hpp"
+#include "linux/fs.hpp"
+#include "linux/ns.hpp"
+#include "linux/systemd.hpp"
+
+#include "slave/containerizer/mesos/constants.hpp"
+#include "slave/containerizer/mesos/paths.hpp"
 
 #include "slave/containerizer/mesos/isolators/cgroups/cgroups.hpp"
 #include "slave/containerizer/mesos/isolators/cgroups/constants.hpp"
@@ -38,6 +45,7 @@
 using mesos::slave::ContainerConfig;
 using mesos::slave::ContainerLaunchInfo;
 using mesos::slave::ContainerLimitation;
+using mesos::slave::ContainerMountInfo;
 using mesos::slave::ContainerState;
 using mesos::slave::Isolator;
 
@@ -46,7 +54,7 @@ using process::Future;
 using process::Owned;
 using process::PID;
 
-using std::list;
+using std::set;
 using std::string;
 using std::vector;
 
@@ -56,11 +64,9 @@ namespace slave {
 
 CgroupsIsolatorProcess::CgroupsIsolatorProcess(
     const Flags& _flags,
-    const hashmap<string, string>& _hierarchies,
     const multihashmap<string, Owned<Subsystem>>& _subsystems)
   : ProcessBase(process::ID::generate("cgroups-isolator")),
     flags(_flags),
-    hierarchies(_hierarchies),
     subsystems(_subsystems) {}
 
 
@@ -69,9 +75,6 @@ CgroupsIsolatorProcess::~CgroupsIsolatorProcess() {}
 
 Try<Isolator*> CgroupsIsolatorProcess::create(const Flags& flags)
 {
-  // Subsystem name -> hierarchy path.
-  hashmap<string, string> hierarchies;
-
   // Hierarchy path -> subsystem object.
   multihashmap<string, Owned<Subsystem>> subsystems;
 
@@ -90,56 +93,92 @@ Try<Isolator*> CgroupsIsolatorProcess::create(const Flags& flags)
     {"pids", CGROUP_SUBSYSTEM_PIDS_NAME},
   };
 
-  foreach (string isolator, strings::tokenize(flags.isolation, ",")) {
-    if (!strings::startsWith(isolator, "cgroups/")) {
-      // Skip when the isolator is not related to cgroups.
-      continue;
-    }
+  // All the subsystems currently supported by Mesos.
+  set<string> supportedSubsystems;
+  foreachvalue (const string& subsystemName, isolatorMap) {
+    supportedSubsystems.insert(subsystemName);
+  }
 
-    isolator = strings::remove(isolator, "cgroups/", strings::Mode::PREFIX);
+  // The subsystems to be loaded.
+  set<string> subsystemSet;
 
-    if (!isolatorMap.contains(isolator)) {
+  if (strings::contains(flags.isolation, "cgroups/all")) {
+    Try<set<string>> enabledSubsystems = cgroups::subsystems();
+    if (enabledSubsystems.isError()) {
       return Error(
-          "Unknown or unsupported isolator 'cgroups/" + isolator + "'");
+          "Failed to get the enabled subsystems: " + enabledSubsystems.error());
     }
 
-    // A cgroups isolator name may map to multiple subsystems. We need to
-    // convert the isolator name to its associated subsystems.
-    foreach (const string& subsystemName, isolatorMap.get(isolator)) {
-      if (hierarchies.contains(subsystemName)) {
-        // Skip when the subsystem exists.
+    foreach (const string& subsystemName, enabledSubsystems.get()) {
+      if (supportedSubsystems.count(subsystemName) == 0) {
+        // Skip when the subsystem is not supported by Mesos yet.
+        LOG(WARNING) << "Cannot automatically load the subsystem '"
+                     << subsystemName << "' because it is not "
+                     << "supported by Mesos cgroups isolator yet";
         continue;
       }
 
-      // Prepare hierarchy if it does not exist.
-      Try<string> hierarchy = cgroups::prepare(
-          flags.cgroups_hierarchy,
-          subsystemName,
-          flags.cgroups_root);
+      subsystemSet.insert(subsystemName);
+    }
 
-      if (hierarchy.isError()) {
-        return Error(
-            "Failed to prepare hierarchy for the subsystem '" + subsystemName +
-            "': " + hierarchy.error());
+    if (subsystemSet.empty()) {
+      return Error("No subsystems are enabled by the kernel");
+    }
+
+    LOG(INFO) << "Automatically loading subsystems: "
+              << stringify(subsystemSet);
+  } else {
+    foreach (string isolator, strings::tokenize(flags.isolation, ",")) {
+      if (!strings::startsWith(isolator, "cgroups/")) {
+        // Skip when the isolator is not related to cgroups.
+        continue;
       }
 
-      // Create and load the subsystem.
-      Try<Owned<Subsystem>> subsystem =
-        Subsystem::create(flags, subsystemName, hierarchy.get());
+      isolator = strings::remove(isolator, "cgroups/", strings::Mode::PREFIX);
 
-      if (subsystem.isError()) {
+      if (!isolatorMap.contains(isolator)) {
         return Error(
-            "Failed to create subsystem '" + subsystemName + "': " +
-            subsystem.error());
+            "Unknown or unsupported isolator 'cgroups/" + isolator + "'");
       }
 
-      subsystems.put(hierarchy.get(), subsystem.get());
-      hierarchies.put(subsystemName, hierarchy.get());
+      // A cgroups isolator name may map to multiple subsystems. We need to
+      // convert the isolator name to its associated subsystems.
+      foreach (const string& subsystemName, isolatorMap.get(isolator)) {
+        subsystemSet.insert(subsystemName);
+      }
     }
   }
 
+  CHECK(!subsystemSet.empty());
+
+  foreach (const string& subsystemName, subsystemSet) {
+    // Prepare hierarchy if it does not exist.
+    Try<string> hierarchy = cgroups::prepare(
+        flags.cgroups_hierarchy,
+        subsystemName,
+        flags.cgroups_root);
+
+    if (hierarchy.isError()) {
+      return Error(
+          "Failed to prepare hierarchy for the subsystem '" + subsystemName +
+          "': " + hierarchy.error());
+    }
+
+    // Create and load the subsystem.
+    Try<Owned<Subsystem>> subsystem =
+      Subsystem::create(flags, subsystemName, hierarchy.get());
+
+    if (subsystem.isError()) {
+      return Error(
+          "Failed to create subsystem '" + subsystemName + "': " +
+          subsystem.error());
+    }
+
+    subsystems.put(hierarchy.get(), subsystem.get());
+  }
+
   Owned<MesosIsolatorProcess> process(
-      new CgroupsIsolatorProcess(flags, hierarchies, subsystems));
+      new CgroupsIsolatorProcess(flags, subsystems));
 
   return new MesosIsolator(process);
 }
@@ -157,29 +196,12 @@ bool CgroupsIsolatorProcess::supportsStandalone()
 }
 
 
-void CgroupsIsolatorProcess::initialize()
-{
-  foreachvalue (const Owned<Subsystem>& subsystem, subsystems) {
-    spawn(subsystem.get());
-  }
-}
-
-
-void CgroupsIsolatorProcess::finalize()
-{
-  foreachvalue (const Owned<Subsystem>& subsystem, subsystems) {
-    terminate(subsystem.get());
-    wait(subsystem.get());
-  }
-}
-
-
 Future<Nothing> CgroupsIsolatorProcess::recover(
-    const list<ContainerState>& states,
+    const vector<ContainerState>& states,
     const hashset<ContainerID>& orphans)
 {
   // Recover active containers first.
-  list<Future<Nothing>> recovers;
+  vector<Future<Nothing>> recovers;
   foreach (const ContainerState& state, states) {
     // If we are a nested container, we do not need to recover
     // anything since only top-level containers will have cgroups
@@ -202,7 +224,7 @@ Future<Nothing> CgroupsIsolatorProcess::recover(
 
 Future<Nothing> CgroupsIsolatorProcess::_recover(
     const hashset<ContainerID>& orphans,
-    const list<Future<Nothing>>& futures)
+    const vector<Future<Nothing>>& futures)
 {
   vector<string> errors;
   foreach (const Future<Nothing>& future, futures) {
@@ -258,7 +280,7 @@ Future<Nothing> CgroupsIsolatorProcess::_recover(
     }
   }
 
-  list<Future<Nothing>> recovers;
+  vector<Future<Nothing>> recovers;
 
   foreach (const ContainerID& containerId, knownOrphans) {
     recovers.push_back(___recover(containerId));
@@ -279,7 +301,7 @@ Future<Nothing> CgroupsIsolatorProcess::_recover(
 
 Future<Nothing> CgroupsIsolatorProcess::__recover(
     const hashset<ContainerID>& unknownOrphans,
-    const list<Future<Nothing>>& futures)
+    const vector<Future<Nothing>>& futures)
 {
   vector<string> errors;
   foreach (const Future<Nothing>& future, futures) {
@@ -312,7 +334,7 @@ Future<Nothing> CgroupsIsolatorProcess::___recover(
 {
   const string cgroup = path::join(flags.cgroups_root, containerId.value());
 
-  list<Future<Nothing>> recovers;
+  vector<Future<Nothing>> recovers;
   hashset<string> recoveredSubsystems;
 
   // TODO(haosdent): Use foreachkey once MESOS-5037 is resolved.
@@ -357,7 +379,7 @@ Future<Nothing> CgroupsIsolatorProcess::___recover(
 Future<Nothing> CgroupsIsolatorProcess::____recover(
     const ContainerID& containerId,
     const hashset<string>& recoveredSubsystems,
-    const list<Future<Nothing>>& futures)
+    const vector<Future<Nothing>>& futures)
 {
   vector<string> errors;
   foreach (const Future<Nothing>& future, futures) {
@@ -390,11 +412,11 @@ Future<Option<ContainerLaunchInfo>> CgroupsIsolatorProcess::prepare(
     const ContainerID& containerId,
     const ContainerConfig& containerConfig)
 {
-  // If we are a nested container, we do not need to prepare
-  // anything since only top-level containers should have cgroups
-  // created for them.
+  // Only prepare cgroups for top-level containers. Nested container
+  // will inherit cgroups from its root container, so here we just
+  // need to do the container-specific cgroups mounts.
   if (containerId.has_parent()) {
-    return None();
+    return __prepare(containerId, containerConfig);
   }
 
   if (infos.contains(containerId)) {
@@ -407,7 +429,7 @@ Future<Option<ContainerLaunchInfo>> CgroupsIsolatorProcess::prepare(
       containerId,
       path::join(flags.cgroups_root, containerId.value())));
 
-  list<Future<Nothing>> prepares;
+  vector<Future<Nothing>> prepares;
 
   // TODO(haosdent): Use foreachkey once MESOS-5037 is resolved.
   foreach (const string& hierarchy, subsystems.keys()) {
@@ -506,7 +528,7 @@ Future<Option<ContainerLaunchInfo>> CgroupsIsolatorProcess::prepare(
 Future<Option<ContainerLaunchInfo>> CgroupsIsolatorProcess::_prepare(
     const ContainerID& containerId,
     const ContainerConfig& containerConfig,
-    const list<Future<Nothing>>& futures)
+    const vector<Future<Nothing>>& futures)
 {
   vector<string> errors;
   foreach (const Future<Nothing>& future, futures) {
@@ -524,7 +546,139 @@ Future<Option<ContainerLaunchInfo>> CgroupsIsolatorProcess::_prepare(
   }
 
   return update(containerId, containerConfig.resources())
-    .then([]() { return Option<ContainerLaunchInfo>::none(); });
+    .then(defer(
+        PID<CgroupsIsolatorProcess>(this),
+        &CgroupsIsolatorProcess::__prepare,
+        containerId,
+        containerConfig));
+}
+
+
+Future<Option<ContainerLaunchInfo>> CgroupsIsolatorProcess::__prepare(
+    const ContainerID& containerId,
+    const ContainerConfig& containerConfig)
+{
+  // We will do container-specific cgroups mounts
+  // only for the container with rootfs.
+  if (!containerConfig.has_rootfs()) {
+    return None();
+  }
+
+  const ContainerID rootContainerId = protobuf::getRootContainerId(containerId);
+
+  CHECK(infos.contains(rootContainerId));
+
+  ContainerLaunchInfo launchInfo;
+  launchInfo.add_clone_namespaces(CLONE_NEWNS);
+
+  // For the comounted subsystems (e.g., cpu & cpuacct, net_cls & net_prio),
+  // we need to create a symbolic link for each of them to the mount point.
+  // E.g.: ln -s /sys/fs/cgroup/cpu,cpuacct /sys/fs/cgroup/cpu
+  //       ln -s /sys/fs/cgroup/cpu,cpuacct /sys/fs/cgroup/cpuacct
+  foreach (const string& hierarchy, subsystems.keys()) {
+    if (subsystems.get(hierarchy).size() > 1) {
+      foreach (const Owned<Subsystem>& subsystem, subsystems.get(hierarchy)) {
+        CommandInfo* command = launchInfo.add_pre_exec_commands();
+        command->set_shell(false);
+        command->set_value("ln");
+        command->add_arguments("ln");
+        command->add_arguments("-s");
+        command->add_arguments(
+            path::join("/sys/fs/cgroup", Path(hierarchy).basename()));
+
+        command->add_arguments(path::join(
+            containerConfig.rootfs(),
+            "/sys/fs/cgroup",
+            subsystem->name()));
+      }
+    }
+  }
+
+  // For the subsystem loaded by this isolator, do the container-specific
+  // cgroups mount, e.g.:
+  //   mount --bind /sys/fs/cgroup/memory/mesos/<containerId> /sys/fs/cgroup/memory // NOLINT(whitespace/line_length)
+  foreach (const string& hierarchy, subsystems.keys()) {
+    ContainerMountInfo* mount = launchInfo.add_mounts();
+    mount->set_source(path::join(hierarchy, infos[rootContainerId]->cgroup));
+
+    mount->set_target(path::join(
+        containerConfig.rootfs(),
+        "/sys/fs/cgroup",
+        Path(hierarchy).basename()));
+
+    mount->set_flags(MS_BIND | MS_REC);
+  }
+
+  // Linux launcher will create freezer and systemd cgroups for the container,
+  // so here we need to do the container-specific cgroups mounts for them too,
+  // see MESOS-9070 for details.
+  if (flags.launcher == "linux") {
+    Result<string> hierarchy = cgroups::hierarchy("freezer");
+    if (hierarchy.isError()) {
+      return Failure(
+          "Failed to retrieve the 'freezer' subsystem hierarchy: " +
+          hierarchy.error());
+    }
+
+    ContainerMountInfo* mount = launchInfo.add_mounts();
+    mount->set_source(path::join(
+        hierarchy.get(),
+        flags.cgroups_root,
+        containerizer::paths::buildPath(
+            containerId,
+            CGROUP_SEPARATOR,
+            containerizer::paths::JOIN)));
+
+    mount->set_target(path::join(
+        containerConfig.rootfs(),
+        "/sys/fs/cgroup",
+        "freezer"));
+
+    mount->set_flags(MS_BIND | MS_REC);
+
+    if (systemd::enabled()) {
+      mount = launchInfo.add_mounts();
+      mount->set_source(path::join(
+          systemd::hierarchy(),
+          flags.cgroups_root,
+          containerizer::paths::buildPath(
+              containerId,
+              CGROUP_SEPARATOR,
+              containerizer::paths::JOIN)));
+
+      mount->set_target(path::join(
+          containerConfig.rootfs(),
+          "/sys/fs/cgroup",
+          "systemd"));
+
+      mount->set_flags(MS_BIND | MS_REC);
+    }
+  }
+
+  // TODO(qianzhang): This is a hack to pass the container-specific cgroups
+  // mounts and the symbolic links to the command executor to do for the
+  // command task. The reasons that we do it in this way are:
+  //   1. We need to ensure the container-specific cgroups mounts are done
+  //      only in the command task's mount namespace but not in the command
+  //      executor's mount namespace.
+  //   2. Even it's acceptable to do the container-specific cgroups mounts
+  //      in the command executor's mount namespace and the command task
+  //      inherit them from there (i.e., here we just return `launchInfo`
+  //      rather than passing it via `--task_launch_info`), the container
+  //      specific cgroups mounts will be hidden by the `sysfs` mounts done in
+  //      `mountSpecialFilesystems()` when the command executor launches the
+  //      command task.
+  if (containerConfig.has_task_info()) {
+    ContainerLaunchInfo _launchInfo;
+
+    _launchInfo.mutable_command()->add_arguments(
+        "--task_launch_info=" +
+        stringify(JSON::protobuf(launchInfo)));
+
+    return _launchInfo;
+  }
+
+  return launchInfo;
 }
 
 
@@ -575,7 +729,7 @@ Future<Nothing> CgroupsIsolatorProcess::isolate(
     return Nothing();
   }
 
-  list<Future<Nothing>> isolates;
+  vector<Future<Nothing>> isolates;
   foreachvalue (const Owned<Subsystem>& subsystem, subsystems) {
     isolates.push_back(subsystem->isolate(
         containerId,
@@ -592,7 +746,7 @@ Future<Nothing> CgroupsIsolatorProcess::isolate(
 
 
 Future<Nothing> CgroupsIsolatorProcess::_isolate(
-    const list<Future<Nothing>>& futures)
+    const vector<Future<Nothing>>& futures)
 {
   vector<string> errors;
   foreach (const Future<Nothing>& future, futures) {
@@ -668,7 +822,7 @@ Future<Nothing> CgroupsIsolatorProcess::update(
     return Failure("Unknown container");
   }
 
-  list<Future<Nothing>> updates;
+  vector<Future<Nothing>> updates;
   foreachvalue (const Owned<Subsystem>& subsystem, subsystems) {
     if (infos[containerId]->subsystems.contains(subsystem->name())) {
       updates.push_back(subsystem->update(
@@ -687,7 +841,7 @@ Future<Nothing> CgroupsIsolatorProcess::update(
 
 
 Future<Nothing> CgroupsIsolatorProcess::_update(
-    const list<Future<Nothing>>& futures)
+    const vector<Future<Nothing>>& futures)
 {
   vector<string> errors;
   foreach (const Future<Nothing>& future, futures) {
@@ -719,7 +873,7 @@ Future<ResourceStatistics> CgroupsIsolatorProcess::usage(
     return Failure("Unknown container");
   }
 
-  list<Future<ResourceStatistics>> usages;
+  vector<Future<ResourceStatistics>> usages;
   foreachvalue (const Owned<Subsystem>& subsystem, subsystems) {
     if (infos[containerId]->subsystems.contains(subsystem->name())) {
       usages.push_back(subsystem->usage(
@@ -729,7 +883,7 @@ Future<ResourceStatistics> CgroupsIsolatorProcess::usage(
   }
 
   return await(usages)
-    .then([containerId](const list<Future<ResourceStatistics>>& _usages) {
+    .then([containerId](const vector<Future<ResourceStatistics>>& _usages) {
       ResourceStatistics result;
 
       foreach (const Future<ResourceStatistics>& statistics, _usages) {
@@ -762,7 +916,7 @@ Future<ContainerStatus> CgroupsIsolatorProcess::status(
     return Failure("Unknown container");
   }
 
-  list<Future<ContainerStatus>> statuses;
+  vector<Future<ContainerStatus>> statuses;
   foreachvalue (const Owned<Subsystem>& subsystem, subsystems) {
     if (infos[containerId]->subsystems.contains(subsystem->name())) {
       statuses.push_back(subsystem->status(
@@ -772,7 +926,7 @@ Future<ContainerStatus> CgroupsIsolatorProcess::status(
   }
 
   return await(statuses)
-    .then([containerId](const list<Future<ContainerStatus>>& _statuses) {
+    .then([containerId](const vector<Future<ContainerStatus>>& _statuses) {
       ContainerStatus result;
 
       foreach (const Future<ContainerStatus>& status, _statuses) {
@@ -805,7 +959,7 @@ Future<Nothing> CgroupsIsolatorProcess::cleanup(
     return Nothing();
   }
 
-  list<Future<Nothing>> cleanups;
+  vector<Future<Nothing>> cleanups;
   foreachvalue (const Owned<Subsystem>& subsystem, subsystems) {
     if (infos[containerId]->subsystems.contains(subsystem->name())) {
       cleanups.push_back(subsystem->cleanup(
@@ -825,7 +979,7 @@ Future<Nothing> CgroupsIsolatorProcess::cleanup(
 
 Future<Nothing> CgroupsIsolatorProcess::_cleanup(
     const ContainerID& containerId,
-    const list<Future<Nothing>>& futures)
+    const vector<Future<Nothing>>& futures)
 {
   CHECK(infos.contains(containerId));
 
@@ -844,7 +998,7 @@ Future<Nothing> CgroupsIsolatorProcess::_cleanup(
         strings::join(";", errors));
   }
 
-  list<Future<Nothing>> destroys;
+  vector<Future<Nothing>> destroys;
 
   // TODO(haosdent): Use foreachkey once MESOS-5037 is resolved.
   foreach (const string& hierarchy, subsystems.keys()) {
@@ -871,7 +1025,7 @@ Future<Nothing> CgroupsIsolatorProcess::_cleanup(
 
 Future<Nothing> CgroupsIsolatorProcess::__cleanup(
     const ContainerID& containerId,
-    const list<Future<Nothing>>& futures)
+    const vector<Future<Nothing>>& futures)
 {
   CHECK(infos.contains(containerId));
 

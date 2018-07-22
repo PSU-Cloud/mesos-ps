@@ -14,7 +14,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <list>
+#include <vector>
 
 #include <glog/logging.h>
 
@@ -70,7 +70,7 @@ public:
       Owned<Cache> cache,
       Owned<Fetcher> fetcher);
 
-  ~StoreProcess() {}
+  ~StoreProcess() override {}
 
   Future<Nothing> recover();
 
@@ -131,7 +131,10 @@ Try<Owned<slave::Store>> Store::create(
   // TODO(jojy): Uri fetcher has 'shared' semantics for the
   // provisioner. It's a shared pointer which needs to be injected
   // from top level into the store (instead of being created here).
-  Try<Owned<uri::Fetcher>> uriFetcher = uri::fetcher::create();
+  uri::fetcher::Flags _flags;
+  _flags.curl_stall_timeout = flags.fetcher_stall_timeout;
+
+  Try<Owned<uri::Fetcher>> uriFetcher = uri::fetcher::create(_flags);
   if (uriFetcher.isError()) {
     return Error("Failed to create uri fetcher: " + uriFetcher.error());
   }
@@ -378,13 +381,14 @@ Future<vector<string>> StoreProcess::fetchDependencies(
   }
 
   // Do a depth first search.
-  list<Future<vector<string>>> futures;
+  vector<Future<vector<string>>> futures;
+  futures.reserve(dependencies.size());
   foreach (const Image::Appc& appc, dependencies) {
     futures.emplace_back(fetchImage(appc, cached));
   }
 
   return collect(futures)
-    .then(defer(self(), [=](const list<vector<string>>& imageIdsList) {
+    .then(defer(self(), [=](const vector<vector<string>>& imageIdsList) {
       vector<string> result;
       foreach (const vector<string>& imageIds, imageIdsList) {
         result.insert(result.end(), imageIds.begin(), imageIds.end());

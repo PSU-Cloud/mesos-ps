@@ -66,6 +66,7 @@ using mesos::internal::slave::MesosContainerizer;
 using mesos::internal::slave::Slave;
 
 using process::Clock;
+using process::TEST_AWAIT_TIMEOUT;
 using process::Failure;
 using process::Future;
 using process::Owned;
@@ -179,7 +180,7 @@ public:
 
         normal->driver->start();
 
-        offers.await(Seconds(15));
+        offers.await(TEST_AWAIT_TIMEOUT);
         if (!offers.isReady() || offers->empty()) {
           return Error("Failed to get offer(s)");
         }
@@ -193,7 +194,7 @@ public:
 
         normal->driver->launchTasks(offers->front().id(), {task});
 
-        statusRunning.await(Seconds(15));
+        statusRunning.await(TEST_AWAIT_TIMEOUT);
         if (!statusRunning.isReady() &&
             statusRunning->state() != TASK_RUNNING) {
           return Error("Failed to launch parent container");
@@ -205,7 +206,7 @@ public:
 
         Future<v1::agent::Response> containers = deserialize(post(slave, call));
 
-        containers.await(Seconds(15));
+        containers.await(TEST_AWAIT_TIMEOUT);
         if (!containers.isReady() ||
             containers->get_containers().containers_size() != 1u) {
           return Error("Failed to get parent ContainerID");
@@ -220,7 +221,7 @@ public:
         Future<SlaveRegisteredMessage> slaveRegisteredMessage =
           FUTURE_PROTOBUF(SlaveRegisteredMessage(), _, _);
 
-        slaveRegisteredMessage.await(Seconds(15));
+        slaveRegisteredMessage.await(TEST_AWAIT_TIMEOUT);
         if (!slaveRegisteredMessage.isReady()) {
           return Error("Failed to register agent");
         }
@@ -421,8 +422,19 @@ public:
     return post(slave, call);
   }
 
+  Future<http::Response> getContainers(
+      const process::PID<slave::Slave>& slave)
+  {
+    v1::agent::Call call;
+    call.set_type(v1::agent::Call::GET_CONTAINERS);
+    call.mutable_get_containers()->set_show_nested(true);
+    call.mutable_get_containers()->set_show_standalone(true);
+
+    return post(slave, call);
+  }
+
 protected:
-  virtual void TearDown()
+  void TearDown() override
   {
     if (normal.isSome()) {
       normal->driver->stop();
@@ -834,6 +846,43 @@ TEST_P_TEMP_DISABLED_ON_WINDOWS(
 
   AWAIT_READY(wait);
   EXPECT_TRUE(checkWaitContainerResponse(wait, SIGKILL));
+}
+
+
+// This test verifies the GET_CONTAINERS API call.
+TEST_P_TEMP_DISABLED_ON_WINDOWS(AgentContainerAPITest, GetContainers)
+{
+  Try<Owned<cluster::Master>> master = StartMaster();
+  ASSERT_SOME(master);
+
+  Owned<MasterDetector> detector = master.get()->createDetector();
+
+  slave::Flags slaveFlags = CreateSlaveFlags();
+  slaveFlags.launcher = std::get<1>(std::get<3>(GetParam()));
+  slaveFlags.isolation = std::get<0>(std::get<3>(GetParam()));
+
+  Try<Owned<cluster::Slave>> slave = StartSlave(detector.get(), slaveFlags);
+  ASSERT_SOME(slave);
+
+  Try<v1::ContainerID> parentContainerId =
+    launchParentContainer(master.get()->pid, slave.get()->pid);
+
+  ASSERT_SOME(parentContainerId);
+
+  // Launch a nested container and wait for it to finish.
+  v1::ContainerID containerId;
+  containerId.set_value(id::UUID::random().toString());
+  containerId.mutable_parent()->CopyFrom(parentContainerId.get());
+
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(
+      http::OK().status,
+      launchNestedContainer(slave.get()->pid, containerId));
+
+  Future<v1::agent::Response> response =
+    deserialize(getContainers(slave.get()->pid));
+
+  ASSERT_EQ(v1::agent::Response::GET_CONTAINERS, response->type());
+  EXPECT_EQ(2, response->get_containers().containers_size());
 }
 
 } // namespace tests {

@@ -42,6 +42,7 @@
 #include <stout/preprocessor.hpp>
 #include <stout/result.hpp>
 #include <stout/result_of.hpp>
+#include <stout/stringify.hpp>
 #include <stout/synchronized.hpp>
 #include <stout/try.hpp>
 
@@ -95,6 +96,7 @@ public:
   Future();
 
   /*implicit*/ Future(const T& _t);
+  /*implicit*/ Future(T&& _t);
 
   template <typename U>
   /*implicit*/ Future(const U& u);
@@ -103,20 +105,22 @@ public:
 
   /*implicit*/ Future(const ErrnoFailure& failure);
 
-  /*implicit*/ Future(const Future<T>& that);
+  /*implicit*/ Future(const Future<T>& that) = default;
+  /*implicit*/ Future(Future<T>&& that) = default;
 
-  /*implicit*/ Future(Future<T>&& that);
+  template <typename E>
+  /*implicit*/ Future(const Try<T, E>& t);
 
-  /*implicit*/ Future(const Try<T>& t);
-
-  /*implicit*/ Future(const Try<Future<T>>& t);
+  template <typename E>
+  /*implicit*/ Future(const Try<Future<T>, E>& t);
 
   ~Future() = default;
 
   // Futures are assignable (and copyable). This results in the
   // reference to the previous future data being decremented and a
   // reference to 'that' being incremented.
-  Future<T>& operator=(const Future<T>& that);
+  Future<T>& operator=(const Future<T>& that) = default;
+  Future<T>& operator=(Future<T>&& that) = default;
 
   // Comparison operators useful for using futures in collections.
   bool operator==(const Future<T>& that) const;
@@ -986,19 +990,10 @@ Future<Future<T>> select(const std::set<Future<T>>& futures)
 }
 
 
-template <typename T>
-void discard(const std::set<Future<T>>& futures)
+template <typename Futures>
+void discard(const Futures& futures)
 {
-  foreach (Future<T> future, futures) { // Need a non-const copy to discard.
-    future.discard();
-  }
-}
-
-
-template <typename T>
-void discard(const std::list<Future<T>>& futures)
-{
-  foreach (Future<T> future, futures) { // Need a non-const copy to discard.
+  foreach (auto future, futures) { // Need a non-const copy to discard.
     future.discard();
   }
 }
@@ -1082,6 +1077,14 @@ Future<T>::Future(const T& _t)
 
 
 template <typename T>
+Future<T>::Future(T&& _t)
+  : data(new Data())
+{
+  set(std::move(_t));
+}
+
+
+template <typename T>
 template <typename U>
 Future<T>::Future(const U& u)
   : data(new Data())
@@ -1107,44 +1110,28 @@ Future<T>::Future(const ErrnoFailure& failure)
 
 
 template <typename T>
-Future<T>::Future(const Future<T>& that)
-  : data(that.data) {}
-
-
-template <typename T>
-Future<T>::Future(Future<T>&& that)
-  : data(std::move(that.data)) {}
-
-
-template <typename T>
-Future<T>::Future(const Try<T>& t)
+template <typename E>
+Future<T>::Future(const Try<T, E>& t)
   : data(new Data())
 {
   if (t.isSome()){
     set(t.get());
   } else {
-    fail(t.error());
+    // TODO(chhsiao): Consider preserving the error type. See MESOS-8925.
+    fail(stringify(t.error()));
   }
 }
 
 
 template <typename T>
-Future<T>::Future(const Try<Future<T>>& t)
+template <typename E>
+Future<T>::Future(const Try<Future<T>, E>& t)
   : data(t.isSome() ? t->data : std::shared_ptr<Data>(new Data()))
 {
   if (!t.isSome()) {
-    fail(t.error());
+    // TODO(chhsiao): Consider preserving the error type. See MESOS-8925.
+    fail(stringify(t.error()));
   }
-}
-
-
-template <typename T>
-Future<T>& Future<T>::operator=(const Future<T>& that)
-{
-  if (this != &that) {
-    data = that.data;
-  }
-  return *this;
 }
 
 
@@ -1976,7 +1963,7 @@ struct UndiscardableDecorator
       typename std::decay<decltype(f(std::forward<Args>(args)...))>::type;
 
     static_assert(
-        is_specialization_of<Future, Result>::value,
+        is_specialization_of<Result, Future>::value,
         "Expecting Future<T> to be returned from undiscarded(...)");
 
     return undiscardable(f(std::forward<Args>(args)...));
@@ -2000,11 +1987,10 @@ struct UndiscardableDecorator
 // This guarantees that even if `future` is discarded the discard will
 // not propagate into the lambda passed into `.then()`.
 template <
-  typename F,
-  typename std::enable_if<
-    !is_specialization_of<
-      Future,
-      typename std::decay<F>::type>::value, int>::type = 0>
+    typename F,
+    typename std::enable_if<
+        !is_specialization_of<typename std::decay<F>::type, Future>::value,
+        int>::type = 0>
 UndiscardableDecorator<typename std::decay<F>::type> undiscardable(F&& f)
 {
   return UndiscardableDecorator<

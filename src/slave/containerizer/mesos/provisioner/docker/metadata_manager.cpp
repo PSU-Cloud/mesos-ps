@@ -55,7 +55,7 @@ class MetadataManagerProcess : public process::Process<MetadataManagerProcess>
 public:
   MetadataManagerProcess(const Flags& _flags) : flags(_flags) {}
 
-  ~MetadataManagerProcess() {}
+  ~MetadataManagerProcess() override {}
 
   Future<Nothing> recover();
 
@@ -256,7 +256,7 @@ Future<Nothing> MetadataManagerProcess::recover()
     return Nothing();
   }
 
-  Result<Images> images = ::protobuf::read<Images>(storedImagesPath);
+  Result<Images> images = state::read<Images>(storedImagesPath);
   if (images.isError()) {
     return Failure("Failed to read images from '" + storedImagesPath + "' " +
                    images.error());
@@ -265,10 +265,12 @@ Future<Nothing> MetadataManagerProcess::recover()
   if (images.isNone()) {
     // This could happen if the slave died after opening the file for
     // writing but before persisted on disk.
-    return Failure("Unexpected empty images file '" + storedImagesPath + "'");
+    LOG(WARNING) << "The images file '" << storedImagesPath << "' is empty";
+
+    return Nothing();
   }
 
-  foreach (const Image& image, images.get().images()) {
+  foreach (const Image& image, images->images()) {
     const string imageReference = stringify(image.reference());
 
     if (storedImages.contains(imageReference)) {

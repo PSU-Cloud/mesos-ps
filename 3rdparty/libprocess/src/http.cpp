@@ -46,6 +46,7 @@
 #include <process/socket.hpp>
 #include <process/state_machine.hpp>
 
+#include <stout/error.hpp>
 #include <stout/foreach.hpp>
 #include <stout/ip.hpp>
 #include <stout/lambda.hpp>
@@ -85,8 +86,15 @@ using process::network::internal::SocketImpl;
 namespace process {
 namespace http {
 
+struct StatusDescription {
+  uint16_t code;
+  const char* description;
+};
 
-hashmap<uint16_t, string>* statuses = new hashmap<uint16_t, string> {
+
+// Status code reason strings, from the HTTP1.1 RFC:
+// http://www.w3.org/Protocols/rfc2616/rfc2616-sec6.html
+StatusDescription statuses[] = {
   {100, "100 Continue"},
   {101, "101 Switching Protocols"},
   {200, "200 OK"},
@@ -172,10 +180,36 @@ const uint16_t Status::GATEWAY_TIMEOUT = 504;
 const uint16_t Status::HTTP_VERSION_NOT_SUPPORTED = 505;
 
 
+// Since the status codes are stored in increasing order, we could also
+// use std::lower_bound to do the lookup with logarithmic complexity.
+// However, according to some cursory research, on most CPUs this will
+// be slower until the array size is around 100 elemnts.
+//
+// [1]: https://schani.wordpress.com/2010/04/30/linear-vs-binary-search/
+// [2]: https://stackoverflow.com/questions/1275665/at-which-n-does-binary-search-become-faster-than-linear-search-on-a-modern-cpu
+
 string Status::string(uint16_t code)
 {
-  return http::statuses->get(code)
-    .getOrElse(stringify(code));
+  auto value = std::find_if(
+      std::begin(statuses),
+      std::end(statuses),
+      [code](const StatusDescription& sd) { return sd.code == code; });
+
+  if (value != std::end(statuses)) {
+    return value->description;
+  }
+
+  // Fallback for unknown status codes.
+  return stringify(code);
+}
+
+
+bool isValidStatus(uint16_t code)
+{
+  return std::end(statuses) != std::find_if(
+      std::begin(statuses),
+      std::end(statuses),
+      [code](const StatusDescription& sd) { return sd.code == code; });
 }
 
 
@@ -291,7 +325,7 @@ bool Request::acceptsEncoding(const string& encoding) const
   // then the server SHOULD use the "identity" content-coding...
   Option<string> accept = headers.get("Accept-Encoding");
 
-  if (accept.isNone() || accept.get().empty()) {
+  if (accept.isNone() || accept->empty()) {
     return false;
   }
 
@@ -1152,7 +1186,7 @@ public:
 
   Future<Nothing> disconnect(const Option<string>& message = None())
   {
-    Try<Nothing> shutdown = socket.shutdown(
+    Try<Nothing, SocketError> shutdown = socket.shutdown(
         network::Socket::Shutdown::READ_WRITE);
 
     // If a response is still streaming, we send EOF to
@@ -1170,7 +1204,8 @@ public:
 
     disconnection.set(Nothing());
 
-    return shutdown;
+    return shutdown.isSome() ? Future<Nothing>(Nothing())
+                             : Failure(shutdown.error().message);
   }
 
   Future<Nothing> disconnected()
@@ -1179,7 +1214,7 @@ public:
   }
 
 protected:
-  virtual void initialize()
+  void initialize() override
   {
     // Start the read loop on the socket. We read independently
     // of the requests being sent in order to detect socket
@@ -1187,7 +1222,7 @@ protected:
     read();
   }
 
-  virtual void finalize()
+  void finalize() override
   {
     disconnect("Connection object was destructed");
   }
@@ -1547,23 +1582,16 @@ Future<Nothing> sendfile(
     return send(socket, InternalServerError(body), request);
   }
 
-  struct stat s; // Need 'struct' because of function named 'stat'.
-  // We don't bother introducing a `os::fstat` since this is only
-  // one of two places where we use `fstat` in the entire codebase
-  // as of writing this comment.
-#ifdef __WINDOWS__
-  if (::fstat(fd->crt(), &s) != 0) {
-#else
-  if (::fstat(fd.get(), &s) != 0) {
-#endif
+  const Try<Bytes> size = os::stat::size(fd.get());
+  if (size.isError()) {
     const string body =
-      "Failed to fstat '" + response.path + "': " + os::strerror(errno);
+      "Failed to fstat '" + response.path + "': " + size.error();
     // TODO(benh): VLOG(1)?
     // TODO(benh): Don't send error back as part of InternalServiceError?
     // TODO(benh): Copy headers from `response`?
     os::close(fd.get());
     return send(socket, InternalServerError(body), request);
-  } else if (S_ISDIR(s.st_mode)) {
+  } else if (os::stat::isdir(fd.get())) {
     const string body = "'" + response.path + "' is a directory";
     // TODO(benh): VLOG(1)?
     // TODO(benh): Don't send error back as part of InternalServiceError?
@@ -1574,7 +1602,7 @@ Future<Nothing> sendfile(
 
   // While the user is expected to properly set a 'Content-Type'
   // header, we'll fill in (or overwrite) 'Content-Length' header.
-  response.headers["Content-Length"] = stringify(s.st_size);
+  response.headers["Content-Length"] = stringify(size->bytes());
 
   // TODO(benh): If this is a TCP socket consider turning on TCP_CORK
   // for both sends and then turning it off.
@@ -1591,7 +1619,7 @@ Future<Nothing> sendfile(
     })
     .then([=]() mutable -> Future<Nothing> {
       // NOTE: the file descriptor gets closed by FileEncoder.
-      Encoder* encoder = new FileEncoder(fd.get(), s.st_size);
+      Encoder* encoder = new FileEncoder(fd.get(), size->bytes());
       return send(socket, encoder)
         .onAny([=]() {
           delete encoder;
@@ -2085,7 +2113,7 @@ public:
           // After the grace period expires discard all the clients
           // and then keep waiting.
           .after(options.grace_period,
-                 defer(self(), [=](Future<list<Future<Nothing>>> f) {
+                 defer(self(), [=](Future<vector<Future<Nothing>>> f) {
                    f.discard();
                    return await(lambda::map(
                        [](Client&& client) {
@@ -2110,7 +2138,7 @@ public:
   }
 
 protected:
-  virtual void finalize()
+  void finalize() override
   {
     // If we started the accept loop then discard it and any clients
     // we are already serving.
@@ -2166,7 +2194,7 @@ Try<Server> Server::create(
   // tests that try and start making connections immediately after
   // `Server::run` has returned but potentially before
   // `Socket::listen` has been invoked.
-  Try<Nothing> listen = socket.listen(options.backlog);
+  Try<Nothing> listen = socket.listen(static_cast<int>(options.backlog));
   if (listen.isError()) {
     return Error("Failed to listen on socket: " + listen.error());
   }

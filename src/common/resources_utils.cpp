@@ -21,6 +21,8 @@
 
 using std::vector;
 
+using google::protobuf::Descriptor;
+using google::protobuf::Message;
 using google::protobuf::RepeatedPtrField;
 
 namespace mesos {
@@ -100,25 +102,23 @@ namespace internal {
 template <typename TResources,
           typename TResource,
           typename TResourceConversion,
-          typename TOfferOperation>
+          typename TOperation>
 Try<vector<TResourceConversion>> getResourceConversions(
-    const TOfferOperation& operation)
+    const TOperation& operation)
 {
   vector<TResourceConversion> conversions;
 
   switch (operation.type()) {
-    case TOfferOperation::UNKNOWN:
-      return Error("Unknown offer operation");
+    case TOperation::UNKNOWN:
+      return Error("Unknown operation");
 
-    case TOfferOperation::LAUNCH:
-    case TOfferOperation::LAUNCH_GROUP:
-    case TOfferOperation::CREATE_VOLUME:
-    case TOfferOperation::DESTROY_VOLUME:
-    case TOfferOperation::CREATE_BLOCK:
-    case TOfferOperation::DESTROY_BLOCK:
-      return Error("Offer operation not supported");
+    case TOperation::LAUNCH:
+    case TOperation::LAUNCH_GROUP:
+    case TOperation::CREATE_DISK:
+    case TOperation::DESTROY_DISK:
+      return Error("Operation not supported");
 
-    case TOfferOperation::RESERVE: {
+    case TOperation::RESERVE: {
       foreach (const TResource& reserved, operation.reserve().resources()) {
         // Note that we only allow "pushing" a single reservation at time.
         TResources consumed = TResources(reserved).popReservation();
@@ -127,7 +127,7 @@ Try<vector<TResourceConversion>> getResourceConversions(
       break;
     }
 
-    case TOfferOperation::UNRESERVE: {
+    case TOperation::UNRESERVE: {
       foreach (const TResource& reserved, operation.unreserve().resources()) {
         // Note that we only allow "popping" a single reservation at time.
         TResources converted = TResources(reserved).popReservation();
@@ -136,7 +136,7 @@ Try<vector<TResourceConversion>> getResourceConversions(
       break;
     }
 
-    case TOfferOperation::CREATE: {
+    case TOperation::CREATE: {
       foreach (const TResource& volume, operation.create().volumes()) {
         // Strip persistence and volume from the disk info so that we
         // can subtract it from the original resources.
@@ -162,7 +162,7 @@ Try<vector<TResourceConversion>> getResourceConversions(
       break;
     }
 
-    case TOfferOperation::DESTROY: {
+    case TOperation::DESTROY: {
       foreach (const TResource& volume, operation.destroy().volumes()) {
         // Strip persistence and volume from the disk info so that we
         // can subtract it from the original resources.
@@ -191,6 +191,57 @@ Try<vector<TResourceConversion>> getResourceConversions(
               return Nothing();
             });
       }
+      break;
+    }
+
+    case TOperation::GROW_VOLUME: {
+      const TResource& volume = operation.grow_volume().volume();
+      const TResource& addition = operation.grow_volume().addition();
+
+      if (TResources::hasResourceProvider(volume)) {
+        return Error("Operation not supported for resource provider");
+      }
+
+      // To grow a persistent volume, we consume the original volume and the
+      // additional resource and convert into a single volume with the new size.
+      TResource converted = volume;
+      *converted.mutable_scalar() += addition.scalar();
+
+      conversions.emplace_back(TResources(volume) + addition, converted);
+      break;
+    }
+
+    case TOperation::SHRINK_VOLUME: {
+      const TResource& volume = operation.shrink_volume().volume();
+
+      if (TResources::hasResourceProvider(volume)) {
+        return Error("Operation not supported for resource provider");
+      }
+
+      // To shrink a persistent volume, we consume the original volume and
+      // convert into a new volume with reduced size and a freed disk resource
+      // without persistent volume info.
+      TResource freed = volume;
+
+      *freed.mutable_scalar() = operation.shrink_volume().subtract();
+
+      // TODO(zhitao): Move this to helper function
+      // `Resources::stripPersistentVolume`.
+      if (freed.disk().has_source()) {
+        freed.mutable_disk()->clear_persistence();
+        freed.mutable_disk()->clear_volume();
+      } else {
+        freed.clear_disk();
+      }
+
+      // Since we only allow persistent volumes to be shared, the
+      // freed resource must be non-shared.
+      freed.clear_shared();
+
+      TResource shrunk = volume;
+      *shrunk.mutable_scalar() -= operation.shrink_volume().subtract();
+
+      conversions.emplace_back(volume, TResources(shrunk) + freed);
       break;
     }
   }
@@ -257,17 +308,17 @@ Result<ResourceProviderID> getResourceProviderId(
       }
       resource = operation.destroy().volumes(0);
       break;
-    case Offer::Operation::CREATE_VOLUME:
-      resource = operation.create_volume().source();
+    case Offer::Operation::GROW_VOLUME:
+      resource = operation.grow_volume().volume();
       break;
-    case Offer::Operation::DESTROY_VOLUME:
-      resource = operation.destroy_volume().volume();
+    case Offer::Operation::SHRINK_VOLUME:
+      resource = operation.shrink_volume().volume();
       break;
-    case Offer::Operation::CREATE_BLOCK:
-      resource = operation.create_block().source();
+    case Offer::Operation::CREATE_DISK:
+      resource = operation.create_disk().source();
       break;
-    case Offer::Operation::DESTROY_BLOCK:
-      resource = operation.destroy_block().block();
+    case Offer::Operation::DESTROY_DISK:
+      resource = operation.destroy_disk().source();
       break;
     case Offer::Operation::UNKNOWN:
       return Error("Unknown offer operation");
@@ -282,6 +333,34 @@ Result<ResourceProviderID> getResourceProviderId(
   return None();
 }
 
+
+Result<ResourceProviderID> getResourceProviderId(
+    const ResourceConversion& conversion)
+{
+  if (conversion.consumed.empty()) {
+    return Error("Could not determine resource provider");
+  }
+
+  const Resource& consumed = *conversion.consumed.begin();
+
+  const Option<ResourceProviderID> resourceProviderId =
+    consumed.has_provider_id()
+      ? consumed.provider_id()
+      : Option<ResourceProviderID>::none();
+
+
+  foreach (const Resource& resource, conversion.consumed) {
+    const Option<ResourceProviderID> resourceProviderId_ =
+      resource.has_provider_id()
+        ? resource.provider_id()
+        : Option<ResourceProviderID>::none();
+    if (resourceProviderId_ != resourceProviderId) {
+      return Error("Conversion works on multiple resource providers");
+    }
+  }
+
+  return resourceProviderId;
+}
 
 void convertResourceFormat(Resource* resource, ResourceFormat format)
 {
@@ -388,7 +467,139 @@ void convertResourceFormat(
 }
 
 
-Option<Error> validateAndNormalizeResources(Offer::Operation* operation)
+namespace internal {
+
+// Given a protobuf descriptor `descriptor`, recursively populates the provided
+// `result` where the keys are the message descriptors within `descriptor`'s
+// schema (including itself), and the corresponding value is `true` if the key
+// contains a `mesos::Resource`, and `false` otherwise.
+static void precomputeResourcesContainment(
+    const Descriptor* descriptor,
+    hashmap<const Descriptor*, bool>* result)
+{
+  CHECK_NOTNULL(descriptor);
+  CHECK_NOTNULL(result);
+
+  if (result->contains(descriptor)) {
+    return;
+  }
+
+  if (descriptor == mesos::Resource::descriptor()) {
+    result->insert({descriptor, true});
+  }
+
+  result->insert({descriptor, false});
+  for (int i = 0; i < descriptor->field_count(); ++i) {
+    // `message_type()` returns `nullptr` if the field is not a message type.
+    const Descriptor* messageDescriptor = descriptor->field(i)->message_type();
+    if (messageDescriptor == nullptr) {
+      continue;
+    }
+    precomputeResourcesContainment(messageDescriptor, result);
+    result->at(descriptor) |= result->at(messageDescriptor);
+  }
+}
+
+
+static Try<Nothing> convertResourcesImpl(
+    Message* message,
+    Try<Nothing> (*convertResource)(mesos::Resource* resource),
+    const hashmap<const Descriptor*, bool>& resourcesContainment)
+{
+  CHECK_NOTNULL(message);
+
+  const Descriptor* descriptor = message->GetDescriptor();
+
+  if (descriptor == mesos::Resource::descriptor()) {
+    return convertResource(static_cast<mesos::Resource*>(message));
+  }
+
+  const google::protobuf::Reflection* reflection = message->GetReflection();
+
+  for (int i = 0; i < descriptor->field_count(); ++i) {
+    const google::protobuf::FieldDescriptor* field = descriptor->field(i);
+    const Descriptor* messageDescriptor = field->message_type();
+
+    if (messageDescriptor == nullptr ||
+        !resourcesContainment.at(messageDescriptor)) {
+      continue;
+    }
+
+    if (!field->is_repeated()) {
+      if (reflection->HasField(*message, field)) {
+        Try<Nothing> result = convertResourcesImpl(
+            reflection->MutableMessage(message, field),
+            convertResource,
+            resourcesContainment);
+
+        if (result.isError()) {
+          return result;
+        }
+      }
+    } else {
+      const int size = reflection->FieldSize(*message, field);
+
+      for (int j = 0; j < size; ++j) {
+        Try<Nothing> result = convertResourcesImpl(
+            reflection->MutableRepeatedMessage(message, field, j),
+            convertResource,
+            resourcesContainment);
+
+        if (result.isError()) {
+          return result;
+        }
+      }
+    }
+  }
+
+  return Nothing();
+}
+
+}  // namespace internal {
+
+
+void upgradeResource(Resource* resource)
+{
+  convertResourceFormat(resource, POST_RESERVATION_REFINEMENT);
+}
+
+
+void upgradeResources(RepeatedPtrField<Resource>* resources)
+{
+  convertResourceFormat(resources, POST_RESERVATION_REFINEMENT);
+}
+
+
+void upgradeResources(vector<Resource>* resources)
+{
+  convertResourceFormat(resources, POST_RESERVATION_REFINEMENT);
+}
+
+
+void upgradeResources(Message* message)
+{
+  CHECK_NOTNULL(message);
+
+  const Descriptor* descriptor = message->GetDescriptor();
+
+  hashmap<const Descriptor*, bool> resourcesContainment;
+  internal::precomputeResourcesContainment(descriptor, &resourcesContainment);
+
+  if (!resourcesContainment.at(descriptor)) {
+    return;
+  }
+
+  internal::convertResourcesImpl(
+      message,
+      [](Resource* resource) -> Try<Nothing> {
+        upgradeResource(resource);
+        return Nothing();
+      },
+      resourcesContainment);
+}
+
+
+Option<Error> validateAndUpgradeResources(Offer::Operation* operation)
 {
   CHECK_NOTNULL(operation);
 
@@ -410,11 +621,7 @@ Option<Error> validateAndNormalizeResources(Offer::Operation* operation)
         return error;
       }
 
-      convertResourceFormat(
-          operation->mutable_reserve()->mutable_resources(),
-          POST_RESERVATION_REFINEMENT);
-
-      return None();
+      break;
     }
     case Offer::Operation::UNRESERVE: {
       // TODO(mpark): Once we perform a sanity check validation for
@@ -433,11 +640,7 @@ Option<Error> validateAndNormalizeResources(Offer::Operation* operation)
         return error;
       }
 
-      convertResourceFormat(
-          operation->mutable_unreserve()->mutable_resources(),
-          POST_RESERVATION_REFINEMENT);
-
-      return None();
+      break;
     }
     case Offer::Operation::CREATE: {
       // TODO(mpark): Once we perform a sanity check validation for
@@ -456,11 +659,7 @@ Option<Error> validateAndNormalizeResources(Offer::Operation* operation)
         return error;
       }
 
-      convertResourceFormat(
-          operation->mutable_create()->mutable_volumes(),
-          POST_RESERVATION_REFINEMENT);
-
-      return None();
+      break;
     }
     case Offer::Operation::DESTROY: {
       // TODO(mpark): Once we perform a sanity check validation for
@@ -479,11 +678,51 @@ Option<Error> validateAndNormalizeResources(Offer::Operation* operation)
         return error;
       }
 
-      convertResourceFormat(
-          operation->mutable_destroy()->mutable_volumes(),
-          POST_RESERVATION_REFINEMENT);
+      break;
+    }
+    case Offer::Operation::GROW_VOLUME: {
+      // TODO(mpark): Once we perform a sanity check validation for
+      // offer operations as specified in MESOS-7760, this should no
+      // longer have to be handled in this function.
+      if (!operation->has_grow_volume()) {
+        return Error(
+            "A GROW_VOLUME operation must have"
+            " the Offer.Operation.grow_volume field set");
+      }
 
-      return None();
+      Option<Error> error = Resources::validate(
+          operation->grow_volume().volume());
+
+      if (error.isSome()) {
+        return error;
+      }
+
+      error = Resources::validate(operation->grow_volume().addition());
+
+      if (error.isSome()) {
+        return error;
+      }
+
+      break;
+    }
+    case Offer::Operation::SHRINK_VOLUME: {
+      // TODO(mpark): Once we perform a sanity check validation for
+      // offer operations as specified in MESOS-7760, this should no
+      // longer have to be handled in this function.
+      if (!operation->has_shrink_volume()) {
+        return Error(
+            "A SHRINK_VOLUME offer operation must have"
+            " the Offer.Operation.shrink_volume field set");
+      }
+
+      Option<Error> error = Resources::validate(
+          operation->shrink_volume().volume());
+
+      if (error.isSome()) {
+        return error;
+      }
+
+      break;
     }
     case Offer::Operation::LAUNCH: {
       // TODO(mpark): Once we perform a sanity check validation for
@@ -512,21 +751,7 @@ Option<Error> validateAndNormalizeResources(Offer::Operation* operation)
         }
       }
 
-      // Normalize resources in LAUNCH.
-      foreach (
-          TaskInfo& task, *operation->mutable_launch()->mutable_task_infos()) {
-        convertResourceFormat(
-            task.mutable_resources(),
-            POST_RESERVATION_REFINEMENT);
-
-        if (task.has_executor()) {
-          convertResourceFormat(
-              task.mutable_executor()->mutable_resources(),
-              POST_RESERVATION_REFINEMENT);
-        }
-      }
-
-      return None();
+      break;
     }
     case Offer::Operation::LAUNCH_GROUP: {
       // TODO(mpark): Once we perform a sanity check validation for
@@ -567,75 +792,45 @@ Option<Error> validateAndNormalizeResources(Offer::Operation* operation)
         }
       }
 
-      // Normalize resources in LAUNCH_GROUP.
-      if (launchGroup->has_executor()) {
-        convertResourceFormat(
-            launchGroup->mutable_executor()->mutable_resources(),
-            POST_RESERVATION_REFINEMENT);
-      }
-
-      foreach (
-          TaskInfo& task, *launchGroup->mutable_task_group()->mutable_tasks()) {
-        convertResourceFormat(
-            task.mutable_resources(),
-            POST_RESERVATION_REFINEMENT);
-
-        if (task.has_executor()) {
-          convertResourceFormat(
-              task.mutable_executor()->mutable_resources(),
-              POST_RESERVATION_REFINEMENT);
-        }
-      }
-
-      return None();
+      break;
     }
-    case Offer::Operation::CREATE_VOLUME: {
+    case Offer::Operation::CREATE_DISK: {
       // TODO(mpark): Once we perform a sanity check validation for
       // offer operations as specified in MESOS-7760, this should no
       // longer have to be handled in this function.
-      if (!operation->has_create_volume()) {
+      if (!operation->has_create_disk()) {
         return Error(
-            "A CREATE_VOLUME offer operation must have"
-            " the Offer.Operation.create_volume field set.");
+            "A CREATE_DISK offer operation must have"
+            " the Offer.Operation.create_disk field set.");
       }
 
-      return None();
+      Option<Error> error =
+        Resources::validate(operation->create_disk().source());
+
+      if (error.isSome()) {
+        return error;
+      }
+
+      break;
     }
-    case Offer::Operation::DESTROY_VOLUME: {
+    case Offer::Operation::DESTROY_DISK: {
       // TODO(mpark): Once we perform a sanity check validation for
       // offer operations as specified in MESOS-7760, this should no
       // longer have to be handled in this function.
-      if (!operation->has_destroy_volume()) {
+      if (!operation->has_destroy_disk()) {
         return Error(
-            "A DESTROY_VOLUME offer operation must have"
-            " the Offer.Operation.destroy_volume field set.");
+            "A DESTROY_DISK offer operation must have"
+            " the Offer.Operation.destroy_disk field set.");
       }
 
-      return None();
-    }
-    case Offer::Operation::CREATE_BLOCK: {
-      // TODO(mpark): Once we perform a sanity check validation for
-      // offer operations as specified in MESOS-7760, this should no
-      // longer have to be handled in this function.
-      if (!operation->has_create_block()) {
-        return Error(
-            "A CREATE_BLOCK offer operation must have"
-            " the Offer.Operation.create_block field set.");
+      Option<Error> error =
+        Resources::validate(operation->destroy_disk().source());
+
+      if (error.isSome()) {
+        return error;
       }
 
-      return None();
-    }
-    case Offer::Operation::DESTROY_BLOCK: {
-      // TODO(mpark): Once we perform a sanity check validation for
-      // offer operations as specified in MESOS-7760, this should no
-      // longer have to be handled in this function.
-      if (!operation->has_destroy_block()) {
-        return Error(
-            "A DESTROY_BLOCK offer operation must have"
-            " the Offer.Operation.destroy_block field set.");
-      }
-
-      return None();
+      break;
     }
     case Offer::Operation::UNKNOWN: {
       // TODO(mpark): Once we perform a sanity check validation for
@@ -644,28 +839,72 @@ Option<Error> validateAndNormalizeResources(Offer::Operation* operation)
       return Error("Unknown offer operation");
     }
   }
-  UNREACHABLE();
+
+  upgradeResources(operation);
+
+  return None();
+}
+
+
+Try<Nothing> downgradeResource(Resource* resource)
+{
+  CHECK(!resource->has_role());
+  CHECK(!resource->has_reservation());
+
+  if (Resources::hasRefinedReservations(*resource)) {
+    return Error("Cannot downgrade resources containing refined reservations");
+  }
+
+  convertResourceFormat(resource, PRE_RESERVATION_REFINEMENT);
+  return Nothing();
 }
 
 
 Try<Nothing> downgradeResources(RepeatedPtrField<Resource>* resources)
 {
-  foreach (const Resource& resource, *resources) {
-    CHECK(!resource.has_role());
-    CHECK(!resource.has_reservation());
-  }
+  CHECK_NOTNULL(resources);
 
-  foreach (const Resource& resource, *resources) {
-    if (Resources::hasRefinedReservations(resource)) {
-      return Error(
-          "Invalid resources downgrade: resource " + stringify(resource) +
-          " with refined reservations cannot be downgraded");
+  foreach (Resource& resource, *resources) {
+    Try<Nothing> result = downgradeResource(&resource);
+    if (result.isError()) {
+      return result;
     }
   }
 
-  convertResourceFormat(resources, PRE_RESERVATION_REFINEMENT);
+  return Nothing();
+}
+
+
+Try<Nothing> downgradeResources(vector<Resource>* resources)
+{
+  CHECK_NOTNULL(resources);
+
+  foreach (Resource& resource, *resources) {
+    Try<Nothing> result = downgradeResource(&resource);
+    if (result.isError()) {
+      return result;
+    }
+  }
 
   return Nothing();
+}
+
+
+Try<Nothing> downgradeResources(Message* message)
+{
+  CHECK_NOTNULL(message);
+
+  const Descriptor* descriptor = message->GetDescriptor();
+
+  hashmap<const Descriptor*, bool> resourcesContainment;
+  internal::precomputeResourcesContainment(descriptor, &resourcesContainment);
+
+  if (!resourcesContainment.at(descriptor)) {
+    return Nothing();
+  }
+
+  return internal::convertResourcesImpl(
+      message, downgradeResource, resourcesContainment);
 }
 
 } // namespace mesos {

@@ -11,8 +11,8 @@ There are different ways you can get Mesos:
 
 1\. Download the latest stable release from [Apache](http://mesos.apache.org/downloads/) (***Recommended***)
 
-    $ wget http://www.apache.org/dist/mesos/1.4.1/mesos-1.4.1.tar.gz
-    $ tar -zxf mesos-1.4.1.tar.gz
+    $ wget http://www.apache.org/dist/mesos/1.6.0/mesos-1.6.0.tar.gz
+    $ tar -zxf mesos-1.6.0.tar.gz
 
 2\. Clone the Mesos git [repository](https://git-wip-us.apache.org/repos/asf/mesos.git) (***Advanced Users Only***)
 
@@ -24,7 +24,7 @@ There are different ways you can get Mesos:
 
 Mesos runs on Linux (64 Bit) and Mac OS X (64 Bit). To build Mesos from source, GCC 4.8.1+ or Clang 3.5+ is required.
 
-On Linux, a kernel version >= 2.6.23 is required at both build time and run time. For full support of process isolation under Linux a recent kernel >= 3.10 is required.
+On Linux, a kernel version >= 2.6.28 is required at both build time and run time. For full support of process isolation under Linux a recent kernel >= 3.10 is required.
 
 The Mesos agent also runs on Windows. To build Mesos from source, follow the instructions in the [Windows](windows.md) section.
 
@@ -66,7 +66,7 @@ Following are the instructions for stock Ubuntu 16.04. If you are using a differ
     $ sudo apt-get install -y autoconf libtool
 
     # Install other Mesos dependencies.
-    $ sudo apt-get -y install build-essential python-dev python-six python-virtualenv libcurl4-nss-dev libsasl2-dev libsasl2-modules maven libapr1-dev libsvn-dev zlib1g-dev
+    $ sudo apt-get -y install build-essential python-dev python-six python-virtualenv libcurl4-nss-dev libsasl2-dev libsasl2-modules maven libapr1-dev libsvn-dev zlib1g-dev iputils-ping
 
 ### Mac OS X 10.11 (El Capitan), macOS 10.12 (Sierra)
 
@@ -98,9 +98,10 @@ When compiling on macOS 10.12, the following is needed:
     $ brew install subversion
 
     # When configuring, the svn and apr headers from brew will be automatically
-    # detected, so no need to explicitly point to them. Also,
-    # `-Wno-deprecated-declarations` is needed to suppress warnings.
-    $ ../configure CXXFLAGS=-Wno-deprecated-declarations
+    # detected, so no need to explicitly point to them.
+    # If the build fails due to compiler warnings, `--disable-werror` can be passed
+    # to configure to not treat warnings as errors.
+    $ ../configure
 
     # Lastly, you may encounter the following error when the libprocess tests run:
     $ ./libprocess-tests

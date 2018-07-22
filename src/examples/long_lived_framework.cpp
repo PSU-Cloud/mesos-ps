@@ -24,6 +24,8 @@
 #include <mesos/v1/resources.hpp>
 #include <mesos/v1/scheduler.hpp>
 
+#include <mesos/authorizer/acls.hpp>
+
 #include <process/clock.hpp>
 #include <process/defer.hpp>
 #include <process/help.hpp>
@@ -34,7 +36,7 @@
 #include <process/time.hpp>
 
 #include <process/metrics/counter.hpp>
-#include <process/metrics/gauge.hpp>
+#include <process/metrics/pull_gauge.hpp>
 #include <process/metrics/metrics.hpp>
 
 #include <stout/flags.hpp>
@@ -48,6 +50,8 @@
 #include <stout/os/realpath.hpp>
 
 #include "common/parse.hpp"
+
+#include "examples/flags.hpp"
 
 #include "logging/logging.hpp"
 
@@ -85,7 +89,7 @@ using process::TLDR;
 
 using process::http::OK;
 
-using process::metrics::Gauge;
+using process::metrics::PullGauge;
 using process::metrics::Counter;
 
 // NOTE: Per-task resources are nominal because all of the resources for the
@@ -134,10 +138,10 @@ public:
     start_time = Clock::now();
   }
 
-  virtual ~LongLivedScheduler() {}
+  ~LongLivedScheduler() override {}
 
 protected:
-  virtual void initialize()
+  void initialize() override
   {
     // We initialize the library here to ensure that callbacks are only invoked
     // after the process has spawned.
@@ -214,8 +218,8 @@ protected:
           break;
         }
 
-        // TODO(greggomann): Implement handling of offer operation updates.
-        case Event::OFFER_OPERATION_UPDATE:
+        // TODO(greggomann): Implement handling of operation status updates.
+        case Event::UPDATE_OPERATION_STATUS:
           break;
 
         case Event::FAILURE: {
@@ -483,8 +487,8 @@ private:
       process::metrics::remove(abnormal_terminations);
     }
 
-    process::metrics::Gauge uptime_secs;
-    process::metrics::Gauge subscribed;
+    process::metrics::PullGauge uptime_secs;
+    process::metrics::PullGauge subscribed;
 
     process::metrics::Counter offers_received;
     process::metrics::Counter tasks_launched;
@@ -496,22 +500,11 @@ private:
 };
 
 
-class Flags : public virtual flags::FlagsBase
+class Flags : public virtual mesos::internal::examples::Flags
 {
 public:
   Flags()
   {
-    add(&Flags::master,
-        "master",
-        "Master to connect to.",
-        [](const Option<string>& value) -> Option<Error> {
-          if (value.isNone()) {
-            return Error("Missing --master");
-          }
-
-          return None();
-        });
-
     add(&Flags::build_dir,
         "build_dir",
         "The build directory of Mesos. If set, the framework will assume\n"
@@ -548,22 +541,7 @@ public:
         "executor_command",
         "The command that should be used to start the executor.\n"
         "This will override the value set by `--build_dir`.");
-
-    add(&Flags::checkpoint,
-        "checkpoint",
-        "Whether this framework should be checkpointed.",
-        false);
-
-    add(&Flags::principal,
-        "principal",
-        "The principal to use for framework authentication.");
-
-    add(&Flags::secret,
-        "secret",
-        "The secret to use for framework authentication.");
   }
-
-  Option<string> master;
 
   // Flags for specifying the executor binary and other URIs.
   //
@@ -573,17 +551,13 @@ public:
   Option<string> executor_uri;
   Option<JSON::Array> executor_uris;
   Option<string> executor_command;
-
-  bool checkpoint;
-  Option<string> principal;
-  Option<string> secret;
 };
 
 
 int main(int argc, char** argv)
 {
   Flags flags;
-  Try<flags::Warnings> load = flags.load("MESOS_", argc, argv);
+  Try<flags::Warnings> load = flags.load("MESOS_EXAMPLE_", argc, argv);
 
   if (flags.help) {
     std::cout << flags.usage() << std::endl;
@@ -662,9 +636,10 @@ int main(int argc, char** argv)
 
   FrameworkInfo framework;
   framework.set_user(os::user().get());
+  framework.set_principal(flags.principal);
   framework.set_name(FRAMEWORK_NAME);
   framework.set_checkpoint(flags.checkpoint);
-  framework.add_roles("*");
+  framework.add_roles(flags.role);
   framework.add_capabilities()->set_type(
       FrameworkInfo::Capability::MULTI_ROLE);
   framework.add_capabilities()->set_type(
@@ -672,23 +647,36 @@ int main(int argc, char** argv)
 
   Option<Credential> credential = None();
 
-  if (flags.principal.isSome()) {
-    framework.set_principal(flags.principal.get());
-
+  if (flags.authenticate) {
+    Credential credential_;
+    credential_.set_principal(flags.principal);
     if (flags.secret.isSome()) {
-      Credential credential_;
-      credential_.set_principal(flags.principal.get());
       credential_.set_secret(flags.secret.get());
-      credential = credential_;
     }
+    credential = credential_;
   }
 
-  Owned<LongLivedScheduler> scheduler(
-      new LongLivedScheduler(
-        flags.master.get(),
-        framework,
-        executor,
-        credential));
+  if (flags.master == "local") {
+    // Configure master.
+    os::setenv("MESOS_ROLES", flags.role);
+    os::setenv(
+        "MESOS_AUTHENTICATE_HTTP_FRAMEWORKS",
+        stringify(flags.authenticate));
+
+    os::setenv("MESOS_HTTP_FRAMEWORK_AUTHENTICATORS", "basic");
+
+    mesos::ACLs acls;
+    mesos::ACL::RegisterFramework* acl = acls.add_register_frameworks();
+    acl->mutable_principals()->set_type(mesos::ACL::Entity::ANY);
+    acl->mutable_roles()->add_values(flags.role);
+    os::setenv("MESOS_ACLS", stringify(JSON::protobuf(acls)));
+  }
+
+  Owned<LongLivedScheduler> scheduler(new LongLivedScheduler(
+      flags.master,
+      framework,
+      executor,
+      credential));
 
   process::spawn(scheduler.get());
   process::wait(scheduler.get());

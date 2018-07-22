@@ -78,7 +78,7 @@ class MockDockerVolumeDriverClient : public DriverClient
 public:
   MockDockerVolumeDriverClient() {}
 
-  virtual ~MockDockerVolumeDriverClient() {}
+  ~MockDockerVolumeDriverClient() override {}
 
   MOCK_METHOD3(
       mount,
@@ -98,7 +98,7 @@ public:
 class DockerVolumeIsolatorTest : public MesosTest
 {
 protected:
-  virtual void TearDown()
+  void TearDown() override
   {
     // Try to remove any mounts under sandbox.
     if (::geteuid() == 0) {
@@ -625,7 +625,7 @@ TEST_F(DockerVolumeIsolatorTest, ROOT_CommandTaskNoRootfsSlaveRecovery)
   slave.get()->terminate();
 
   // Set up so we can wait until the new slave updates the container's
-  // resources (this occurs after the executor has re-registered).
+  // resources (this occurs after the executor has reregistered).
   Future<Nothing> update =
     FUTURE_DISPATCH(_, &MesosContainerizerProcess::update);
 

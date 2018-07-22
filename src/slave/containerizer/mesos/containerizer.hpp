@@ -17,7 +17,6 @@
 #ifndef __MESOS_CONTAINERIZER_HPP__
 #define __MESOS_CONTAINERIZER_HPP__
 
-#include <list>
 #include <vector>
 
 #include <mesos/secret/resolver.hpp>
@@ -51,6 +50,13 @@ namespace mesos {
 namespace internal {
 namespace slave {
 
+// If the container class is not of type `DEBUG` (i.e., it is not set or
+// `DEFAULT`), we log the line at the INFO level. Otherwise, we use VLOG(1).
+// The purpose of this macro is to avoid polluting agent logs with information
+// related to `DEBUG` containers as this type of container can run periodically.
+#define LOG_BASED_ON_CLASS(containerClass) \
+  LOG_IF(INFO, (containerClass != ContainerClass::DEBUG) || VLOG_IS_ON(1))
+
 // Forward declaration.
 class MesosContainerizerProcess;
 
@@ -73,46 +79,46 @@ public:
       const process::Shared<Provisioner>& provisioner,
       const std::vector<process::Owned<mesos::slave::Isolator>>& isolators);
 
-  virtual ~MesosContainerizer();
+  ~MesosContainerizer() override;
 
-  virtual process::Future<Nothing> recover(
-      const Option<state::SlaveState>& state);
+  process::Future<Nothing> recover(
+      const Option<state::SlaveState>& state) override;
 
-  virtual process::Future<Containerizer::LaunchResult> launch(
+  process::Future<Containerizer::LaunchResult> launch(
       const ContainerID& containerId,
       const mesos::slave::ContainerConfig& containerConfig,
       const std::map<std::string, std::string>& environment,
-      const Option<std::string>& pidCheckpointPath);
+      const Option<std::string>& pidCheckpointPath) override;
 
-  virtual process::Future<process::http::Connection> attach(
-      const ContainerID& containerId);
+  process::Future<process::http::Connection> attach(
+      const ContainerID& containerId) override;
 
-  virtual process::Future<Nothing> update(
+  process::Future<Nothing> update(
       const ContainerID& containerId,
-      const Resources& resources);
+      const Resources& resources) override;
 
-  virtual process::Future<ResourceStatistics> usage(
-      const ContainerID& containerId);
+  process::Future<ResourceStatistics> usage(
+      const ContainerID& containerId) override;
 
-  virtual process::Future<ContainerStatus> status(
-      const ContainerID& containerId);
+  process::Future<ContainerStatus> status(
+      const ContainerID& containerId) override;
 
-  virtual process::Future<Option<mesos::slave::ContainerTermination>> wait(
-      const ContainerID& containerId);
+  process::Future<Option<mesos::slave::ContainerTermination>> wait(
+      const ContainerID& containerId) override;
 
-  virtual process::Future<bool> destroy(
-      const ContainerID& containerId);
+  process::Future<Option<mesos::slave::ContainerTermination>> destroy(
+      const ContainerID& containerId) override;
 
-  virtual process::Future<bool> kill(
+  process::Future<bool> kill(
       const ContainerID& containerId,
-      int signal);
+      int signal) override;
 
-  virtual process::Future<hashset<ContainerID>> containers();
+  process::Future<hashset<ContainerID>> containers() override;
 
-  virtual process::Future<Nothing> remove(const ContainerID& containerId);
+  process::Future<Nothing> remove(const ContainerID& containerId) override;
 
-  virtual process::Future<Nothing> pruneImages(
-      const std::vector<Image>& excludedImages);
+  process::Future<Nothing> pruneImages(
+      const std::vector<Image>& excludedImages) override;
 
 private:
   explicit MesosContainerizer(
@@ -141,7 +147,7 @@ public:
       provisioner(_provisioner),
       isolators(_isolators) {}
 
-  virtual ~MesosContainerizerProcess() {}
+  ~MesosContainerizerProcess() override {}
 
   virtual process::Future<Nothing> recover(
       const Option<state::SlaveState>& state);
@@ -172,7 +178,7 @@ public:
       const ContainerID& containerId,
       int_fd pipeWrite);
 
-  virtual process::Future<bool> destroy(
+  virtual process::Future<Option<mesos::slave::ContainerTermination>> destroy(
       const ContainerID& containerId,
       const Option<mesos::slave::ContainerTermination>& termination);
 
@@ -201,19 +207,19 @@ private:
   friend std::ostream& operator<<(std::ostream& stream, const State& state);
 
   process::Future<Nothing> _recover(
-      const std::list<mesos::slave::ContainerState>& recoverable,
+      const std::vector<mesos::slave::ContainerState>& recoverable,
       const hashset<ContainerID>& orphans);
 
-  process::Future<std::list<Nothing>> recoverIsolators(
-      const std::list<mesos::slave::ContainerState>& recoverable,
+  process::Future<std::vector<Nothing>> recoverIsolators(
+      const std::vector<mesos::slave::ContainerState>& recoverable,
       const hashset<ContainerID>& orphans);
 
   process::Future<Nothing> recoverProvisioner(
-      const std::list<mesos::slave::ContainerState>& recoverable,
+      const std::vector<mesos::slave::ContainerState>& recoverable,
       const hashset<ContainerID>& orphans);
 
   process::Future<Nothing> __recover(
-      const std::list<mesos::slave::ContainerState>& recovered,
+      const std::vector<mesos::slave::ContainerState>& recovered,
       const hashset<ContainerID>& orphans);
 
   process::Future<Nothing> prepare(
@@ -238,7 +244,8 @@ private:
       const ContainerID& containerId,
       const Option<mesos::slave::ContainerTermination>& termination,
       const State& previousState,
-      const std::list<process::Future<bool>>& destroys);
+      const std::vector<
+        process::Future<Option<mesos::slave::ContainerTermination>>>& destroys);
 
   // Continues '_destroy()' once isolators has completed.
   void __destroy(
@@ -262,7 +269,7 @@ private:
   void _____destroy(
       const ContainerID& containerId,
       const Option<mesos::slave::ContainerTermination>& termination,
-      const process::Future<std::list<process::Future<Nothing>>>& cleanups);
+      const process::Future<std::vector<process::Future<Nothing>>>& cleanups);
 
   // Continues '_____destroy()' once provisioner have completed destroy.
   void ______destroy(
@@ -287,7 +294,7 @@ private:
 
   // TODO(jieyu): Consider introducing an Isolators struct and moving
   // all isolator related operations to that struct.
-  process::Future<std::list<process::Future<Nothing>>> cleanupIsolators(
+  process::Future<std::vector<process::Future<Nothing>>> cleanupIsolators(
       const ContainerID& containerId);
 
   const Flags flags;
@@ -336,13 +343,13 @@ private:
     // We keep track of the future that is waiting for all the
     // 'isolator->prepare' to finish so that destroy will only start
     // calling cleanup after all isolators have finished preparing.
-    process::Future<std::list<Option<mesos::slave::ContainerLaunchInfo>>>
+    process::Future<std::vector<Option<mesos::slave::ContainerLaunchInfo>>>
       launchInfos;
 
     // We keep track of the future that is waiting for all the
     // 'isolator->isolate' futures so that destroy will only start
     // calling cleanup after all isolators have finished isolating.
-    process::Future<std::list<Nothing>> isolation;
+    process::Future<std::vector<Nothing>> isolation;
 
     // We keep track of the resources for each container so we can set
     // the ResourceStatistics limits in usage().
@@ -350,10 +357,14 @@ private:
 
     // The configuration for the container to be launched.
     // This can only be None if the underlying container is launched
-    // before we checkpiont `ContainerConfig` in MESOS-6894.
+    // before we checkpoint `ContainerConfig` in MESOS-6894.
     // TODO(zhitao): Drop the `Option` part at the end of deprecation
     // cycle.
     Option<mesos::slave::ContainerConfig> config;
+
+    // The container class that can be `DEFAULT` or `DEBUG`.
+    // Returns `DEFAULT` even if the container class is not defined.
+    mesos::slave::ContainerClass containerClass();
 
     // Container's information at the moment it was launched. For example,
     // used to bootstrap the launch information of future child DEBUG

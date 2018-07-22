@@ -60,6 +60,8 @@ bool operator==(const FileInfo& left, const FileInfo& right);
 bool operator==(const Label& left, const Label& right);
 bool operator==(const Labels& left, const Labels& right);
 bool operator==(const MasterInfo& left, const MasterInfo& right);
+bool operator==(const Offer::Operation& left, const Offer::Operation& right);
+bool operator==(const Operation& left, const Operation& right);
 
 bool operator==(
     const ResourceProviderInfo& left,
@@ -75,6 +77,8 @@ bool operator==(const URL& left, const URL& right);
 bool operator==(const Volume& left, const Volume& right);
 
 bool operator!=(const Labels& left, const Labels& right);
+bool operator!=(const Offer::Operation& left, const Offer::Operation& right);
+bool operator!=(const Operation& left, const Operation& right);
 bool operator!=(const TaskStatus& left, const TaskStatus& right);
 
 
@@ -108,9 +112,7 @@ inline bool operator==(const OfferID& left, const OfferID& right)
 }
 
 
-inline bool operator==(
-    const OfferOperationID& left,
-    const OfferOperationID& right)
+inline bool operator==(const OperationID& left, const OperationID& right)
 {
   return left.value() == right.value();
 }
@@ -119,6 +121,12 @@ inline bool operator==(
 inline bool operator==(
     const ResourceProviderID& left,
     const ResourceProviderID& right)
+{
+  return left.value() == right.value();
+}
+
+
+inline bool operator==(const UUID& left, const UUID& right)
 {
   return left.value() == right.value();
 }
@@ -255,9 +263,7 @@ inline bool operator!=(const FrameworkID& left, const FrameworkID& right)
 }
 
 
-inline bool operator!=(
-    const OfferOperationID& left,
-    const OfferOperationID& right)
+inline bool operator!=(const OperationID& left, const OperationID& right)
 {
   return left.value() != right.value();
 }
@@ -274,6 +280,12 @@ inline bool operator!=(
 inline bool operator!=(
     const ResourceProviderInfo& left,
     const ResourceProviderInfo& right)
+{
+  return !(left == right);
+}
+
+
+inline bool operator!=(const UUID& left, const UUID& right)
 {
   return !(left == right);
 }
@@ -377,14 +389,10 @@ std::ostream& operator<<(std::ostream& stream, const MasterInfo& master);
 std::ostream& operator<<(std::ostream& stream, const OfferID& offerId);
 
 
-std::ostream& operator<<(
-    std::ostream& stream,
-    const OfferOperationID& offerOperationId);
+std::ostream& operator<<(std::ostream& stream, const OperationID& operationId);
 
 
-std::ostream& operator<<(
-    std::ostream& stream,
-    const OfferOperationState& state);
+std::ostream& operator<<(std::ostream& stream, const OperationState& state);
 
 
 std::ostream& operator<<(std::ostream& stream, const RateLimits& limits);
@@ -401,6 +409,9 @@ std::ostream& operator<<(
 std::ostream& operator<<(
     std::ostream& stream,
     const ResourceProviderInfo& resourceProviderInfo);
+
+
+std::ostream& operator<<(std::ostream& stream, const TaskStatus& status);
 
 
 std::ostream& operator<<(std::ostream& stream, const AgentID& agentId);
@@ -715,16 +726,16 @@ struct hash<mesos::v1::MachineID>
 
 
 template <>
-struct hash<mesos::v1::OfferOperationID>
+struct hash<mesos::v1::OperationID>
 {
   typedef size_t result_type;
 
-  typedef mesos::v1::OfferOperationID argument_type;
+  typedef mesos::v1::OperationID argument_type;
 
-  result_type operator()(const argument_type& offerOperationId) const
+  result_type operator()(const argument_type& operationId) const
   {
     size_t seed = 0;
-    boost::hash_combine(seed, offerOperationId.value());
+    boost::hash_combine(seed, operationId.value());
     return seed;
   }
 };

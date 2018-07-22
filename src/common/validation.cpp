@@ -21,6 +21,8 @@
 #include <algorithm>
 #include <cctype>
 
+#include <mesos/executor/executor.hpp>
+
 #include <mesos/resources.hpp>
 
 #include <stout/foreach.hpp>
@@ -268,6 +270,24 @@ Option<Error> validateContainerInfo(const ContainerInfo& containerInfo)
     }
   }
 
+  if (containerInfo.type() == ContainerInfo::DOCKER) {
+    if (!containerInfo.has_docker()) {
+      return Error(
+          "DockerInfo 'docker' is not set for DOCKER typed ContainerInfo");
+    }
+
+    // We do not support setting `name` parameter in Docker info because
+    // Docker containerizer has its own way to name the Docker container,
+    // otherwise Docker containerizer will not be able to recognize the
+    // created container, see MESOS-8497 for details.
+    foreach (const Parameter& parameter,
+             containerInfo.docker().parameters()) {
+      if (parameter.key() == "name") {
+        return Error("Parameter in DockerInfo must not be 'name'");
+      }
+    }
+  }
+
   return None();
 }
 
@@ -282,6 +302,312 @@ Option<Error> validateGpus(const RepeatedPtrField<Resource>& resources)
   }
 
   return None();
+}
+
+
+Option<Error> validateHealthCheck(const HealthCheck& healthCheck)
+{
+  if (!healthCheck.has_type()) {
+    return Error("HealthCheck must specify 'type'");
+  }
+
+  switch (healthCheck.type()) {
+    case HealthCheck::COMMAND: {
+      if (!healthCheck.has_command()) {
+        return Error("Expecting 'command' to be set for COMMAND health check");
+      }
+
+      const CommandInfo& command = healthCheck.command();
+
+      if (!command.has_value()) {
+        string commandType =
+          (command.shell() ? "'shell command'" : "'executable path'");
+
+        return Error("Command health check must contain " + commandType);
+      }
+
+      Option<Error> error =
+        common::validation::validateCommandInfo(command);
+      if (error.isSome()) {
+        return Error(
+            "Health check's `CommandInfo` is invalid: " + error->message);
+      }
+
+      // TODO(alexr): Make sure irrelevant fields, e.g., `uris` are not set.
+
+      break;
+    }
+    case HealthCheck::HTTP: {
+      if (!healthCheck.has_http()) {
+        return Error("Expecting 'http' to be set for HTTP health check");
+      }
+
+      const HealthCheck::HTTPCheckInfo& http = healthCheck.http();
+
+      if (http.has_scheme() &&
+          http.scheme() != "http" &&
+          http.scheme() != "https") {
+        return Error(
+            "Unsupported HTTP health check scheme: '" + http.scheme() + "'");
+      }
+
+      if (http.has_path() && !strings::startsWith(http.path(), '/')) {
+        return Error(
+            "The path '" + http.path() +
+            "' of HTTP health check must start with '/'");
+      }
+
+      break;
+    }
+    case HealthCheck::TCP: {
+      if (!healthCheck.has_tcp()) {
+        return Error("Expecting 'tcp' to be set for TCP health check");
+      }
+
+      break;
+    }
+    case HealthCheck::UNKNOWN: {
+      return Error(
+          "'" + HealthCheck::Type_Name(healthCheck.type()) + "'"
+          " is not a valid health check type");
+    }
+  }
+
+  if (healthCheck.has_delay_seconds() && healthCheck.delay_seconds() < 0.0) {
+    return Error("Expecting 'delay_seconds' to be non-negative");
+  }
+
+  if (healthCheck.has_grace_period_seconds() &&
+      healthCheck.grace_period_seconds() < 0.0) {
+    return Error("Expecting 'grace_period_seconds' to be non-negative");
+  }
+
+  if (healthCheck.has_interval_seconds() &&
+      healthCheck.interval_seconds() < 0.0) {
+    return Error("Expecting 'interval_seconds' to be non-negative");
+  }
+
+  if (healthCheck.has_timeout_seconds() &&
+      healthCheck.timeout_seconds() < 0.0) {
+    return Error("Expecting 'timeout_seconds' to be non-negative");
+  }
+
+  return None();
+}
+
+
+Option<Error> validateCheckInfo(const CheckInfo& checkInfo)
+{
+  if (!checkInfo.has_type()) {
+    return Error("CheckInfo must specify 'type'");
+  }
+
+  switch (checkInfo.type()) {
+    case CheckInfo::COMMAND: {
+      if (!checkInfo.has_command()) {
+        return Error("Expecting 'command' to be set for COMMAND check");
+      }
+
+      const CommandInfo& command = checkInfo.command().command();
+
+      if (!command.has_value()) {
+        string commandType =
+          (command.shell() ? "'shell command'" : "'executable path'");
+
+        return Error("Command check must contain " + commandType);
+      }
+
+      Option<Error> error =
+        common::validation::validateCommandInfo(command);
+      if (error.isSome()) {
+        return Error(
+            "Check's `CommandInfo` is invalid: " + error->message);
+      }
+
+      // TODO(alexr): Make sure irrelevant fields, e.g., `uris` are not set.
+
+      break;
+    }
+    case CheckInfo::HTTP: {
+      if (!checkInfo.has_http()) {
+        return Error("Expecting 'http' to be set for HTTP check");
+      }
+
+      const CheckInfo::Http& http = checkInfo.http();
+
+      if (http.has_path() && !strings::startsWith(http.path(), '/')) {
+        return Error(
+            "The path '" + http.path() + "' of HTTP check must start with '/'");
+      }
+
+      break;
+    }
+    case CheckInfo::TCP: {
+      if (!checkInfo.has_tcp()) {
+        return Error("Expecting 'tcp' to be set for TCP check");
+      }
+
+      break;
+    }
+    case CheckInfo::UNKNOWN: {
+      return Error(
+          "'" + CheckInfo::Type_Name(checkInfo.type()) + "'"
+          " is not a valid check type");
+    }
+  }
+
+  if (checkInfo.has_delay_seconds() && checkInfo.delay_seconds() < 0.0) {
+    return Error("Expecting 'delay_seconds' to be non-negative");
+  }
+
+  if (checkInfo.has_interval_seconds() && checkInfo.interval_seconds() < 0.0) {
+    return Error("Expecting 'interval_seconds' to be non-negative");
+  }
+
+  if (checkInfo.has_timeout_seconds() && checkInfo.timeout_seconds() < 0.0) {
+    return Error("Expecting 'timeout_seconds' to be non-negative");
+  }
+
+  return None();
+}
+
+
+Option<Error> validateCheckStatusInfo(const CheckStatusInfo& checkStatusInfo)
+{
+  if (!checkStatusInfo.has_type()) {
+    return Error("CheckStatusInfo must specify 'type'");
+  }
+
+  switch (checkStatusInfo.type()) {
+    case CheckInfo::COMMAND: {
+      if (!checkStatusInfo.has_command()) {
+        return Error(
+            "Expecting 'command' to be set for COMMAND check's status");
+      }
+      break;
+    }
+    case CheckInfo::HTTP: {
+      if (!checkStatusInfo.has_http()) {
+        return Error("Expecting 'http' to be set for HTTP check's status");
+      }
+      break;
+    }
+    case CheckInfo::TCP: {
+      if (!checkStatusInfo.has_tcp()) {
+        return Error("Expecting 'tcp' to be set for TCP check's status");
+      }
+      break;
+    }
+    case CheckInfo::UNKNOWN: {
+      return Error(
+          "'" + CheckInfo::Type_Name(checkStatusInfo.type()) + "'"
+          " is not a valid check's status type");
+    }
+  }
+
+  return None();
+}
+
+Option<Error> validateExecutorCall(const mesos::executor::Call& call)
+{
+  if (!call.IsInitialized()) {
+    return Error("Not initialized: " + call.InitializationErrorString());
+  }
+
+  if (!call.has_type()) {
+    return Error("Expecting 'type' to be present");
+  }
+
+  // All calls should have executor id set.
+  if (!call.has_executor_id()) {
+    return Error("Expecting 'executor_id' to be present");
+  }
+
+  // All calls should have framework id set.
+  if (!call.has_framework_id()) {
+    return Error("Expecting 'framework_id' to be present");
+  }
+
+  switch (call.type()) {
+    case mesos::executor::Call::SUBSCRIBE: {
+      if (!call.has_subscribe()) {
+        return Error("Expecting 'subscribe' to be present");
+      }
+      return None();
+    }
+
+    case mesos::executor::Call::UPDATE: {
+      if (!call.has_update()) {
+        return Error("Expecting 'update' to be present");
+      }
+
+      const TaskStatus& status = call.update().status();
+
+      if (!status.has_uuid()) {
+        return Error("Expecting 'uuid' to be present");
+      }
+
+      Try<id::UUID> uuid = id::UUID::fromBytes(status.uuid());
+      if (uuid.isError()) {
+        return uuid.error();
+      }
+
+      if (status.has_executor_id() &&
+          status.executor_id().value()
+          != call.executor_id().value()) {
+        return Error("ExecutorID in Call: " +
+                     call.executor_id().value() +
+                     " does not match ExecutorID in TaskStatus: " +
+                     call.update().status().executor_id().value()
+                     );
+      }
+
+      if (status.source() != TaskStatus::SOURCE_EXECUTOR) {
+        return Error("Received Call from executor " +
+                     call.executor_id().value() +
+                     " of framework " +
+                     call.framework_id().value() +
+                     " with invalid source, expecting 'SOURCE_EXECUTOR'"
+                     );
+      }
+
+      if (status.state() == TASK_STAGING) {
+        return Error("Received TASK_STAGING from executor " +
+                     call.executor_id().value() +
+                     " of framework " +
+                     call.framework_id().value() +
+                     " which is not allowed"
+                     );
+      }
+
+      // TODO(alexr): Validate `check_status` is present if
+      // the corresponding `TaskInfo.check` has been defined.
+
+      if (status.has_check_status()) {
+        Option<Error> validate =
+          common::validation::validateCheckStatusInfo(status.check_status());
+
+        if (validate.isSome()) {
+          return validate.get();
+        }
+      }
+
+      return None();
+    }
+
+    case mesos::executor::Call::MESSAGE: {
+      if (!call.has_message()) {
+        return Error("Expecting 'message' to be present");
+      }
+      return None();
+    }
+
+    case mesos::executor::Call::UNKNOWN: {
+      return None();
+    }
+  }
+
+  UNREACHABLE();
 }
 
 } // namespace validation {

@@ -448,14 +448,11 @@ TEST_F(ReconciliationTest, RecoveredAgent)
   Try<Owned<cluster::Master>> master = StartMaster(masterFlags);
   ASSERT_SOME(master);
 
-  // Reuse slaveFlags so both StartSlave() use the same work_dir.
-  slave::Flags slaveFlags = CreateSlaveFlags();
-
   Future<SlaveRegisteredMessage> slaveRegisteredMessage =
     FUTURE_PROTOBUF(SlaveRegisteredMessage(), _, _);
 
   Owned<MasterDetector> detector = master.get()->createDetector();
-  Try<Owned<cluster::Slave>> slave = StartSlave(detector.get(), slaveFlags);
+  Try<Owned<cluster::Slave>> slave = StartSlave(detector.get());
   ASSERT_SOME(slave);
 
   // Wait for the slave to register and get the slave id.
@@ -625,7 +622,9 @@ TEST_F(ReconciliationTest, RecoveredAgentReregistrationInProgress)
 // This test ensures that when an agent has started but not finished
 // the unregistration process, explicit reconciliation indicates that
 // the agent is still registered.
-TEST_F(ReconciliationTest, RemovalInProgress)
+//
+// TODO(alexr): Enable after MESOS-8210 is resolved.
+TEST_F(ReconciliationTest, DISABLED_RemovalInProgress)
 {
   master::Flags masterFlags = CreateMasterFlags();
   Try<Owned<cluster::Master>> master = StartMaster();
@@ -650,7 +649,7 @@ TEST_F(ReconciliationTest, RemovalInProgress)
 
   // Intercept the next registrar operation; this should be the
   // registry operation that unregisters the slave.
-  Future<Owned<master::Operation>> unregister;
+  Future<Owned<master::RegistryOperation>> unregister;
   Future<Nothing> unregisterStarted;
   Promise<bool> promise; // Never satisfied.
   EXPECT_CALL(*master.get()->registrar, apply(_))
@@ -1019,6 +1018,8 @@ TEST_F(ReconciliationTest, ReconcileStatusUpdateTaskState)
 {
   // Start a master.
   master::Flags masterFlags = CreateMasterFlags();
+  masterFlags.registry = "replicated_log";
+
   Try<Owned<cluster::Master>> master = StartMaster(masterFlags);
   ASSERT_SOME(master);
 
@@ -1088,7 +1089,7 @@ TEST_F(ReconciliationTest, ReconcileStatusUpdateTaskState)
 
   // Simulate master failover by restarting the master.
   master->reset();
-  master = StartMaster();
+  master = StartMaster(masterFlags);
   ASSERT_SOME(master);
 
   Clock::resume();

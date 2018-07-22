@@ -27,10 +27,6 @@
 
 #include <mesos/state/in_memory.hpp>
 
-#ifndef __WINDOWS__
-#include <mesos/state/leveldb.hpp>
-#endif // __WINDOWS__
-
 #include <mesos/state/protobuf.hpp>
 
 #include <process/defer.hpp>
@@ -52,12 +48,6 @@ using std::string;
 
 using mesos::resource_provider::registry::Registry;
 using mesos::resource_provider::registry::ResourceProvider;
-
-using mesos::state::InMemoryStorage;
-
-#ifndef __WINDOWS__
-using mesos::state::LevelDBStorage;
-#endif // __WINDOWS__
 
 using mesos::state::Storage;
 
@@ -96,22 +86,23 @@ bool Registrar::Operation::set()
 }
 
 
+Try<Owned<Registrar>> Registrar::create(Owned<Storage> storage)
+{
+  return new GenericRegistrar(std::move(storage));
+}
+
+
 Try<Owned<Registrar>> Registrar::create(
-    const slave::Flags& slaveFlags,
-    const SlaveID& slaveId)
+    master::Registrar* registrar,
+    Registry registry)
 {
-  return new AgentRegistrar(slaveFlags, slaveId);
+  return new MasterRegistrar(registrar, std::move(registry));
 }
 
 
-Try<Owned<Registrar>> Registrar::create(master::Registrar* registrar)
-{
-  return new MasterRegistrar(registrar);
-}
-
-
-AdmitResourceProvider::AdmitResourceProvider(const ResourceProviderID& _id)
-  : id(_id) {}
+AdmitResourceProvider::AdmitResourceProvider(
+    const ResourceProvider& _resourceProvider)
+  : resourceProvider(_resourceProvider) {}
 
 
 Try<bool> AdmitResourceProvider::perform(Registry* registry)
@@ -120,13 +111,19 @@ Try<bool> AdmitResourceProvider::perform(Registry* registry)
           registry->resource_providers().begin(),
           registry->resource_providers().end(),
           [this](const ResourceProvider& resourceProvider) {
-            return resourceProvider.id() == this->id;
+            return resourceProvider.id() == this->resourceProvider.id();
           }) != registry->resource_providers().end()) {
     return Error("Resource provider already admitted");
   }
 
-  ResourceProvider resourceProvider;
-  resourceProvider.mutable_id()->CopyFrom(id);
+  if (std::find_if(
+          registry->removed_resource_providers().begin(),
+          registry->removed_resource_providers().end(),
+          [this](const ResourceProvider& resourceProvider) {
+            return resourceProvider.id() == this->resourceProvider.id();
+          }) != registry->removed_resource_providers().end()) {
+    return Error("Resource provider was removed");
+  }
 
   registry->add_resource_providers()->CopyFrom(resourceProvider);
 
@@ -151,105 +148,93 @@ Try<bool> RemoveResourceProvider::perform(Registry* registry)
     return Error("Attempted to remove an unknown resource provider");
   }
 
+  registry->add_removed_resource_providers()->CopyFrom(*pos);
   registry->mutable_resource_providers()->erase(pos);
 
   return true; // Mutation.
 }
 
 
-class AgentRegistrarProcess : public Process<AgentRegistrarProcess>
+class GenericRegistrarProcess : public Process<GenericRegistrarProcess>
 {
 public:
-  AgentRegistrarProcess(const slave::Flags& flags, const SlaveID& slaveId);
+  GenericRegistrarProcess(Owned<Storage> storage);
 
-  Future<Nothing> recover();
+  Future<Registry> recover();
 
   Future<bool> apply(Owned<Registrar::Operation> operation);
 
-  Future<bool> _apply(Owned<Registrar::Operation> operation);
-
   void update();
+
+  void initialize() override;
+
+private:
+  Future<bool> _apply(Owned<Registrar::Operation> operation);
 
   void _update(
       const Future<Option<Variable<Registry>>>& store,
-      const Registry& updatedRegistry,
       deque<Owned<Registrar::Operation>> applied);
 
-private:
+  // We explicitly hold the storage to keep it alive over the
+  // registrar's lifetime.
   Owned<Storage> storage;
 
   // Use fully qualified type for `State` to disambiguate with `State`
   // enumeration in `ProcessBase`.
   mesos::state::protobuf::State state;
 
-  Option<Future<Nothing>> recovered;
-  Option<Registry> registry;
+  Promise<Nothing> recovered;
   Option<Variable<Registry>> variable;
-
   Option<Error> error;
-
   deque<Owned<Registrar::Operation>> operations;
-
   bool updating = false;
-
-  static Owned<Storage> createStorage(const std::string& path);
 };
 
 
-Owned<Storage> AgentRegistrarProcess::createStorage(const std::string& path)
+GenericRegistrarProcess::GenericRegistrarProcess(Owned<Storage> _storage)
+  : ProcessBase(process::ID::generate("resource-provider-generic-registrar")),
+    storage(std::move(_storage)),
+    state(storage.get())
 {
-  // The registrar uses LevelDB as underlying storage. Since LevelDB
-  // is currently not supported on Windows (see MESOS-5932), we fall
-  // back to in-memory storage there.
-  //
-  // TODO(bbannier): Remove this Windows workaround once MESOS-5932 is fixed.
-#ifndef __WINDOWS__
-  return Owned<Storage>(new LevelDBStorage(path));
-#else
-  LOG(WARNING)
-    << "Persisting resource provider manager state is not supported on Windows";
-  return Owned<Storage>(new InMemoryStorage());
-#endif // __WINDOWS__
+  CHECK_NOTNULL(storage.get());
 }
 
 
-AgentRegistrarProcess::AgentRegistrarProcess(
-    const slave::Flags& flags, const SlaveID& slaveId)
-  : ProcessBase(process::ID::generate("resource-provider-agent-registrar")),
-    storage(createStorage(slave::paths::getResourceProviderRegistryPath(
-        flags.work_dir, slaveId))),
-    state(storage.get()) {}
-
-
-Future<Nothing> AgentRegistrarProcess::recover()
+void GenericRegistrarProcess::initialize()
 {
   constexpr char NAME[] = "RESOURCE_PROVIDER_REGISTRAR";
 
-  if (recovered.isNone()) {
-    recovered = state.fetch<Registry>(NAME).then(
-        defer(self(), [this](const Variable<Registry>& recovery) {
-          registry = recovery.get();
-          variable = recovery;
+  CHECK_NONE(variable);
 
-          return Nothing();
-        }));
-  }
-
-  return recovered.get();
+  recovered.associate(state.fetch<Registry>(NAME).then(
+      defer(self(), [this](const Variable<Registry>& recovery) {
+        variable = recovery;
+        return Nothing();
+      })));
 }
 
 
-Future<bool> AgentRegistrarProcess::apply(Owned<Registrar::Operation> operation)
+Future<Registry> GenericRegistrarProcess::recover()
 {
-  if (recovered.isNone()) {
-    return Failure("Attempted to apply the operation before recovering");
-  }
-
-  return recovered->then(defer(self(), &Self::_apply, std::move(operation)));
+  // Prevent discards on the returned `Future` by marking the result as
+  // `undiscardable` so that we control the lifetime of the recovering registry.
+  return undiscardable(recovered.future())
+    .then(defer(self(), [this](const Nothing&) {
+      CHECK_SOME(this->variable);
+      return this->variable->get();
+    }));
 }
 
 
-Future<bool> AgentRegistrarProcess::_apply(
+Future<bool> GenericRegistrarProcess::apply(
+    Owned<Registrar::Operation> operation)
+{
+  return undiscardable(recovered.future()).then(
+      defer(self(), &Self::_apply, std::move(operation)));
+}
+
+
+Future<bool> GenericRegistrarProcess::_apply(
     Owned<Registrar::Operation> operation)
 {
   if (error.isSome()) {
@@ -267,7 +252,7 @@ Future<bool> AgentRegistrarProcess::_apply(
 }
 
 
-void AgentRegistrarProcess::update()
+void GenericRegistrarProcess::update()
 {
   CHECK(!updating);
   CHECK_NONE(error);
@@ -278,11 +263,18 @@ void AgentRegistrarProcess::update()
 
   updating = true;
 
-  CHECK_SOME(registry);
-  Registry updatedRegistry = registry.get();
+  CHECK_SOME(variable);
+
+  Registry updatedRegistry = variable->get();
 
   foreach (Owned<Registrar::Operation>& operation, operations) {
-    (*operation)(&updatedRegistry);
+    Try<bool> operationResult = (*operation)(&updatedRegistry);
+
+    if (operationResult.isError()) {
+      LOG(WARNING)
+        << "Failed to apply operation on resource provider manager registry: "
+        << operationResult.error();
+    }
   }
 
   // Serialize updated registry.
@@ -295,21 +287,19 @@ void AgentRegistrarProcess::update()
       self(),
       &Self::_update,
       lambda::_1,
-      updatedRegistry,
       std::move(operations)));
 
   operations.clear();
 }
 
 
-void AgentRegistrarProcess::_update(
+void GenericRegistrarProcess::_update(
     const Future<Option<Variable<Registry>>>& store,
-    const Registry& updatedRegistry,
     deque<Owned<Registrar::Operation>> applied)
 {
   updating = false;
   // Abort if the storage operation did not succeed.
-  if (!store.isReady() || store.get().isNone()) {
+  if (!store.isReady() || store->isNone()) {
     string message = "Failed to update registry: ";
 
     if (store.isFailed()) {
@@ -333,7 +323,6 @@ void AgentRegistrarProcess::_update(
   }
 
   variable = store->get();
-  registry = updatedRegistry;
 
   // Remove the operations.
   while (!applied.empty()) {
@@ -349,33 +338,31 @@ void AgentRegistrarProcess::_update(
 }
 
 
-AgentRegistrar::AgentRegistrar(
-    const slave::Flags& slaveFlags,
-    const SlaveID& slaveId)
-  : process(new AgentRegistrarProcess(slaveFlags, slaveId))
+GenericRegistrar::GenericRegistrar(Owned<Storage> storage)
+  : process(new GenericRegistrarProcess(std::move(storage)))
 {
   process::spawn(process.get(), false);
 }
 
 
-AgentRegistrar::~AgentRegistrar()
+GenericRegistrar::~GenericRegistrar()
 {
   process::terminate(*process);
   process::wait(*process);
 }
 
 
-Future<Nothing> AgentRegistrar::recover()
+Future<Registry> GenericRegistrar::recover()
 {
-  return dispatch(process.get(), &AgentRegistrarProcess::recover);
+  return dispatch(process.get(), &GenericRegistrarProcess::recover);
 }
 
 
-Future<bool> AgentRegistrar::apply(Owned<Operation> operation)
+Future<bool> GenericRegistrar::apply(Owned<Operation> operation)
 {
   return dispatch(
       process.get(),
-      &AgentRegistrarProcess::apply,
+      &GenericRegistrarProcess::apply,
       std::move(operation));
 }
 
@@ -384,10 +371,12 @@ class MasterRegistrarProcess : public Process<MasterRegistrarProcess>
 {
   // A helper class for adapting operations on the resource provider
   // registry to the master registry.
-  class AdaptedOperation : public master::Operation
+  class AdaptedOperation : public master::RegistryOperation
   {
   public:
     AdaptedOperation(Owned<Registrar::Operation> operation);
+
+    Future<registry::Registry> recover();
 
   private:
     Try<bool> perform(internal::Registry* registry, hashset<SlaveID>*) override;
@@ -401,12 +390,17 @@ class MasterRegistrarProcess : public Process<MasterRegistrarProcess>
   };
 
 public:
-  explicit MasterRegistrarProcess(master::Registrar* registrar);
+  explicit MasterRegistrarProcess(
+      master::Registrar* registrar,
+      Registry registry);
 
   Future<bool> apply(Owned<Registrar::Operation> operation);
 
+  Future<registry::Registry> recover() { return registry; }
+
 private:
   master::Registrar* registrar = nullptr;
+  Registry registry;
 };
 
 
@@ -423,23 +417,28 @@ Try<bool> MasterRegistrarProcess::AdaptedOperation::perform(
 }
 
 
-MasterRegistrarProcess::MasterRegistrarProcess(master::Registrar* _registrar)
+MasterRegistrarProcess::MasterRegistrarProcess(
+    master::Registrar* _registrar,
+    registry::Registry _registry)
   : ProcessBase(process::ID::generate("resource-provider-agent-registrar")),
-    registrar(_registrar) {}
+    registrar(_registrar),
+    registry(std::move(_registry)) {}
 
 
 Future<bool> MasterRegistrarProcess::apply(
     Owned<Registrar::Operation> operation)
 {
-  auto adaptedOperation =
-    Owned<master::Operation>(new AdaptedOperation(std::move(operation)));
+  auto adaptedOperation = Owned<master::RegistryOperation>(
+      new AdaptedOperation(std::move(operation)));
 
   return registrar->apply(std::move(adaptedOperation));
 }
 
 
-MasterRegistrar::MasterRegistrar(master::Registrar* registrar)
-  : process(new MasterRegistrarProcess(registrar))
+MasterRegistrar::MasterRegistrar(
+    master::Registrar* registrar,
+    registry::Registry registry)
+  : process(new MasterRegistrarProcess(registrar, std::move(registry)))
 {
   spawn(process.get(), false);
 }
@@ -452,9 +451,9 @@ MasterRegistrar::~MasterRegistrar()
 }
 
 
-Future<Nothing> MasterRegistrar::recover()
+Future<Registry> MasterRegistrar::recover()
 {
-  return Nothing();
+  return dispatch(process.get(), &MasterRegistrarProcess::recover);
 }
 
 

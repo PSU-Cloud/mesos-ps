@@ -59,7 +59,9 @@ GPERFTOOLS = gperftools-$(GPERFTOOLS_VERSION)
 GRPC = grpc-$(GRPC_VERSION)
 GTEST = $(GOOGLETEST)/googletest
 HTTP_PARSER = http-parser-$(HTTP_PARSER_VERSION)
+JEMALLOC = jemalloc-$(JEMALLOC_VERSION)
 LEVELDB = leveldb-$(LEVELDB_VERSION)
+LIBARCHIVE = libarchive-$(LIBARCHIVE_VERSION)
 LIBEV = libev-$(LIBEV_VERSION)
 NVML = nvml-$(NVML_VERSION)
 PIP = pip-$(PIP_VERSION)
@@ -79,7 +81,9 @@ EXTRA_DIST =			\
   $(GPERFTOOLS).tar.gz		\
   $(GRPC).tar.gz		\
   $(HTTP_PARSER).tar.gz		\
+  $(JEMALLOC).tar.gz		\
   $(LEVELDB).tar.gz		\
+  $(LIBARCHIVE).tar.gz		\
   $(LIBEV).tar.gz		\
   $(NVML).tar.gz		\
   $(PIP).tar.gz			\
@@ -93,10 +97,6 @@ EXTRA_DIST =			\
 # compiling with clang (and C++11); see MESOS-860, MESOS-966.
 EXTRA_DIST +=		\
   $(GLOG).patch
-
-# We patch grpc for compilation issues. See `grpc-1.4.2.readme`.
-EXTRA_DIST +=		\
-  $(GRPC).patch
 
 # We need to patch leveldb to prevent it from linking to snappy and
 # tcmalloc; see MESOS-1054, MESOS-1624.
@@ -121,7 +121,9 @@ CLEAN_EXTRACTED =		\
   $(GPERFTOOLS)			\
   $(GRPC)			\
   $(HTTP_PARSER)		\
+  $(JEMALLOC)			\
   $(LEVELDB)			\
+  $(LIBARCHIVE)			\
   $(LIBEV)			\
   $(NVML)			\
   $(PIP)			\
@@ -253,6 +255,47 @@ $(HTTP_PARSER)-build-stamp: libry_http_parser.la
 	touch $@
 endif
 
+
+if WITH_BUNDLED_JEMALLOC
+JEMALLOC_CONFIGURE_ARGS = \
+    --enable-stats --enable-prof --with-malloc-conf="prof:true,prof_active:false"
+
+LIB_JEMALLOC = $(JEMALLOC)/libjemalloc.la
+
+$(LIB_JEMALLOC): $(JEMALLOC)-build-stamp
+
+$(JEMALLOC)-build-stamp: $(JEMALLOC)-stamp
+	cd $(JEMALLOC) && ./configure $(JEMALLOC_CONFIGURE_ARGS) $(CONFIGURE_ARGS)
+	cd $(JEMALLOC) && $(MAKE) $(AM_MAKEFLAGS)
+	touch $@
+
+ALL_LOCAL += $(LIB_JEMALLOC)
+endif
+
+if WITH_BUNDLED_LIBARCHIVE
+LIB_LIBARCHIVE = $(LIBARCHIVE)/.libs/libarchive.la
+
+$(LIB_LIBARCHIVE): $(LIBARCHIVE)-build-stamp
+
+$(LIBARCHIVE)-build-stamp: $(LIBARCHIVE)-stamp
+	cd $(LIBARCHIVE) &&			\
+	  ./configure $(CONFIGURE_ARGS)		\
+	      --without-bz2lib			\
+	      --without-cng			\
+	      --without-expat			\
+	      --without-iconv			\
+	      --without-libiconv-prefix		\
+	      --without-lz4			\
+	      --without-lzma			\
+	      --without-nettle			\
+	      --without-openssl			\
+	      --without-xml2
+	cd $(LIBARCHIVE) && $(MAKE) $(AM_MAKEFLAGS)
+	touch $@
+
+ALL_LOCAL += $(LIB_LIBARCHIVE)
+endif
+
 if WITH_BUNDLED_LIBEV
 $(LIBEV)/libev.la: $(LIBEV)-build-stamp
 $(LIBEV)-build-stamp: $(LIBEV)-stamp
@@ -306,26 +349,39 @@ PROTOC = @PROTOCOMPILER@
 endif
 
 if ENABLE_GRPC
+if !ENABLE_SSL
+GRPC_VARIANT = _unsecure
+endif
+
 if WITH_BUNDLED_GRPC
-LIB_GRPC = $(GRPC)/libs/opt/libgrpc++.a		\
-           $(GRPC)/libs/opt/libgrpc.a		\
+LIB_GRPC = $(GRPC)/libs/opt/libgrpc++$(GRPC_VARIANT).a	\
+           $(GRPC)/libs/opt/libgrpc$(GRPC_VARIANT).a	\
            $(GRPC)/libs/opt/libgpr.a
 
 $(LIB_GRPC): $(GRPC)-build-stamp
 
-$(GRPC)-build-stamp: $(GRPC)-stamp		\
+# NOTE: We the include flags through the `CPPFLAGS` environment variable rather
+# than the command line because gRPC uses target-specific assignments to append
+# flags to `CPPFLAGS`, which will be overwritten by command line arguments. See:
+# https://www.gnu.org/software/make/manual/html_node/Target_002dspecific.html
+$(GRPC)-build-stamp: $(GRPC)-stamp			\
                      $(PROTOBUF)-build-stamp
-	cd $(GRPC) &&				\
-	  CPPFLAGS="$(PROTOBUF_INCLUDE_FLAGS)	\
-	            $(SSL_INCLUDE_FLAGS)	\
-	            $(ZLIB_INCLUDE_FLAGS)"	\
-	  LDFLAGS="$(PROTOBUF_LINKER_FLAGS)	\
-	           $(SSL_LINKER_FLAGS)		\
-	           $(ZLIB_LINKER_FLAGS)"	\
-	  $(MAKE) $(AM_MAKEFLAGS)		\
-	          HAS_PKG_CONFIG=false		\
-	          NO_PROTOC=false		\
-	          PROTOC=$(PROTOC)
+	cd $(GRPC) &&					\
+	  CPPFLAGS="$(PROTOBUF_INCLUDE_FLAGS)		\
+	            $(SSL_INCLUDE_FLAGS)		\
+	            $(ZLIB_INCLUDE_FLAGS)"		\
+	  $(MAKE) $(AM_MAKEFLAGS)			\
+	    $(LIB_GRPC:%=$(abs_builddir)/%)		\
+	    CC="$(CC)"					\
+	    CXX="$(CXX)"				\
+	    LD="$(CC)"					\
+	    LDXX="$(CXX)"				\
+	    LDFLAGS="$(PROTOBUF_LINKER_FLAGS)		\
+	             $(SSL_LINKER_FLAGS)		\
+	             $(ZLIB_LINKER_FLAGS)"		\
+	    HAS_PKG_CONFIG=false			\
+	    NO_PROTOC=false				\
+	    PROTOC="$(PROTOC)"
 	touch $@
 
 ALL_LOCAL += $(LIB_GRPC)
@@ -335,9 +391,9 @@ $(GRPC)-build-stamp:
 endif
 endif
 
-if ENABLE_GRPC
+# NOTE: We extract `csi.proto` even if gRPC is disabled because it is
+# imported by other proto files.
 ALL_LOCAL += $(CSI)-stamp
-endif
 
 # Convenience library for gmock/gtest.
 check_LTLIBRARIES = libgmock.la

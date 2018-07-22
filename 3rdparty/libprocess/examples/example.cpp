@@ -11,13 +11,15 @@
 // limitations under the License
 
 #include <iostream>
-#include <sstream>
+#include <string>
 
 #include <process/defer.hpp>
 #include <process/dispatch.hpp>
 #include <process/future.hpp>
 #include <process/http.hpp>
 #include <process/process.hpp>
+
+#include <stout/strings.hpp>
 
 using namespace process;
 
@@ -28,13 +30,13 @@ using std::string;
 class MyProcess : public Process<MyProcess>
 {
 public:
-  MyProcess() {}
-  virtual ~MyProcess() {}
+  MyProcess(): ProcessBase("my-process") {}
+  ~MyProcess() override {}
 
   Future<int> func1()
   {
     promise.future().onAny(
-        defer([=] (const Future<int>& future) {
+        defer([=](const Future<int>& future) {
           terminate(self());
         }));
     return promise.future();
@@ -47,14 +49,15 @@ public:
 
   Future<Response> vars(const Request& request)
   {
+    // Response response;
+    // response.code = Status::OK;
+    // response.headers["Content-Type"] = "text/plain";
+    // response.headers["Content-Length"] = stringify(body.size());
+    // response.type = Response::BODY;
+    // response.body = body;
+
     string body = "... vars here ...";
-    OK response;
-    response.headers["Content-Type"] = "text/plain";
-    std::ostringstream out;
-    out << body.size();
-    response.headers["Content-Length"] = out.str();
-    response.body = body;
-    return response;
+    return OK(body);
   }
 
   void stop(const UPID& from, const string& body)
@@ -63,24 +66,18 @@ public:
   }
 
 protected:
-  virtual void initialize()
+  void initialize() override
   {
-//     route("/vars", &MyProcess::vars);
-    route("/vars", [=] (const Request& request) {
-        string body = "... vars here ...";
-        OK response;
-        response.headers["Content-Type"] = "text/plain";
-        std::ostringstream out;
-        out << body.size();
-        response.headers["Content-Length"] = out.str();
-        response.body = body;
-        return response;
-      });
+    // route("/vars", None(), &MyProcess::vars);
+    route("/vars", None(), [=](const Request& request) {
+      string body = "... vars here ...";
+      return OK(body);
+    });
 
-//     install("stop", &MyProcess::stop);
-    install("stop", [=] (const UPID& from, const string& body) {
-        terminate(self());
-      });
+    // install("stop", &MyProcess::stop);
+    install("stop", [=](const UPID& from, const string& body) {
+      terminate(self());
+    });
   }
 
 private:
@@ -93,40 +90,43 @@ int main(int argc, char** argv)
   MyProcess process;
   PID<MyProcess> pid = spawn(&process);
 
-  PID<> pid2 = pid;
+  //// --------------------------------------
 
-// --------------------------------------
+  // Future<int> future = dispatch(pid, &MyProcess::func1);
+  // dispatch(pid, &MyProcess::func2, 42);
 
-//   Future<int> future = dispatch(pid, &MyProcess::func1);
-//   dispatch(pid, &MyProcess::func2, 42);
+  // std::cout << future.get() << std::endl;
 
-//   std::cout << future.get() << std::endl;
+  // http::post(pid, "stop");
 
-//   post(pid, "stop");
+  //// --------------------------------------
 
-// --------------------------------------
+  // Promise<bool> p;
 
-//   Promise<bool> p;
+  // dispatch(pid, &MyProcess::func1)
+  //   .then([=, &p] (int i) {
+  //       p.set(i == 42);
+  //       return p.future();
+  //     })
+  //   .then([=] (bool b) {
+  //       if (b) {
+  //         http::post(pid, "stop");
+  //       }
+  //       return true; // No Future<void>.
+  //     });
 
-//   dispatch(pid, &MyProcess::func1)
-//     .then([=, &p] (int i) {
-//         p.set(i == 42);
-//         return p.future();
-//       })
-//     .then([=] (bool b) {
-//         if (b) {
-//           post(pid, "stop");
-//         }
-//         return true; // No Future<void>.
-//       });
+  // dispatch(pid, &MyProcess::func2, 42);
 
-//   dispatch(pid, &MyProcess::func2, 42);
+  //// --------------------------------------
 
-// --------------------------------------
+  // dispatch(pid, &MyProcess::func1);
+  // dispatch(pid, &MyProcess::func2, 42);
 
-  dispatch(pid, &MyProcess::func1);
-  dispatch(pid, &MyProcess::func2, 42);
+  //// --------------------------------------
 
+  std::cout << strings::format("Endpoint listening on http://%s/%s/vars\n",
+      process::address(),
+      process.self().id).get();
 
   wait(pid);
   return 0;

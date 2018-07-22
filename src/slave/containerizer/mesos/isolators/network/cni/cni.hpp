@@ -49,27 +49,27 @@ class NetworkCniIsolatorProcess : public MesosIsolatorProcess
 public:
   static Try<mesos::slave::Isolator*> create(const Flags& flags);
 
-  virtual ~NetworkCniIsolatorProcess() {}
+  ~NetworkCniIsolatorProcess() override {}
 
-  virtual bool supportsNesting();
+  bool supportsNesting() override;
 
-  virtual process::Future<Nothing> recover(
-      const std::list<mesos::slave::ContainerState>& states,
-      const hashset<ContainerID>& orphans);
+  process::Future<Nothing> recover(
+      const std::vector<mesos::slave::ContainerState>& states,
+      const hashset<ContainerID>& orphans) override;
 
-  virtual process::Future<Option<mesos::slave::ContainerLaunchInfo>> prepare(
+  process::Future<Option<mesos::slave::ContainerLaunchInfo>> prepare(
       const ContainerID& containerId,
-      const mesos::slave::ContainerConfig& containerConfig);
+      const mesos::slave::ContainerConfig& containerConfig) override;
 
-  virtual process::Future<Nothing> isolate(
+  process::Future<Nothing> isolate(
       const ContainerID& containerId,
-      pid_t pid);
+      pid_t pid) override;
 
-  virtual process::Future<ContainerStatus> status(
-      const ContainerID& containerId);
+  process::Future<ContainerStatus> status(
+      const ContainerID& containerId) override;
 
-  virtual process::Future<Nothing> cleanup(
-      const ContainerID& containerId);
+  process::Future<Nothing> cleanup(
+      const ContainerID& containerId) override;
 
 private:
   struct ContainerNetwork
@@ -92,10 +92,12 @@ private:
   {
     Info (const hashmap<std::string, ContainerNetwork>& _containerNetworks,
           const Option<std::string>& _rootfs = None(),
-          const Option<std::string>& _hostname = None())
+          const Option<std::string>& _hostname = None(),
+          bool _joinsParentsNetwork = false)
       : containerNetworks (_containerNetworks),
         rootfs(_rootfs),
-        hostname(_hostname) {}
+        hostname(_hostname),
+        joinsParentsNetwork(_joinsParentsNetwork) {}
 
     // CNI network information keyed by network name.
     //
@@ -110,6 +112,7 @@ private:
     const Option<std::string> rootfs;
 
     const Option<std::string> hostname;
+    const bool joinsParentsNetwork;
   };
 
   // Reads each CNI config present in `configDir`, validates if the
@@ -140,7 +143,7 @@ private:
   process::Future<Nothing> _isolate(
       const ContainerID& containerId,
       pid_t pid,
-      const list<process::Future<Nothing>>& attaches);
+      const std::vector<process::Future<Nothing>>& attaches);
 
   process::Future<Nothing> __isolate(
       const NetworkCniIsolatorSetup& setup);
@@ -178,7 +181,7 @@ private:
 
   process::Future<Nothing> _cleanup(
       const ContainerID& containerId,
-      const std::list<process::Future<Nothing>>& detaches);
+      const std::vector<process::Future<Nothing>>& detaches);
 
   // Searches the `networkConfigs` hashmap for a CNI network. If the
   // hashmap doesn't contain the network, will try to load all the CNI
@@ -202,7 +205,7 @@ private:
   hashmap<std::string, std::string> networkConfigs;
 
   // DNS informations of CNI networks keyed by CNI network name.
-  hashmap<string, ContainerDNSInfo::MesosInfo> cniDNSMap;
+  hashmap<std::string, ContainerDNSInfo::MesosInfo> cniDNSMap;
 
   // Default DNS information for all CNI networks.
   const Option<ContainerDNSInfo::MesosInfo> defaultCniDNS;
@@ -247,8 +250,8 @@ public:
   Flags flags;
 
 protected:
-  virtual int execute();
-  virtual flags::FlagsBase* getFlags() { return &flags; }
+  int execute() override;
+  flags::FlagsBase* getFlags() override { return &flags; }
 };
 
 } // namespace slave {

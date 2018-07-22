@@ -19,9 +19,9 @@
 
 #include <sys/types.h>
 
-#include <list>
 #include <map>
 #include <string>
+#include <vector>
 
 #include <mesos/mesos.hpp>
 
@@ -38,6 +38,7 @@
 #include <stout/try.hpp>
 
 #include "slave/flags.hpp"
+#include "slave/containerizer/containerizer.hpp"
 
 namespace mesos {
 namespace internal {
@@ -52,7 +53,7 @@ public:
   // Return the set of containers that are known to the launcher but
   // not known to the slave (a.k.a. orphans).
   virtual process::Future<hashset<ContainerID>> recover(
-      const std::list<mesos::slave::ContainerState>& states) = 0;
+      const std::vector<mesos::slave::ContainerState>& states) = 0;
 
   // Fork a new process in the containerized context. The child will
   // exec the binary at the given path with the given argv, flags and
@@ -64,13 +65,12 @@ public:
       const ContainerID& containerId,
       const std::string& path,
       const std::vector<std::string>& argv,
-      const process::Subprocess::IO& in,
-      const process::Subprocess::IO& out,
-      const process::Subprocess::IO& err,
+      const mesos::slave::ContainerIO& containerIO,
       const flags::FlagsBase* flags,
       const Option<std::map<std::string, std::string>>& environment,
       const Option<int>& enterNamespaces,
-      const Option<int>& cloneNamespaces) = 0;
+      const Option<int>& cloneNamespaces,
+      const std::vector<int_fd>& whitelistFds) = 0;
 
   // Kill all processes in the containerized context.
   virtual process::Future<Nothing> destroy(const ContainerID& containerId) = 0;
@@ -93,27 +93,26 @@ class SubprocessLauncher : public Launcher
 public:
   static Try<Launcher*> create(const Flags& flags);
 
-  virtual ~SubprocessLauncher() {}
+  ~SubprocessLauncher() override {}
 
-  virtual process::Future<hashset<ContainerID>> recover(
-      const std::list<mesos::slave::ContainerState>& states);
+  process::Future<hashset<ContainerID>> recover(
+      const std::vector<mesos::slave::ContainerState>& states) override;
 
-  virtual Try<pid_t> fork(
+  Try<pid_t> fork(
       const ContainerID& containerId,
       const std::string& path,
       const std::vector<std::string>& argv,
-      const process::Subprocess::IO& in,
-      const process::Subprocess::IO& out,
-      const process::Subprocess::IO& err,
+      const mesos::slave::ContainerIO& containerIO,
       const flags::FlagsBase* flags,
       const Option<std::map<std::string, std::string>>& environment,
       const Option<int>& enterNamespaces,
-      const Option<int>& cloneNamespaces);
+      const Option<int>& cloneNamespaces,
+      const std::vector<int_fd>& whitelistFds) override;
 
-  virtual process::Future<Nothing> destroy(const ContainerID& containerId);
+  process::Future<Nothing> destroy(const ContainerID& containerId) override;
 
-  virtual process::Future<ContainerStatus> status(
-      const ContainerID& containerId);
+  process::Future<ContainerStatus> status(
+      const ContainerID& containerId) override;
 
 protected:
   SubprocessLauncher() {}

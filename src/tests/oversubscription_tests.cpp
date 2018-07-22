@@ -89,12 +89,12 @@ const char FIXED_RESOURCE_ESTIMATOR_NAME[] =
 class OversubscriptionTest : public MesosTest
 {
 protected:
-  virtual void SetUp()
+  void SetUp() override
   {
     MesosTest::SetUp();
   }
 
-  virtual void TearDown()
+  void TearDown() override
   {
     // Unload modules.
     foreach (const Modules::Library& library, modules.libraries()) {
@@ -283,11 +283,14 @@ TEST_F(OversubscriptionTest, FetchResourceUsage)
 // oversubscribed resources to the master.
 TEST_F(OversubscriptionTest, ForwardUpdateSlaveMessage)
 {
+  Clock::pause();
+
   Try<Owned<cluster::Master>> master = StartMaster();
   ASSERT_SOME(master);
 
-  Future<SlaveRegisteredMessage> slaveRegistered =
-    FUTURE_PROTOBUF(SlaveRegisteredMessage(), _, _);
+  // The agent will send a single `UpdateSlaveMessage` after registration.
+  Future<UpdateSlaveMessage> updateSlaveMessage =
+    FUTURE_PROTOBUF(UpdateSlaveMessage(), _, _);
 
   MockResourceEstimator resourceEstimator;
 
@@ -305,12 +308,15 @@ TEST_F(OversubscriptionTest, ForwardUpdateSlaveMessage)
     StartSlave(detector.get(), &resourceEstimator, flags);
   ASSERT_SOME(slave);
 
-  AWAIT_READY(slaveRegistered);
+  Clock::advance(flags.registration_backoff_factor);
+  Clock::advance(flags.authentication_backoff_factor);
+  Clock::settle();
+
+  AWAIT_READY(updateSlaveMessage);
 
   Future<UpdateSlaveMessage> update =
     FUTURE_PROTOBUF(UpdateSlaveMessage(), _, _);
 
-  Clock::pause();
   // No update should be sent until there is an estimate.
   Clock::advance(flags.oversubscribed_resources_interval);
   Clock::settle();
@@ -333,7 +339,7 @@ TEST_F(OversubscriptionTest, ForwardUpdateSlaveMessage)
       1u,
       metrics.values.count("master/messages_update_slave"));
   ASSERT_EQ(
-      1u,
+      2u,
       metrics.values["master/messages_update_slave"]);
 
   ASSERT_EQ(
@@ -542,7 +548,7 @@ TEST_F(OversubscriptionTest, RescindRevocableOfferWithIncreasedRevocable)
   Clock::advance(masterFlags.allocation_interval);
   Clock::settle();
 
-  ASSERT_GT(offers.size(), 0);
+  ASSERT_GT(offers.size(), 0u);
 
   // The total offered resources after the latest estimate.
   Resources resources3;
@@ -860,7 +866,7 @@ TEST_F(OversubscriptionTest, QoSFetchResourceUsage)
 
 
 // Ensures the slave forwards the estimation whenever receiving
-// a registered or re-registered message from the master, even
+// a registered or reregistered message from the master, even
 // if the total oversubscribable resources does not change.
 TEST_F(OversubscriptionTest, Reregistration)
 {
@@ -1191,7 +1197,7 @@ TEST_F(OversubscriptionTest, QoSCorrectionKillPartitionAware)
 }
 
 
-// This test verifies that when a framework re-registers with updated
+// This test verifies that when a framework reregisters with updated
 // FrameworkInfo, it gets updated in the allocator. The steps involved
 // are:
 //   1. Launch a master, slave and scheduler.

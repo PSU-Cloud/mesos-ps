@@ -14,6 +14,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include "slave/constants.hpp"
 #include "slave/validation.hpp"
 
 #include <string>
@@ -24,9 +25,6 @@
 
 #include <stout/stringify.hpp>
 #include <stout/unreachable.hpp>
-#include <stout/uuid.hpp>
-
-#include "checks/checker.hpp"
 
 #include "common/resources_utils.hpp"
 #include "common/validation.hpp"
@@ -52,6 +50,12 @@ Option<Error> validateContainerId(const ContainerID& containerId)
 
   // Check ContainerID specific rules.
   //
+  // Valid the container id length
+  if (id.length() > MAX_CONTAINER_ID_LENGTH) {
+    return Error("'ContainerID.value' '" + id + "' exceeds the maximum"
+                 " length (" + stringify(MAX_CONTAINER_ID_LENGTH) + ")");
+  }
+
   // Periods are disallowed because our string representation of
   // ContainerID uses periods: <uuid>.<child>.<grandchild>.
   // For example: <uuid>.redis.backup
@@ -148,6 +152,9 @@ Option<Error> validate(
       return None();
 
     case mesos::agent::Call::GET_EXECUTORS:
+      return None();
+
+    case mesos::agent::Call::GET_OPERATIONS:
       return None();
 
     case mesos::agent::Call::GET_TASKS:
@@ -380,21 +387,21 @@ Option<Error> validate(
       // General resource validation first.
       error = Resources::validate(call.launch_container().resources());
       if (error.isSome()) {
-        return Error("Invalid resources: " + error.get().message);
+        return Error("Invalid resources: " + error->message);
       }
 
       error = common::validation::validateGpus(
           call.launch_container().resources());
 
       if (error.isSome()) {
-        return Error("Invalid GPU resources: " + error.get().message);
+        return Error("Invalid GPU resources: " + error->message);
       }
 
       // Because standalone containers are launched outside of the master's
       // offer cycle, some resource types or fields may not be specified.
       foreach (Resource resource, call.launch_container().resources()) {
-        // Normalize the resources (in place) to simplify validation.
-        convertResourceFormat(&resource, POST_RESERVATION_REFINEMENT);
+        // Upgrade the resources (in place) to simplify validation.
+        upgradeResource(&resource);
 
         // Standalone containers may only use unreserved resources.
         // There is no accounting in the master for resources consumed
@@ -525,6 +532,10 @@ Option<Error> validate(
 
       return None();
     }
+
+    case mesos::agent::Call::PRUNE_IMAGES: {
+      return None();
+    }
   }
 
   UNREACHABLE();
@@ -532,113 +543,6 @@ Option<Error> validate(
 
 } // namespace call {
 } // namespace agent {
-
-namespace executor {
-namespace call {
-
-Option<Error> validate(const mesos::executor::Call& call)
-{
-  if (!call.IsInitialized()) {
-    return Error("Not initialized: " + call.InitializationErrorString());
-  }
-
-  if (!call.has_type()) {
-    return Error("Expecting 'type' to be present");
-  }
-
-  // All calls should have executor id set.
-  if (!call.has_executor_id()) {
-    return Error("Expecting 'executor_id' to be present");
-  }
-
-  // All calls should have framework id set.
-  if (!call.has_framework_id()) {
-    return Error("Expecting 'framework_id' to be present");
-  }
-
-  switch (call.type()) {
-    case mesos::executor::Call::SUBSCRIBE: {
-      if (!call.has_subscribe()) {
-        return Error("Expecting 'subscribe' to be present");
-      }
-      return None();
-    }
-
-    case mesos::executor::Call::UPDATE: {
-      if (!call.has_update()) {
-        return Error("Expecting 'update' to be present");
-      }
-
-      const TaskStatus& status = call.update().status();
-
-      if (!status.has_uuid()) {
-        return Error("Expecting 'uuid' to be present");
-      }
-
-      Try<id::UUID> uuid = id::UUID::fromBytes(status.uuid());
-      if (uuid.isError()) {
-        return uuid.error();
-      }
-
-      if (status.has_executor_id() &&
-          status.executor_id().value()
-          != call.executor_id().value()) {
-        return Error("ExecutorID in Call: " +
-                     call.executor_id().value() +
-                     " does not match ExecutorID in TaskStatus: " +
-                     call.update().status().executor_id().value()
-                     );
-      }
-
-      if (status.source() != TaskStatus::SOURCE_EXECUTOR) {
-        return Error("Received Call from executor " +
-                     call.executor_id().value() +
-                     " of framework " +
-                     call.framework_id().value() +
-                     " with invalid source, expecting 'SOURCE_EXECUTOR'"
-                     );
-      }
-
-      if (status.state() == TASK_STAGING) {
-        return Error("Received TASK_STAGING from executor " +
-                     call.executor_id().value() +
-                     " of framework " +
-                     call.framework_id().value() +
-                     " which is not allowed"
-                     );
-      }
-
-      // TODO(alexr): Validate `check_status` is present if
-      // the corresponding `TaskInfo.check` has been defined.
-
-      if (status.has_check_status()) {
-        Option<Error> validate =
-          checks::validation::checkStatusInfo(status.check_status());
-
-        if (validate.isSome()) {
-          return validate.get();
-        }
-      }
-
-      return None();
-    }
-
-    case mesos::executor::Call::MESSAGE: {
-      if (!call.has_message()) {
-        return Error("Expecting 'message' to be present");
-      }
-      return None();
-    }
-
-    case mesos::executor::Call::UNKNOWN: {
-      return None();
-    }
-  }
-  UNREACHABLE();
-}
-
-} // namespace call {
-} // namespace executor {
 } // namespace validation {
 } // namespace slave {
 } // namespace internal {

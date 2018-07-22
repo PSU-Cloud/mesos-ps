@@ -16,10 +16,11 @@
 #include <glog/logging.h>
 
 #include <stout/abort.hpp>
+#include <stout/try.hpp>
+#include <stout/error.hpp>
 #include <stout/windows.hpp> // For `WinSock2.h`.
 
-#include <stout/os/windows/fd.hpp>
-
+#include <stout/os/int_fd.hpp>
 
 namespace net {
 
@@ -107,18 +108,40 @@ inline bool is_retryable_error(int error) { return (error == WSAEWOULDBLOCK); }
 inline bool is_inprogress_error(int error) { return (error == WSAEWOULDBLOCK); }
 
 
+// Returns a socket file descriptor for the specified options.
+//
+// NOTE: We default to no inheritance because we never inherit sockets.
+// Overlapped I/O is enabled to match the default behavior of `::socket`.
+inline Try<int_fd> socket(
+    int family,
+    int type,
+    int protocol,
+    DWORD flags = WSA_FLAG_OVERLAPPED | WSA_FLAG_NO_HANDLE_INHERIT)
+{
+  SOCKET s = ::WSASocketW(family, type, protocol, nullptr, 0, flags);
+  if (s == INVALID_SOCKET) {
+    return WindowsSocketError();
+  }
+
+  return s;
+}
+
 // NOTE: The below wrappers are used to silence some implicit
 // type-casting warnings.
 
-inline os::WindowsFD accept(
-    const os::WindowsFD& fd, sockaddr* addr, socklen_t* addrlen)
+inline int_fd accept(
+    const int_fd& fd, sockaddr* addr, socklen_t* addrlen)
 {
-  return ::accept(fd, addr, reinterpret_cast<int*>(addrlen));
+  return int_fd(::accept(fd, addr, reinterpret_cast<int*>(addrlen)));
 }
 
 
+// NOTE: If `::bind` or `::connect` fail, they return `SOCKET_ERROR`, which is
+// defined to be `-1`. Therefore, the error checking logic of `result < 0` used
+// on POSIX will also work on Windows.
+
 inline int bind(
-    const os::WindowsFD& fd, const sockaddr* addr, socklen_t addrlen)
+    const int_fd& fd, const sockaddr* addr, socklen_t addrlen)
 {
   CHECK_LE(addrlen, INT32_MAX);
   return ::bind(fd, addr, static_cast<int>(addrlen));
@@ -126,7 +149,7 @@ inline int bind(
 
 
 inline int connect(
-    const os::WindowsFD& fd, const sockaddr* address, socklen_t addrlen)
+    const int_fd& fd, const sockaddr* address, socklen_t addrlen)
 {
   CHECK_LE(addrlen, INT32_MAX);
   return ::connect(fd, address, static_cast<int>(addrlen));
@@ -134,7 +157,7 @@ inline int connect(
 
 
 inline ssize_t send(
-    const os::WindowsFD& fd, const void* buf, size_t len, int flags)
+    const int_fd& fd, const void* buf, size_t len, int flags)
 {
   CHECK_LE(len, INT32_MAX);
   return ::send(
@@ -142,7 +165,7 @@ inline ssize_t send(
 }
 
 
-inline ssize_t recv(const os::WindowsFD& fd, void* buf, size_t len, int flags)
+inline ssize_t recv(const int_fd& fd, void* buf, size_t len, int flags)
 {
   CHECK_LE(len, INT32_MAX);
   return ::recv(fd, static_cast<char*>(buf), static_cast<int>(len), flags);

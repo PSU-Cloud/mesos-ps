@@ -115,10 +115,12 @@ As you gain experience contributing to Mesos you may want to tackle more advance
 
 For patches to the core, we ask that you follow the [Mesos C++ Style Guide](c++-style-guide.md).
 
+The [Mesos Developer Guide](developer-guide.md) contains some best practices and design patterns that are useful for new developers to learn.
+
 ## Additional Guidance
 
 The following links provide additional guidance as you get started contributing to Apache Mesos.
 
 ## Core Libraries
 
-There are two core libraries in Mesos: *stout* and *libprocess*. *stout* is the low level operating system abstraction tooling that should be used in place of writing your own low level tools. *libprocess* is a library used to support building compatible concurrent components (see [video](https://www.youtube.com/watch?v=5EIiU6R_6KE) for an introduction to the *libprocess* library). New contributors to Mesos should become familiar with these libraries and utilize them where appropriate. Additional documentation can be found in the following two README files: [3rdparty/libprocess/README.md](https://github.com/apache/mesos/blob/master/3rdparty/libprocess/README.md) and [3rdparty/stout/README.md](https://github.com/apache/mesos/blob/master/3rdparty/stout/README.md).
+There are two core libraries in Mesos: *stout* and *libprocess*. *stout* is the low level operating system abstraction tooling that should be used in place of writing your own low level tools. *libprocess* is a library used to support building compatible concurrent components. New contributors to Mesos should become familiar with these libraries and utilize them where appropriate. Additional documentation can be found in the following two README files: [3rdparty/libprocess/README.md](https://github.com/apache/mesos/blob/master/3rdparty/libprocess/README.md) and [3rdparty/stout/README.md](https://github.com/apache/mesos/blob/master/3rdparty/stout/README.md).

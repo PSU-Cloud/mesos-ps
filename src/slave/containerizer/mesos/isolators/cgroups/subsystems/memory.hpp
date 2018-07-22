@@ -17,8 +17,8 @@
 #ifndef __CGROUPS_ISOLATOR_SUBSYSTEMS_MEMORY_HPP__
 #define __CGROUPS_ISOLATOR_SUBSYSTEMS_MEMORY_HPP__
 
-#include <list>
 #include <string>
+#include <vector>
 
 #include <process/future.hpp>
 #include <process/owned.hpp>
@@ -41,44 +41,44 @@ namespace slave {
 /**
  * Represent cgroups memory subsystem.
  */
-class MemorySubsystem : public Subsystem
+class MemorySubsystemProcess : public SubsystemProcess
 {
 public:
-  static Try<process::Owned<Subsystem>> create(
+  static Try<process::Owned<SubsystemProcess>> create(
       const Flags& flags,
       const std::string& hierarchy);
 
-  virtual ~MemorySubsystem() {}
+  ~MemorySubsystemProcess() override = default;
 
-  virtual std::string name() const
+  std::string name() const override
   {
     return CGROUP_SUBSYSTEM_MEMORY_NAME;
   }
 
-  virtual process::Future<Nothing> prepare(
+  process::Future<Nothing> prepare(
       const ContainerID& containerId,
-      const std::string& cgroup);
+      const std::string& cgroup) override;
 
-  virtual process::Future<Nothing> recover(
+  process::Future<Nothing> recover(
       const ContainerID& containerId,
-      const std::string& cgroup);
+      const std::string& cgroup) override;
 
-  virtual process::Future<mesos::slave::ContainerLimitation> watch(
+  process::Future<mesos::slave::ContainerLimitation> watch(
       const ContainerID& containerId,
-      const std::string& cgroup);
+      const std::string& cgroup) override;
 
-  virtual process::Future<Nothing> update(
+  process::Future<Nothing> update(
       const ContainerID& containerId,
       const std::string& cgroup,
-      const Resources& resources);
+      const Resources& resources) override;
 
-  virtual process::Future<ResourceStatistics> usage(
+  process::Future<ResourceStatistics> usage(
       const ContainerID& containerId,
-      const std::string& cgroup);
+      const std::string& cgroup) override;
 
-  virtual process::Future<Nothing> cleanup(
+  process::Future<Nothing> cleanup(
       const ContainerID& containerId,
-      const std::string& cgroup);
+      const std::string& cgroup) override;
 
 private:
   struct Info
@@ -93,13 +93,13 @@ private:
     process::Promise<mesos::slave::ContainerLimitation> limitation;
   };
 
-  MemorySubsystem(const Flags& flags, const std::string& hierarchy);
+  MemorySubsystemProcess(const Flags& flags, const std::string& hierarchy);
 
   process::Future<ResourceStatistics> _usage(
       const ContainerID& containerId,
       ResourceStatistics result,
-      const std::list<cgroups::memory::pressure::Level>& levels,
-      const std::list<process::Future<uint64_t>>& values);
+      const std::vector<cgroups::memory::pressure::Level>& levels,
+      const std::vector<process::Future<uint64_t>>& values);
 
   // Start listening on OOM events. This function will create an
   // eventfd and start polling on it.

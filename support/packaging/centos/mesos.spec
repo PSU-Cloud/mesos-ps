@@ -26,7 +26,6 @@ Source5:       %{name}-master.service
 Source6:       %{name}-slave.service
 %endif
 
-
 BuildRequires: apache-maven
 BuildRequires: libtool
 BuildRequires: automake
@@ -36,6 +35,7 @@ BuildRequires: python-devel
 BuildRequires: java-1.8.0-openjdk-devel
 BuildRequires: libnl3-devel
 BuildRequires: zlib-devel
+BuildRequires: libacl-devel
 BuildRequires: libcurl-devel
 BuildRequires: openssl-devel
 BuildRequires: cyrus-sasl-devel
@@ -94,6 +94,7 @@ This package provides files for developing Mesos frameworks/modules.
     --enable-install-module-dependencies \
     --enable-libevent \
     --enable-ssl \
+    --enable-grpc \
     --enable-hardening \
     --enable-xfs-disk-isolator=%{_with_xfs}
 
@@ -132,7 +133,6 @@ install -m 0644 %{SOURCE5} %{SOURCE6} %{buildroot}%{_unitdir}
 
 mkdir -p -m0755 %{buildroot}%{_datadir}/java
 install -m 0644 src/java/target/mesos-*.jar %{buildroot}%{_datadir}/java/
-
 
 %files
 %doc LICENSE NOTICE

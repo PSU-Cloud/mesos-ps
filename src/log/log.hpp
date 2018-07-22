@@ -26,7 +26,7 @@
 #include <process/process.hpp>
 #include <process/shared.hpp>
 
-#include <process/metrics/gauge.hpp>
+#include <process/metrics/pull_gauge.hpp>
 
 #include <stout/nothing.hpp>
 
@@ -65,8 +65,8 @@ public:
   process::Future<process::Shared<Replica>> recover();
 
 protected:
-  virtual void initialize();
-  virtual void finalize();
+  void initialize() override;
+  void finalize() override;
 
 private:
   friend class LogReaderProcess;
@@ -128,9 +128,11 @@ public:
       const mesos::log::Log::Position& from,
       const mesos::log::Log::Position& to);
 
+  process::Future<mesos::log::Log::Position> catchup();
+
 protected:
-  virtual void initialize();
-  virtual void finalize();
+  void initialize() override;
+  void finalize() override;
 
 private:
   // Returns a position from a raw value.
@@ -155,6 +157,11 @@ private:
       const mesos::log::Log::Position& to,
       const std::list<Action>& actions);
 
+  process::Future<mesos::log::Log::Position> _catchup();
+
+  const size_t quorum;
+  const process::Shared<Network> network;
+
   process::Future<process::Shared<Replica>> recovering;
   std::list<process::Promise<Nothing>*> promises;
 };
@@ -172,8 +179,8 @@ public:
       const mesos::log::Log::Position& to);
 
 protected:
-  virtual void initialize();
-  virtual void finalize();
+  void initialize() override;
+  void finalize() override;
 
 private:
   // Helper for converting an optional position returned from the

@@ -28,6 +28,7 @@
 #include <process/clock.hpp>
 #include <process/delay.hpp>
 #include <process/dispatch.hpp>
+#include <process/future.hpp>
 #include <process/id.hpp>
 #include <process/owned.hpp>
 #include <process/process.hpp>
@@ -79,58 +80,66 @@ public:
       const string& master,
       const Option<Credential>& credential);
 
-  virtual ~V0ToV1Adapter();
+  ~V0ToV1Adapter() override;
 
   // v0 Scheduler interface overrides.
-  virtual void registered(
+  void registered(
       SchedulerDriver* driver,
       const FrameworkID& frameworkId,
       const MasterInfo& masterInfo) override;
 
-  virtual void reregistered(
+  void reregistered(
       SchedulerDriver* driver,
       const MasterInfo& masterInfo) override;
 
-  virtual void disconnected(SchedulerDriver* driver) override;
+  void disconnected(SchedulerDriver* driver) override;
 
-  virtual void resourceOffers(
+  void resourceOffers(
       SchedulerDriver* driver,
       const vector<Offer>& offers) override;
 
-  virtual void offerRescinded(
+  void offerRescinded(
       SchedulerDriver* driver,
       const OfferID& offerId) override;
 
-  virtual void statusUpdate(
+  void statusUpdate(
       SchedulerDriver* driver,
       const TaskStatus& status) override;
 
-  virtual void frameworkMessage(
+  void frameworkMessage(
       SchedulerDriver* driver,
       const ExecutorID& executorId,
       const SlaveID& slaveId,
       const string& data) override;
 
-  virtual void slaveLost(
+  void slaveLost(
       SchedulerDriver* driver,
       const SlaveID& slaveId) override;
 
-  virtual void executorLost(
+  void executorLost(
       SchedulerDriver* driver,
       const ExecutorID& executorId,
       const SlaveID& slaveId,
       int status) override;
 
-  virtual void error(
+  void error(
       SchedulerDriver* driver,
       const string& message) override;
 
   // v1 MesosBase interface overrides.
-  virtual void send(const v1::scheduler::Call& call) override;
+  void send(const v1::scheduler::Call& call) override;
 
-  virtual void reconnect() override
+  void reconnect() override
   {
     // The driver does not support explicit reconnection with the master.
+    UNREACHABLE();
+  }
+
+  process::Future<v1::scheduler::APIResult> call(
+      const v1::scheduler::Call& callMessage) override
+  {
+    // The driver does not support sending a `v1::scheduler::Call` that returns
+    // a `v1::scheduler::Response`.
     UNREACHABLE();
   }
 
@@ -148,7 +157,7 @@ class V0ToV1AdapterProcess : public process::Process<V0ToV1AdapterProcess>
 public:
   V0ToV1AdapterProcess(JNIEnv* env, jweak jmesos);
 
-  virtual ~V0ToV1AdapterProcess() = default;
+  ~V0ToV1AdapterProcess() override = default;
 
   void registered(const FrameworkID& frameworkId, const MasterInfo& masterInfo);
 
@@ -551,7 +560,7 @@ void V0ToV1AdapterProcess::send(SchedulerDriver* driver, const Call& _call)
   }
 
   switch (call.type()) {
-    case Call::SUBSCRIBE: {
+    case scheduler::Call::SUBSCRIBE: {
       subscribeCall = true;
 
       heartbeatTimer = process::delay(interval, self(), &Self::heartbeat);
@@ -564,12 +573,12 @@ void V0ToV1AdapterProcess::send(SchedulerDriver* driver, const Call& _call)
       break;
     }
 
-    case Call::TEARDOWN: {
+    case scheduler::Call::TEARDOWN: {
       driver->stop(false);
       break;
     }
 
-    case Call::ACCEPT: {
+    case scheduler::Call::ACCEPT: {
       vector<OfferID> offerIds;
       foreach (const OfferID& offerId, call.accept().offer_ids()) {
         offerIds.emplace_back(offerId);
@@ -589,15 +598,15 @@ void V0ToV1AdapterProcess::send(SchedulerDriver* driver, const Call& _call)
       break;
     }
 
-    case Call::ACCEPT_INVERSE_OFFERS:
-    case Call::DECLINE_INVERSE_OFFERS:
-    case Call::SHUTDOWN: {
+    case scheduler::Call::ACCEPT_INVERSE_OFFERS:
+    case scheduler::Call::DECLINE_INVERSE_OFFERS:
+    case scheduler::Call::SHUTDOWN: {
       // TODO(anand): Throw java error.
       LOG(ERROR) << "Received an unexpected " << call.type() << " call";
       break;
     }
 
-    case Call::DECLINE: {
+    case scheduler::Call::DECLINE: {
       foreach (const OfferID& offerId, call.decline().offer_ids()) {
         if (call.decline().has_filters()) {
           driver->declineOffer(offerId, call.decline().filters());
@@ -609,17 +618,17 @@ void V0ToV1AdapterProcess::send(SchedulerDriver* driver, const Call& _call)
       break;
     }
 
-    case Call::REVIVE: {
+    case scheduler::Call::REVIVE: {
       driver->reviveOffers();
       break;
     }
 
-    case Call::KILL: {
+    case scheduler::Call::KILL: {
       driver->killTask(call.kill().task_id());
       break;
     }
 
-    case Call::ACKNOWLEDGE: {
+    case scheduler::Call::ACKNOWLEDGE: {
       TaskStatus status;
       status.mutable_task_id()->CopyFrom(call.acknowledge().task_id());
       status.mutable_slave_id()->CopyFrom(call.acknowledge().slave_id());
@@ -629,11 +638,11 @@ void V0ToV1AdapterProcess::send(SchedulerDriver* driver, const Call& _call)
       break;
     }
 
-    // TODO(greggomann): Implement offer operation update acknowledgement.
-    case Call::ACKNOWLEDGE_OFFER_OPERATION_UPDATE:
+    // TODO(greggomann): Implement operation status acknowledgement.
+    case scheduler::Call::ACKNOWLEDGE_OPERATION_STATUS:
       break;
 
-    case Call::RECONCILE: {
+    case scheduler::Call::RECONCILE: {
       vector<TaskStatus> statuses;
 
       foreach (const scheduler::Call::Reconcile::Task& task,
@@ -647,11 +656,11 @@ void V0ToV1AdapterProcess::send(SchedulerDriver* driver, const Call& _call)
       break;
     }
 
-    // TODO(greggomann): Implement offer operation update reconciliation.
-    case Call::RECONCILE_OFFER_OPERATIONS:
+    // TODO(greggomann): Implement operation reconciliation.
+    case scheduler::Call::RECONCILE_OPERATIONS:
       break;
 
-    case Call::MESSAGE: {
+    case scheduler::Call::MESSAGE: {
       driver->sendFrameworkMessage(
           call.message().executor_id(),
           call.message().slave_id(),
@@ -659,7 +668,7 @@ void V0ToV1AdapterProcess::send(SchedulerDriver* driver, const Call& _call)
       break;
     }
 
-    case Call::REQUEST: {
+    case scheduler::Call::REQUEST: {
       vector<Request> requests;
 
       foreach (const Request& request, call.request().requests()) {
@@ -670,12 +679,12 @@ void V0ToV1AdapterProcess::send(SchedulerDriver* driver, const Call& _call)
       break;
     }
 
-    case Call::SUPPRESS: {
+    case scheduler::Call::SUPPRESS: {
       driver->suppressOffers();
       break;
     }
 
-    case Call::UNKNOWN: {
+    case scheduler::Call::UNKNOWN: {
       EXIT(EXIT_FAILURE) << "Received an unexpected " << call.type()
                          << " call";
       break;

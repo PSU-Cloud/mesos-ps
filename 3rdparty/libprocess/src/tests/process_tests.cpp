@@ -127,7 +127,7 @@ public:
 };
 
 
-TEST(ProcessTest, THREADSAFE_Spawn)
+TEST(ProcessTest, Spawn)
 {
   SpawnProcess process;
 
@@ -175,7 +175,7 @@ public:
 };
 
 
-TEST(ProcessTest, THREADSAFE_Dispatch)
+TEST(ProcessTest, Dispatch)
 {
   DispatchProcess process;
 
@@ -211,7 +211,7 @@ TEST(ProcessTest, THREADSAFE_Dispatch)
 }
 
 
-TEST(ProcessTest, THREADSAFE_Defer1)
+TEST(ProcessTest, Defer1)
 {
   DispatchProcess process;
 
@@ -331,7 +331,7 @@ private:
 };
 
 
-TEST(ProcessTest, THREADSAFE_Defer2)
+TEST(ProcessTest, Defer2)
 {
   DeferProcess process;
 
@@ -363,7 +363,7 @@ void set(T* t1, const T& t2)
 }
 
 
-TEST(ProcessTest, THREADSAFE_Defer3)
+TEST(ProcessTest, Defer3)
 {
   std::atomic_bool bool1(false);
   std::atomic_bool bool2(false);
@@ -395,7 +395,7 @@ public:
 };
 
 
-TEST(ProcessTest, THREADSAFE_Handlers)
+TEST(ProcessTest, Handlers)
 {
   HandlersProcess process;
 
@@ -418,7 +418,7 @@ TEST(ProcessTest, THREADSAFE_Handlers)
 
 // Tests DROP_MESSAGE and DROP_DISPATCH and in particular that an
 // event can get dropped before being processed.
-TEST(ProcessTest, THREADSAFE_Expect)
+TEST(ProcessTest, Expect)
 {
   HandlersProcess process;
 
@@ -447,7 +447,7 @@ TEST(ProcessTest, THREADSAFE_Expect)
 
 
 // Tests the FutureArg<N> action.
-TEST(ProcessTest, THREADSAFE_Action)
+TEST(ProcessTest, Action)
 {
   HandlersProcess process;
 
@@ -492,7 +492,7 @@ public:
 };
 
 
-TEST(ProcessTest, THREADSAFE_Inheritance)
+TEST(ProcessTest, Inheritance)
 {
   DerivedProcess process;
 
@@ -520,7 +520,7 @@ TEST(ProcessTest, THREADSAFE_Inheritance)
 }
 
 
-TEST(ProcessTest, THREADSAFE_Thunk)
+TEST(ProcessTest, Thunk)
 {
   struct Thunk
   {
@@ -563,7 +563,7 @@ public:
 };
 
 
-TEST(ProcessTest, THREADSAFE_Delegate)
+TEST(ProcessTest, Delegate)
 {
   DelegateeProcess delegatee;
   DelegatorProcess delegator(delegatee.self());
@@ -594,7 +594,7 @@ public:
 };
 
 
-TEST(ProcessTest, THREADSAFE_Delay)
+TEST(ProcessTest, Delay)
 {
   Clock::pause();
 
@@ -631,7 +631,7 @@ public:
 };
 
 
-TEST(ProcessTest, THREADSAFE_Order)
+TEST(ProcessTest, Order)
 {
   Clock::pause();
 
@@ -684,7 +684,7 @@ public:
 };
 
 
-TEST(ProcessTest, THREADSAFE_Donate)
+TEST(ProcessTest, Donate)
 {
   DonateProcess process;
   spawn(process);
@@ -701,7 +701,7 @@ class ExitedProcess : public Process<ExitedProcess>
 public:
   explicit ExitedProcess(const UPID& _pid) : pid(_pid) {}
 
-  virtual void initialize()
+  void initialize() override
   {
     link(pid);
   }
@@ -763,7 +763,7 @@ public:
   // This is a workaround for mocking methods taking
   // rvalue reference parameters.
   // See https://github.com/google/googletest/issues/395
-  void consume(MessageEvent&& event) { consume_(event.message); }
+  void consume(MessageEvent&& event) override { consume_(event.message); }
   MOCK_METHOD1(consume_, void(const Message&));
 };
 
@@ -771,7 +771,7 @@ public:
 class ProcessRemoteLinkTest : public ::testing::Test
 {
 protected:
-  virtual void SetUp()
+  void SetUp() override
   {
     // Spawn a process to coordinate with the subprocess (test-linkee).
     // The `test-linkee` will send us a message when it has finished
@@ -820,7 +820,7 @@ protected:
     }
   }
 
-  virtual void TearDown()
+  void TearDown() override
   {
     if (linkee.isSome()) {
       os::killtree(linkee->pid(), SIGKILL);
@@ -1156,7 +1156,7 @@ class SettleProcess : public Process<SettleProcess>
 public:
   SettleProcess() : calledDispatch(false) {}
 
-  virtual void initialize()
+  void initialize() override
   {
     os::sleep(Milliseconds(10));
     delay(Seconds(0), self(), &SettleProcess::afterDelay);
@@ -1182,7 +1182,7 @@ public:
 };
 
 
-TEST(ProcessTest, THREADSAFE_Settle)
+TEST(ProcessTest, Settle)
 {
   Clock::pause();
   SettleProcess process;
@@ -1195,7 +1195,7 @@ TEST(ProcessTest, THREADSAFE_Settle)
 }
 
 
-TEST(ProcessTest, THREADSAFE_Pid)
+TEST(ProcessTest, Pid)
 {
   TimeoutProcess process;
 
@@ -1228,7 +1228,7 @@ public:
 };
 
 
-TEST(ProcessTest, THREADSAFE_Listener)
+TEST(ProcessTest, Listener)
 {
   MultipleListenerProcess process;
 
@@ -1254,7 +1254,7 @@ public:
 };
 
 
-TEST(ProcessTest, THREADSAFE_Executor_Defer)
+TEST(ProcessTest, Executor_Defer)
 {
   EventReceiver receiver;
   Executor executor;
@@ -1293,7 +1293,7 @@ TEST(ProcessTest, THREADSAFE_Executor_Defer)
 }
 
 
-TEST(ProcessTest, THREADSAFE_Executor_Execute)
+TEST(ProcessTest, Executor_Execute)
 {
   Executor executor;
 
@@ -1361,7 +1361,7 @@ public:
 };
 
 
-TEST(ProcessTest, THREADSAFE_Remote)
+TEST(ProcessTest, Remote)
 {
   RemoteProcess process;
   spawn(process);
@@ -1397,7 +1397,7 @@ TEST(ProcessTest, THREADSAFE_Remote)
 
 
 // Like the 'remote' test but uses http::connect.
-TEST(ProcessTest, THREADSAFE_Http1)
+TEST(ProcessTest, Http1)
 {
   RemoteProcess process;
   spawn(process);
@@ -1452,7 +1452,7 @@ TEST(ProcessTest, THREADSAFE_Http1)
 // also use http::post here since we expect a 202 response.
 //
 // TODO(neilc): This test currently does not work on Windows (MESOS-7527).
-TEST_TEMP_DISABLED_ON_WINDOWS(ProcessTest, THREADSAFE_Http2)
+TEST_TEMP_DISABLED_ON_WINDOWS(ProcessTest, Http2)
 {
   RemoteProcess process;
   spawn(process);
@@ -1562,7 +1562,7 @@ static string itoa2(int* const& i)
 }
 
 
-TEST(ProcessTest, THREADSAFE_Async)
+TEST(ProcessTest, Async)
 {
   // Non-void functions with different no.of args.
   EXPECT_EQ(1, async(&foo).get());
@@ -1576,7 +1576,7 @@ TEST(ProcessTest, THREADSAFE_Async)
   EXPECT_EQ("42", async(&itoa2, &i).get());
 
   // Non-void function that returns a future.
-  EXPECT_EQ("42", async(&itoa1, &i).get().get());
+  EXPECT_EQ("42", async(&itoa1, &i)->get());
 }
 
 
@@ -1586,7 +1586,7 @@ public:
   explicit FileServer(const string& _path)
     : path(_path) {}
 
-  virtual void initialize()
+  void initialize() override
   {
     provide("", path);
   }
@@ -1622,7 +1622,7 @@ TEST_TEMP_DISABLED_ON_WINDOWS(ProcessTest, Provide)
 
   AWAIT_READY(response);
 
-  ASSERT_EQ(LOREM_IPSUM, response.get().body);
+  ASSERT_EQ(LOREM_IPSUM, response->body);
 
   terminate(server);
   wait(server);
@@ -1785,7 +1785,7 @@ public:
   PercentEncodedIDProcess()
     : ProcessBase("id(42)") {}
 
-  virtual void initialize()
+  void initialize() override
   {
     install("handler1", &Self::handler1);
     route("/handler2", None(), &Self::handler2);
@@ -1856,7 +1856,7 @@ public:
   explicit HTTPEndpointProcess(const string& id)
     : ProcessBase(id) {}
 
-  virtual void initialize()
+  void initialize() override
   {
     route(
         "/handler1",

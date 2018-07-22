@@ -48,6 +48,7 @@
 #include <string>
 
 #include <stout/bytes.hpp>
+#include <stout/duration.hpp>
 #include <stout/error.hpp>
 #include <stout/ip.hpp>
 #include <stout/option.hpp>
@@ -55,6 +56,7 @@
 #include <stout/try.hpp>
 
 #include <stout/os/int_fd.hpp>
+#include <stout/os/close.hpp>
 #include <stout/os/open.hpp>
 
 #ifdef __WINDOWS__
@@ -135,8 +137,12 @@ inline Try<Bytes> contentLength(const std::string& url)
 
 // Returns the HTTP response code resulting from attempting to
 // download the specified HTTP or FTP URL into a file at the specified
-// path.
-inline Try<int> download(const std::string& url, const std::string& path)
+// path. The `stall_timeout` parameter controls how long the download
+// waits before aborting when the download speed keeps below 1 byte/sec.
+inline Try<int> download(
+    const std::string& url,
+    const std::string& path,
+    const Option<Duration>& stall_timeout = None())
 {
   initialize();
 
@@ -161,24 +167,50 @@ inline Try<int> download(const std::string& url, const std::string& path)
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, nullptr);
   curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, true);
 
-  // We don't bother introducing a `os::fdopen` since this is the only place
-  // we use `fdopen` in the entire codebase as of writing this comment.
+  // We don't bother introducing a `os::fdopen()` since this is the
+  // only place we use `fdopen()` in the entire codebase as of writing
+  // this comment.
 #ifdef __WINDOWS__
-  FILE* file = ::_fdopen(fd->crt(), "w");
+  // This explicitly allocates a CRT integer file descriptor, which
+  // when closed, also closes the underlying handle, so we do not call
+  // `CloseHandle()` (or `os::close()`).
+  const int crt = fd->crt();
+  // We open in "binary" mode on Windows to avoid line-ending translation.
+  FILE* file = ::_fdopen(crt, "wb");
+  if (file == nullptr) {
+    curl_easy_cleanup(curl);
+    // NOTE: This is not `os::close()` because we allocated a CRT int
+    // fd earlier.
+    ::_close(crt);
+    return ErrnoError("Failed to open file handle of '" + path + "'");
+  }
 #else
   FILE* file = ::fdopen(fd.get(), "w");
-#endif
   if (file == nullptr) {
     curl_easy_cleanup(curl);
     os::close(fd.get());
     return ErrnoError("Failed to open file handle of '" + path + "'");
   }
+#endif // __WINDOWS__
+
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, file);
+
+  if (stall_timeout.isSome()) {
+    // Set the options to abort the download if the speed keeps below
+    // 1 byte/sec during the timeout. See:
+    // https://curl.haxx.se/libcurl/c/CURLOPT_LOW_SPEED_LIMIT.html
+    // https://curl.haxx.se/libcurl/c/CURLOPT_LOW_SPEED_TIME.html
+    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1L);
+    curl_easy_setopt(
+        curl, CURLOPT_LOW_SPEED_TIME, static_cast<long>(stall_timeout->secs()));
+  }
 
   CURLcode curlErrorCode = curl_easy_perform(curl);
   if (curlErrorCode != 0) {
     curl_easy_cleanup(curl);
-    fclose(file);
+    // NOTE: `fclose()` also closes the associated file descriptor, so
+    // we do not call `close()`.
+    ::fclose(file);
     return Error(curl_easy_strerror(curlErrorCode));
   }
 
@@ -186,7 +218,7 @@ inline Try<int> download(const std::string& url, const std::string& path)
   curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
   curl_easy_cleanup(curl);
 
-  if (fclose(file) != 0) {
+  if (::fclose(file) != 0) {
     return ErrnoError("Failed to close file handle of '" + path + "'");
   }
 

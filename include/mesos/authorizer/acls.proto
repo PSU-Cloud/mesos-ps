@@ -75,7 +75,10 @@ message ACL {
 
   // Specifies which roles a principal can reserve resources for.
   message ReserveResources {
-    // Subjects: Framework principal or Operator username.
+    // Subjects:
+    // - Framework principal or Operator username in the case of
+    //   dynamic reservation.
+    // - Agent principal in the case of static reservation.
     required Entity principals = 1;
 
     // Objects: The principal(s) can reserve resources for these roles.
@@ -109,6 +112,15 @@ message ACL {
 
     // Objects: Principal of the entity that created the volume.
     required Entity creator_principals = 2;
+  }
+
+  // Specifies which roles a principal can resize volumes for.
+  message ResizeVolume {
+    // Subjects: Framework principal or Operator username.
+    required Entity principals = 1;
+
+    // Objects: The principal(s) can resize volumes for these roles.
+    required Entity roles = 2;
   }
 
   // Which principals are authorized to see quotas for the given roles.
@@ -344,7 +356,7 @@ message ACL {
     required Entity level = 2;
   }
 
-  // Which principals are authorized to register (and re-register) as agents.
+  // Which principals are authorized to register (and reregister) as agents.
   message RegisterAgent {
     // Subjects: Agent principals.
     required Entity principals = 1;
@@ -468,6 +480,20 @@ message ACL {
     required Entity users = 2;
   }
 
+  // Which principals are authorized to see the container metadata of a
+  // standalone container.
+  message ViewStandaloneContainer {
+    // Subjects: HTTP Username.
+    required Entity principals = 1;
+
+    // Objects: Given implicitly.
+    // Use Entity type ANY or NONE to allow or deny access.
+    //
+    // TODO(jieyu): Consider allowing granular permission to act upon
+    // SOME particular operating system users (e.g., linux users).
+    required Entity users = 2;
+  }
+
   // Which principals are authorized to add, update and remove resource
   // provider config files.
   message ModifyResourceProviderConfig {
@@ -480,6 +506,55 @@ message ACL {
     // TODO(chhsiao): Consider allowing granular permission to act upon
     // SOME resource provider types and names.
     required Entity resource_providers = 2;
+  }
+
+  // Which principals are authorized to prune unused container images.
+  message PruneImages {
+    // Subjects: HTTP Username.
+    required Entity principals = 1;
+
+    // Objects: Given implicitly.
+    // Use Entity type ANY or NONE to allow or deny access.
+    //
+    // TODO(zhitao): Consider allowing granular permission to act upon
+    // SOME image reference.
+    required Entity images = 2;
+  }
+
+  // Which principals are authorized to create block disks.
+  message CreateBlockDisk {
+    // Subjects: Framework principal.
+    required Entity principals = 1;
+
+    // Objects: The list of roles for which block disks can be created.
+    required Entity roles = 2;
+  }
+
+  // Which principals are authorized to destroy block disks.
+  message DestroyBlockDisk {
+    // Subjects: Framework principal.
+    required Entity principals = 1;
+
+    // Objects: The list of roles for which block disks can be destroyed.
+    required Entity roles = 2;
+  }
+
+  // Which principals are authorized to create mount disks.
+  message CreateMountDisk {
+    // Subjects: Framework principal.
+    required Entity principals = 1;
+
+    // Objects: The list of roles for which mount disks can be created.
+    required Entity roles = 2;
+  }
+
+  // Which principals are authorized to destroy mount disks.
+  message DestroyMountDisk {
+    // Subjects: Framework principal.
+    required Entity principals = 1;
+
+    // Objects: The list of roles for which volume disks can be destroyed.
+    required Entity roles = 2;
   }
 }
 
@@ -552,9 +627,16 @@ message ACLs {
   repeated ACL.StopMaintenance stop_maintenances = 38;
   repeated ACL.GetMaintenanceStatus get_maintenance_statuses = 39;
   repeated ACL.MarkAgentGone mark_agents_gone = 40;
-  repeated ACL.LaunchStandaloneContainer launch_standalone_container = 41;
-  repeated ACL.KillStandaloneContainer kill_standalone_container = 42;
-  repeated ACL.WaitStandaloneContainer wait_standalone_container = 43;
-  repeated ACL.RemoveStandaloneContainer remove_standalone_container = 44;
+  repeated ACL.LaunchStandaloneContainer launch_standalone_containers = 41;
+  repeated ACL.KillStandaloneContainer kill_standalone_containers = 42;
+  repeated ACL.WaitStandaloneContainer wait_standalone_containers = 43;
+  repeated ACL.RemoveStandaloneContainer remove_standalone_containers = 44;
+  repeated ACL.ViewStandaloneContainer view_standalone_containers = 46;
   repeated ACL.ModifyResourceProviderConfig modify_resource_provider_configs = 45;
+  repeated ACL.PruneImages prune_images = 47;
+  repeated ACL.ResizeVolume resize_volumes = 48;
+  repeated ACL.CreateBlockDisk create_block_disks = 49;
+  repeated ACL.DestroyBlockDisk destroy_block_disks = 50;
+  repeated ACL.CreateMountDisk create_mount_disks = 51;
+  repeated ACL.DestroyMountDisk destroy_mount_disks = 52;
 }

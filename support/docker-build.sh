@@ -71,6 +71,8 @@ case $OS in
       *16.04*)
         echo "Install Ubuntu 16.04 LTS (Xenial Xerus) specific packages"
         append_dockerfile "RUN apt-get install -y openjdk-8-jdk zlib1g-dev"
+        # Install ping required by OsTest.Which
+        append_dockerfile "RUN apt-get install -y iputils-ping"
        ;;
       *)
         append_dockerfile "RUN apt-get install -y openjdk-7-jdk"
@@ -199,7 +201,7 @@ TAG=mesos-`date +%s`-$RANDOM
 docker build --no-cache=true -t $TAG .
 
 # Set a trap to delete the image on exit.
-trap "docker rmi $TAG" EXIT
+trap "docker rmi --force $TAG" EXIT
 
 # Uncomment below to print kernel log incase of failures.
 # trap "dmesg" ERR

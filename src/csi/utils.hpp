@@ -20,6 +20,8 @@
 #include <ostream>
 #include <type_traits>
 
+#include <csi/spec.hpp>
+
 #include <google/protobuf/map.h>
 
 #include <google/protobuf/util/json_util.h>
@@ -30,28 +32,22 @@
 #include <stout/try.hpp>
 #include <stout/unreachable.hpp>
 
-#include "csi/spec.hpp"
 #include "csi/state.hpp"
 
 namespace csi {
+namespace v0 {
 
 bool operator==(
     const ControllerServiceCapability& left,
     const ControllerServiceCapability& right);
 
 
-bool operator==(const Version& left, const Version& right);
-
-
-bool operator!=(const Version& left, const Version& right);
+bool operator==(const VolumeCapability& left, const VolumeCapability& right);
 
 
 std::ostream& operator<<(
     std::ostream& stream,
     const ControllerServiceCapability::RPC::Type& type);
-
-
-std::ostream& operator<<(std::ostream& stream, const Version& version);
 
 
 // Default imprementation for output protobuf messages in namespace
@@ -69,11 +65,41 @@ std::ostream& operator<<(std::ostream& stream, const Message& message)
   return stream << output;
 }
 
+} // namespace v0 {
 } // namespace csi {
 
 
 namespace mesos {
 namespace csi {
+namespace v0 {
+
+struct PluginCapabilities
+{
+  PluginCapabilities() = default;
+
+  template <typename Iterable> PluginCapabilities(const Iterable& capabilities)
+  {
+    foreach (const auto& capability, capabilities) {
+      if (capability.has_service() &&
+          PluginCapability::Service::Type_IsValid(
+              capability.service().type())) {
+        switch (capability.service().type()) {
+          case PluginCapability::Service::UNKNOWN:
+            break;
+          case PluginCapability::Service::CONTROLLER_SERVICE:
+            controllerService = true;
+            break;
+          case google::protobuf::kint32min:
+          case google::protobuf::kint32max:
+            UNREACHABLE();
+        }
+      }
+    }
+  }
+
+  bool controllerService = false;
+};
+
 
 struct ControllerCapabilities
 {
@@ -86,7 +112,7 @@ struct ControllerCapabilities
       if (capability.has_rpc() &&
           ControllerServiceCapability::RPC::Type_IsValid(
               capability.rpc().type())) {
-        switch(capability.rpc().type()) {
+        switch (capability.rpc().type()) {
           case ControllerServiceCapability::RPC::UNKNOWN:
             break;
           case ControllerServiceCapability::RPC::CREATE_DELETE_VOLUME:
@@ -116,11 +142,33 @@ struct ControllerCapabilities
 };
 
 
-namespace state {
+struct NodeCapabilities
+{
+  NodeCapabilities() = default;
 
-std::ostream& operator<<(std::ostream& stream, const VolumeState::State& state);
+  template <typename Iterable> NodeCapabilities(const Iterable& capabilities)
+  {
+    foreach (const auto& capability, capabilities) {
+      if (capability.has_rpc() &&
+          NodeServiceCapability::RPC::Type_IsValid(capability.rpc().type())) {
+        switch (capability.rpc().type()) {
+          case NodeServiceCapability::RPC::UNKNOWN:
+            break;
+          case NodeServiceCapability::RPC::STAGE_UNSTAGE_VOLUME:
+            stageUnstageVolume = true;
+            break;
+          case google::protobuf::kint32min:
+          case google::protobuf::kint32max:
+            UNREACHABLE();
+        }
+      }
+    }
+  }
 
-} // namespace state {
+  bool stageUnstageVolume = false;
+};
+
+} // namespace v0 {
 } // namespace csi {
 } // namespace mesos {
 

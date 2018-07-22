@@ -87,8 +87,8 @@ public:
   Flags flags;
 
 protected:
-  virtual int execute() { return 0; }
-  virtual flags::FlagsBase* getFlags() { return &flags; }
+  int execute() override { return 0; }
+  flags::FlagsBase* getFlags() override { return &flags; }
 };
 
 
@@ -113,7 +113,7 @@ TEST(SubcommandTest, Flags)
 
   // Construct the command line arguments.
   vector<string> _argv = getArgv(flags);
-  int argc = _argv.size() + 2;
+  int argc = static_cast<int>(_argv.size()) + 2;
   char** argv = new char*[argc];
   argv[0] = (char*) "command";
   argv[1] = (char*) "subcommand";

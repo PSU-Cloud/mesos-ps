@@ -14,7 +14,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <list>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -36,7 +35,6 @@
 #include "hook/manager.hpp"
 #include "module/manager.hpp"
 
-using std::list;
 using std::map;
 using std::string;
 using std::vector;
@@ -216,7 +214,8 @@ Future<DockerTaskExecutorPrepareInfo>
   // We execute these hooks according to their ordering so any conflicting
   // `DockerTaskExecutorPrepareInfo` can be deterministically resolved
   // (the last hook takes priority).
-  list<Future<Option<DockerTaskExecutorPrepareInfo>>> futures;
+  vector<Future<Option<DockerTaskExecutorPrepareInfo>>> futures;
+  futures.reserve(availableHooks.size());
 
   foreachvalue (Hook* hook, availableHooks) {
     // Chain together each hook.
@@ -231,7 +230,7 @@ Future<DockerTaskExecutorPrepareInfo>
   }
 
   return collect(futures)
-    .then([](const list<Option<DockerTaskExecutorPrepareInfo>>& results)
+    .then([](const vector<Option<DockerTaskExecutorPrepareInfo>>& results)
         -> Future<DockerTaskExecutorPrepareInfo> {
       DockerTaskExecutorPrepareInfo taskExecutorDecoratorInfo;
 
@@ -287,13 +286,13 @@ TaskStatus HookManager::slaveTaskStatusDecorator(
       // NOTE: Labels/ContainerStatus remain unchanged if the hook returns
       // None().
       if (result.isSome()) {
-        if (result.get().has_labels()) {
-          status.mutable_labels()->CopyFrom(result.get().labels());
+        if (result->has_labels()) {
+          status.mutable_labels()->CopyFrom(result->labels());
         }
 
-        if (result.get().has_container_status()) {
+        if (result->has_container_status()) {
           status.mutable_container_status()->CopyFrom(
-              result.get().container_status());
+              result->container_status());
         }
       } else if (result.isError()) {
         LOG(WARNING) << "Agent TaskStatus decorator hook failed for "

@@ -410,7 +410,7 @@ unhealthy or that they are not able to connect to the elected master.
 </tr>
 <tr>
   <td>
-  <code>master/slaves_inactive</code>
+  <code>master/slaves_unreachable</code>
   </td>
   <td>Number of unreachable agents. Unreachable agents are periodically
       garbage collected from the registry, which will cause this value to
@@ -574,6 +574,13 @@ messages may indicate that there is a problem with the network.
 </tr>
 <tr>
   <td>
+  <code>master/invalid_operation_status_update_acknowledgements</code>
+  </td>
+  <td>Number of invalid operation status update acknowledgements</td>
+  <td>Counter</td>
+</tr>
+<tr>
+  <td>
   <code>master/invalid_status_update_acknowledgements</code>
   </td>
   <td>Number of invalid status update acknowledgements</td>
@@ -647,6 +654,20 @@ messages may indicate that there is a problem with the network.
   <code>master/messages_launch_tasks</code>
   </td>
   <td>Number of launch task messages</td>
+  <td>Counter</td>
+</tr>
+<tr>
+  <td>
+  <code>master/messages_operation_status_update_acknowledgement</code>
+  </td>
+  <td>Number of operation status update acknowledgement messages</td>
+  <td>Counter</td>
+</tr>
+<tr>
+  <td>
+  <code>master/messages_reconcile_operations</code>
+  </td>
+  <td>Number of reconcile operations messages</td>
   <td>Counter</td>
 </tr>
 <tr>
@@ -737,7 +758,7 @@ messages may indicate that there is a problem with the network.
   <td>
   <code>master/recovery_slave_removals</code>
   </td>
-  <td>Number of agents not re-registered during master failover</td>
+  <td>Number of agents not reregistered during master failover</td>
   <td>Counter</td>
 </tr>
 <tr>
@@ -766,6 +787,13 @@ messages may indicate that there is a problem with the network.
   <code>master/valid_framework_to_executor_messages</code>
   </td>
   <td>Number of valid framework to executor messages</td>
+  <td>Counter</td>
+</tr>
+<tr>
+  <td>
+  <code>master/valid_operation_status_update_acknowledgements</code>
+  </td>
+  <td>Number of valid operation status update acknowledgement messages</td>
   <td>Counter</td>
 </tr>
 <tr>
@@ -1118,9 +1146,9 @@ and resource allocations in the allocator.
 </tr>
 <tr>
   <td>
-  <code>allocator/mesos/roles/&lt;role&gt;/shares/dominant</code>
+  <code>allocator/mesos/roles/<i>&lt;role&gt;</i>/shares/dominant</code>
   </td>
-  <td>Dominant resource share for the role, exposed as a percentage (0.0-1.0)</td>
+  <td>Dominant <i>resource</i> share for the <i>role</i>, exposed as a percentage (0.0-1.0)</td>
   <td>Gauge</td>
 </tr>
 <tr>
@@ -1132,24 +1160,24 @@ and resource allocations in the allocator.
 </tr>
 <tr>
   <td>
-  <code>allocator/mesos/offer_filters/roles/&lt;role&gt;/active</code>
+  <code>allocator/mesos/offer_filters/roles/<i>&lt;role&gt;</i>/active</code>
   </td>
-  <td>Number of active offer filters for all frameworks within the role</td>
+  <td>Number of active offer filters for all frameworks within the <i>role</i></td>
   <td>Gauge</td>
 </tr>
 <tr>
   <td>
-  <code>allocator/mesos/quota/roles/&lt;role&gt;/resources/&lt;resource&gt;/offered_or_allocated</code>
+  <code>allocator/mesos/quota/roles/<i>&lt;role&gt;</i>/resources/<i>&lt;resource&gt;</i>/offered_or_allocated</code>
   </td>
-  <td>Amount of resources considered offered or allocated towards
-      a role's quota guarantee</td>
+  <td>Amount of <i>resource</i>s considered offered or allocated towards
+      a <i>role</i>'s quota guarantee</td>
   <td>Gauge</td>
 </tr>
 <tr>
   <td>
-  <code>allocator/mesos/quota/roles/&lt;role&gt;/resources/&lt;resource&gt;/guarantee</code>
+  <code>allocator/mesos/quota/roles/<i>&lt;role&gt;</i>/resources/<i>&lt;resource&gt;</i>/guarantee</code>
   </td>
-  <td>Amount of resources guaranteed for a role via quota</td>
+  <td>Amount of <i>resource</i>s guaranteed for a <i>role</i> via quota</td>
   <td>Gauge</td>
 </tr>
 <tr>
@@ -1629,6 +1657,14 @@ on the agent.
   <td>Number of errors encountered during agent recovery</td>
   <td>Gauge</td>
 </tr>
+<tr>
+  <td>
+  <code>slave/recovery_time_secs</code>
+  </td>
+  <td>Agent recovery time in seconds. This value is only available after agent
+  recovery succeeded and remains constant for the life of the Mesos agent.</td>
+  <td>Gauge</td>
+</tr>
 </table>
 
 #### Tasks
@@ -1728,3 +1764,338 @@ the master it is registered with.
   <td>Counter</td>
 </tr>
 </table>
+
+#### Containerizers
+
+The following metrics provide information about both Mesos and Docker
+containerizers.
+
+<table class="table table-striped">
+<thead>
+<tr><th>Metric</th><th>Description</th><th>Type</th>
+</thead>
+<tr>
+  <td>
+  <code>containerizer/docker/image_pull_ms</code>
+  </td>
+  <td>Docker containerizer image pull latency in ms </td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>containerizer/docker/image_pull_ms/count</code>
+  </td>
+  <td>Number of Docker containerizer image pulls</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>containerizer/docker/image_pull_ms/max</code>
+  </td>
+  <td>Maximum Docker containerizer image pull latency in ms</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>containerizer/docker/image_pull_ms/min</code>
+  </td>
+  <td>Minimum Docker containerizer image pull latency in ms</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>containerizer/docker/image_pull_ms/p50</code>
+  </td>
+  <td>Median Docker containerizer image pull latency in ms</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>containerizer/docker/image_pull_ms/p90</code>
+  </td>
+  <td>90th percentile Docker containerizer image pull latency in ms</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>containerizer/docker/image_pull_ms/p95</code>
+  </td>
+  <td>95th percentile Docker containerizer image pull latency in ms</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>containerizer/docker/image_pull_ms/p99</code>
+  </td>
+  <td>99th percentile Docker containerizer image pull latency in ms</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>containerizer/docker/image_pull_ms/p999</code>
+  </td>
+  <td>99.9th percentile Docker containerizer image pull latency in ms</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>containerizer/docker/image_pull_ms/p9999</code>
+  </td>
+  <td>99.99th percentile Docker containerizer image pull latency in ms</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>containerizer/mesos/provisioner/docker_store/image_pull_ms</code>
+  </td>
+  <td>Mesos containerizer docker image pull latency in ms </td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>containerizer/mesos/provisioner/docker_store/image_pull_ms/count</code>
+  </td>
+  <td>Number of Mesos containerizer docker image pulls</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>containerizer/mesos/provisioner/docker_store/image_pull_ms/max</code>
+  </td>
+  <td>Maximum Mesos containerizer docker image pull latency in ms</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>containerizer/mesos/provisioner/docker_store/image_pull_ms/min</code>
+  </td>
+  <td>Minimum Mesos containerizer docker image pull latency in ms</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>containerizer/mesos/provisioner/docker_store/image_pull_ms/p50</code>
+  </td>
+  <td>Median Mesos containerizer docker image pull latency in ms</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>containerizer/mesos/provisioner/docker_store/image_pull_ms/p90</code>
+  </td>
+  <td>90th percentile Mesos containerizer docker image pull latency in ms</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>containerizer/mesos/provisioner/docker_store/image_pull_ms/p95</code>
+  </td>
+  <td>95th percentile Mesos containerizer docker image pull latency in ms</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>containerizer/mesos/provisioner/docker_store/image_pull_ms/p99</code>
+  </td>
+  <td>99th percentile Mesos containerizer docker image pull latency in ms</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>containerizer/mesos/provisioner/docker_store/image_pull_ms/p999</code>
+  </td>
+  <td>99.9th percentile Mesos containerizer docker image pull latency in ms</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>containerizer/mesos/provisioner/docker_store/image_pull_ms/p9999</code>
+  </td>
+  <td>99.99th percentile Mesos containerizer docker image pull latency in ms</td>
+  <td>Gauge</td>
+</tr>
+</table>
+
+#### Resource Providers
+
+The following metrics provide information about ongoing and completed
+[operations](operations.md) that apply to resources provided by a
+[resource provider](resource-provider.md) with the given _type_ and _name_. In
+the following metrics, the _operation_ placeholder refers to the name of a
+particular operation type, which is described in the list of
+[supported operation types](#supported-operation-types).
+
+<table class="table table-striped">
+<thead>
+<tr><th>Metric</th><th>Description</th><th>Type</th>
+</thead>
+<tr>
+  <td>
+  <code>resource_providers/<i>&lt;type&gt;</i>.<i>&lt;name&gt;</i>/operations/<i>&lt;operation&gt;</i>/pending</code>
+  </td>
+  <td>Number of ongoing <i>operation</i>s</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>resource_providers/<i>&lt;type&gt;</i>.<i>&lt;name&gt;</i>/operations/<i>&lt;operation&gt;</i>/finished</code>
+  </td>
+  <td>Number of finished <i>operation</i>s</td>
+  <td>Counter</td>
+</tr>
+<tr>
+  <td>
+  <code>resource_providers/<i>&lt;type&gt;</i>.<i>&lt;name&gt;</i>/operations/<i>&lt;operation&gt;</i>/failed</code>
+  </td>
+  <td>Number of failed <i>operation</i>s</td>
+  <td>Counter</td>
+</tr>
+<tr>
+  <td>
+  <code>resource_providers/<i>&lt;type&gt;</i>.<i>&lt;name&gt;</i>/operations/<i>&lt;operation&gt;</i>/dropped</code>
+  </td>
+  <td>Number of dropped <i>operation</i>s</td>
+  <td>Counter</td>
+</tr>
+</table>
+
+##### Supported Operation Types
+
+Since the supported operation types may vary among different resource providers,
+the following is a comprehensive list of operation types and the corresponding
+resource providers that support them. Note that the name column is for the
+_operation_ placeholder in the above metrics.
+
+<table class="table table-striped">
+<thead>
+<tr><th>Type</th><th>Name</th><th>Supported Resource Provider Types</th>
+</thead>
+<tr>
+  <td><code><a href="reservation.md">RESERVE</a></code></td>
+  <td><code>reserve</code></td>
+  <td>All</td>
+</tr>
+<tr>
+  <td><code><a href="reservation.md">UNRESERVE</a></code></td>
+  <td><code>unreserve</code></td>
+  <td>All</td>
+</tr>
+<tr>
+  <td><code><a href="persistent-volume.md#-offer-operation-create-">CREATE</a></code></td>
+  <td><code>create</code></td>
+  <td><code>org.apache.mesos.rp.local.storage</code></td>
+</tr>
+<tr>
+  <td><code><a href="persistent-volume.md#-offer-operation-destroy-">DESTROY</a></code></td>
+  <td><code>destroy</code></td>
+  <td><code>org.apache.mesos.rp.local.storage</code></td>
+</tr>
+<tr>
+  <td><code><a href="csi.md#-create_volume-operation">CREATE_VOLUME</a></code></td>
+  <td><code>create_volume</code></td>
+  <td><code>org.apache.mesos.rp.local.storage</code></td>
+</tr>
+<tr>
+  <td><code><a href="csi.md#-destroy_volume-operation">DESTROY_VOLUME</a></code></td>
+  <td><code>destroy_volume</code></td>
+  <td><code>org.apache.mesos.rp.local.storage</code></td>
+</tr>
+<tr>
+  <td><code><a href="csi.md#-create_block-operation">CREATE_BLOCK</a></code></td>
+  <td><code>create_block</code></td>
+  <td><code>org.apache.mesos.rp.local.storage</code></td>
+</tr>
+<tr>
+  <td><code><a href="csi.md#-destroy_block-operation">DESTROY_BLOCK</a></code></td>
+  <td><code>destroy_block</code></td>
+  <td><code>org.apache.mesos.rp.local.storage</code></td>
+</tr>
+</table>
+
+For example, cluster operators can monitor the number of successful
+`CREATE_VOLUME` operations that are applied to the resource provider with type
+`org.apache.mesos.rp.local.storage` and name `lvm` through the
+`resource_providers/org.apache.mesos.rp.local.storage.lvm/operations/create_volume/finished`
+metric.
+
+#### CSI Plugins
+
+Storage resource providers in Mesos are backed by
+[CSI plugins](csi.md#standalone-containers-for-csi-plugins) running in
+[standalone containers](standalone-container.md). To monitor the health of these
+CSI plugins for a storage resource provider with _type_ and _name_, the
+following metrics provide information about plugin terminations and ongoing and
+completed CSI calls made to the plugin. In the following metrics, the _rpc_
+placeholder refers to the name of a particular CSI call, which is described in
+the list of [supported CSI calls](#supported-csi-calls).
+
+<table class="table table-striped">
+<thead>
+<tr><th>Metric</th><th>Description</th><th>Type</th>
+</thead>
+<tr>
+  <td>
+  <code>resource_providers/<i>&lt;type&gt;</i>.<i>&lt;name&gt;</i>/csi_plugin/container_terminations</code>
+  </td>
+  <td>Number of terminated CSI plugin containers</td>
+  <td>Counter</td>
+</tr>
+<tr>
+  <td>
+  <code>resource_providers/<i>&lt;type&gt;</i>.<i>&lt;name&gt;</i>/csi_plugin/rpcs/<i>&lt;rpc&gt;</i>/pending</code>
+  </td>
+  <td>Number of ongoing <i>rpc</i> calls</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>resource_providers/<i>&lt;type&gt;</i>.<i>&lt;name&gt;</i>/csi_plugin/rpcs/<i>&lt;rpc&gt;</i>/successes</code>
+  </td>
+  <td>Number of successful <i>rpc</i> calls</td>
+  <td>Counter</td>
+</tr>
+<tr>
+  <td>
+  <code>resource_providers/<i>&lt;type&gt;</i>.<i>&lt;name&gt;</i>/csi_plugin/rpcs/<i>&lt;rpc&gt;</i>/errors</code>
+  </td>
+  <td>Number of erroneous <i>rpc</i> calls</td>
+  <td>Counter</td>
+</tr>
+<tr>
+  <td>
+  <code>resource_providers/<i>&lt;type&gt;</i>.<i>&lt;name&gt;</i>/csi_plugin/rpcs/<i>&lt;rpc&gt;</i>/cancelled</code>
+  </td>
+  <td>Number of cancelled <i>rpc</i> calls</td>
+  <td>Counter</td>
+</tr>
+</table>
+
+##### Supported CSI Calls
+
+The following is a comprehensive list of CSI calls that are used in storage
+resource providers. These names are used to replace the _rpc_ placeholder in the
+above metrics.
+
+* [`csi.v0.Identity.GetPluginInfo`](https://github.com/container-storage-interface/spec/blob/v0.2.0/spec.md#getplugininfo)
+* [`csi.v0.Identity.GetPluginCapabilities`](https://github.com/container-storage-interface/spec/blob/v0.2.0/spec.md#getplugincapabilities)
+* [`csi.v0.Identity.Probe`](https://github.com/container-storage-interface/spec/blob/v0.2.0/spec.md#probe)
+* [`csi.v0.Controller.CreateVolume`](https://github.com/container-storage-interface/spec/blob/v0.2.0/spec.md#createvolume)
+* [`csi.v0.Controller.DeleteVolume`](https://github.com/container-storage-interface/spec/blob/v0.2.0/spec.md#deletevolume)
+* [`csi.v0.Controller.ControllerPublishVolume`](https://github.com/container-storage-interface/spec/blob/v0.2.0/spec.md#controllerpublishvolume)
+* [`csi.v0.Controller.ControllerUnpublishVolume`](https://github.com/container-storage-interface/spec/blob/v0.2.0/spec.md#controllerunpublishvolume)
+* [`csi.v0.Controller.ValidateVolumeCapabilities`](https://github.com/container-storage-interface/spec/blob/v0.2.0/spec.md#validatevolumecapabilities)
+* [`csi.v0.Controller.ListVolumes`](https://github.com/container-storage-interface/spec/blob/v0.2.0/spec.md#listvolumes)
+* [`csi.v0.Controller.GetCapacity`](https://github.com/container-storage-interface/spec/blob/v0.2.0/spec.md#getcapacity)
+* [`csi.v0.Controller.ControllerGetCapabilities`](https://github.com/container-storage-interface/spec/blob/v0.2.0/spec.md#controllergetcapabilities)
+* [`csi.v0.Node.NodeStageVolume`](https://github.com/container-storage-interface/spec/blob/v0.2.0/spec.md#node-service-rpc)
+* [`csi.v0.Node.NodeUnstageVolume`](https://github.com/container-storage-interface/spec/blob/v0.2.0/spec.md#nodeunstagevolume)
+* [`csi.v0.Node.NodePublishVolume`](https://github.com/container-storage-interface/spec/blob/v0.2.0/spec.md#nodepublishvolume)
+* [`csi.v0.Node.NodeUnpublishVolume`](https://github.com/container-storage-interface/spec/blob/v0.2.0/spec.md#nodeunpublishvolume)
+* [`csi.v0.Node.NodeGetId`](https://github.com/container-storage-interface/spec/blob/v0.2.0/spec.md#nodegetid)
+* [`csi.v0.Node.NodeGetCapabilities`](https://github.com/container-storage-interface/spec/blob/v0.2.0/spec.md#nodegetcapabilities)
+
+For example, cluster operators can monitor the number of successful
+`csi.v0.Controller.CreateVolume` calls that are made by the resource provider
+with type `org.apache.mesos.rp.local.storage` and name `lvm` through the
+`resource_providers/org.apache.mesos.rp.local.storage.lvm/csi_plugin/rpcs/csi.v0.Controller.CreateVolume/successes`
+metric.

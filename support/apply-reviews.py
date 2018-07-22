@@ -26,6 +26,7 @@ import atexit
 import json
 import linecache
 import os
+import pipes
 import platform
 import re
 import ssl
@@ -109,6 +110,9 @@ def review_chain(review_id):
     # Stop as soon as we stumble upon a submitted request.
     status = json_obj.get('review_request').get('status')
     if status == "submitted":
+        sys.stderr.write('Warning: Review {review} has already'
+                         ' been submitted and did not get applied'
+                         ' to you current work-tree\n'.format(review=review_id))
         return []
 
     # Verify that the review has exactly one parent.
@@ -152,8 +156,9 @@ def apply_review(options):
     # We store the patch ID in a local variable to ensure the lambda
     # captures the current patch ID.
     patch_file = '%s.patch' % patch_id(options)
-    atexit.register(
-        lambda: os.path.exists(patch_file) and os.remove(patch_file))
+    if not options["keep_patches"]:
+        atexit.register(
+            lambda: os.path.exists(patch_file) and os.remove(patch_file))
 
     fetch_patch(options)
     apply_patch(options)
@@ -268,6 +273,13 @@ def commit_patch(options):
         lambda: os.path.exists(message_file) and os.remove(message_file))
 
     with open(message_file, 'w') as message:
+        # Add a shell command creating the message file for dry-run mode.
+        if options["dry_run"]:
+            shell(
+                "printf {msg} > {file}".format(
+                    msg=pipes.quote(data['message']).replace('\n', '\\n'),
+                    file=message_file),
+                True)
         message.write(data['message'])
 
     cmd = u'git commit' \
@@ -339,13 +351,16 @@ def reviewboard_data(options):
     user = url_to_json(reviewboard_user_url(
         review.get('links').get('submitter').get('title'))).get('user')
 
+    # Only include a description if it is not identical to the summary.
+    message_data = [review.get('summary')]
+    if review.get('description') != review.get('summary'):
+        message_data.append(review.get('description'))
+    message_data.append('Review: {review_url}'.format(review_url=url))
+
     author = u'{author} <{email}>'.format(
         author=user.get('fullname'),
         email=user.get('email'))
-    message = '\n\n'.join([
-        review.get('summary'),
-        review.get('description'),
-        'Review: {review_url}'.format(review_url=url)])
+    message = '\n\n'.join(message_data)
 
     review_data = {
         "summary": review.get('summary'),
@@ -369,6 +384,9 @@ def parse_options():
     parser.add_argument('-d', '--dry-run',
                         action='store_true',
                         help='Perform a dry run.')
+    parser.add_argument('-k', '--keep-patches',
+                        action='store_true',
+                        help="Do not delete downloaded patch files.")
     parser.add_argument('-n', '--no-amend',
                         action='store_true',
                         help='Do not amend commit message.')
@@ -396,6 +414,7 @@ def parse_options():
 
     options['review_id'] = args.review_id
     options['dry_run'] = args.dry_run
+    options['keep_patches'] = args.keep_patches
     options['no_amend'] = args.no_amend
     options['github'] = args.github
     options['chain'] = args.chain
@@ -424,6 +443,11 @@ def main():
     Main function to apply reviews.
     """
     options = parse_options()
+
+    # TODO(ArmandGrillet): Remove this when we'll have switched to Python 3.
+    dir_path = os.path.dirname(os.path.realpath(__file__))
+    script_path = os.path.join(dir_path, 'check-python3.py')
+    subprocess.call('python ' + script_path, shell=True, cwd=dir_path)
 
     if options['review_id']:
         reviewboard(options)

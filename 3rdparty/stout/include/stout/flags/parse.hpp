@@ -25,6 +25,8 @@
 #include <stout/strings.hpp>
 #include <stout/try.hpp>
 
+#include <stout/flags/flag.hpp>
+
 #include <stout/os/read.hpp>
 
 namespace flags {
@@ -163,6 +165,58 @@ inline Try<Path> parse(const std::string& value)
 {
   return Path(value);
 }
+
+
+template <>
+inline Try<SecurePathOrValue> parse(const std::string& value)
+{
+  SecurePathOrValue result;
+  result.value = value;
+
+  if (strings::startsWith(value, "file://")) {
+    const std::string path = value.substr(7);
+
+    Try<std::string> read = os::read(path);
+
+    if (read.isError()) {
+      return Error("Error reading file '" + path + "': " + read.error());
+    }
+
+    result.value = read.get();
+    result.path = Path(path);
+  }
+
+  return result;
+}
+
+
+#ifdef __WINDOWS__
+template <>
+inline Try<int_fd> parse(const std::string& value)
+{
+  // Looks like "WindowsFD::Type::HANDLE=0000000000000000".
+  std::vector<std::string> fd = strings::split(value, "=");
+  if (fd.size() != 2) {
+    return Error("Expected to split string into exactly two parts.");
+  }
+
+  if (strings::endsWith(fd[0], "HANDLE")) {
+    Try<HANDLE> t = parse<HANDLE>(fd[1]);
+    if (t.isError()) {
+      return Error(t.error());
+    }
+    return int_fd(t.get());
+  } else if (strings::endsWith(fd[0], "SOCKET")) {
+    Try<SOCKET> t = parse<SOCKET>(fd[1]);
+    if (t.isError()) {
+      return Error(t.error());
+    }
+    return int_fd(t.get());
+  }
+
+  return Error("`int_fd` was neither a `HANDLE` nor a `SOCKET`");
+}
+#endif // __WINDOWS__
 
 } // namespace flags {
 

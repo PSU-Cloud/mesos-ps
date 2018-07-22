@@ -19,6 +19,10 @@
 // libraries may import <inttypes.h> before we import <picojson.h>.
 // Hence, we undefine the flag here to prevent the redefinition error.
 #undef __STDC_FORMAT_MACROS
+// We also need to define `PICOJSON_USE_INT64`, since we're
+// unconditionally using the `picojson::value::get<uint64_t>()` and
+// `picojson::value::is<uint64_t>()` functions below.
+#define PICOJSON_USE_INT64
 #include <picojson.h>
 #define __STDC_FORMAT_MACROS
 
@@ -229,15 +233,13 @@ struct Null {};
 
 namespace internal {
 
-// Only Object and Array require recursive_wrapper, not sure
-// if there is a reason to wrap the others or not.
 // Null needs to be first so that it is the default value.
-typedef boost::variant<boost::recursive_wrapper<Null>,
-                       boost::recursive_wrapper<String>,
-                       boost::recursive_wrapper<Number>,
+typedef boost::variant<Null,
+                       String,
+                       Number,
                        boost::recursive_wrapper<Object>,
                        boost::recursive_wrapper<Array>,
-                       boost::recursive_wrapper<Boolean>> Variant;
+                       Boolean> Variant;
 
 } // namespace internal {
 
@@ -273,7 +275,16 @@ struct Value : internal::Variant
   bool is() const;
 
   template <typename T>
-  const T& as() const;
+  const T& as() const &;
+
+  template <typename T>
+  T& as() &;
+
+  template <typename T>
+  T&& as() &&;
+
+  template <typename T>
+  const T&& as() const &&;
 
   // Returns true if and only if 'other' is contained by 'this'.
   // 'Other' is contained by 'this' if the following conditions are
@@ -339,14 +350,42 @@ inline bool Value::is<Value>() const
 
 
 template <typename T>
-const T& Value::as() const
+const T& Value::as() const &
 {
-  return *CHECK_NOTNULL(boost::get<T>(this));
+  return boost::get<T>(*this);
+}
+
+
+template <typename T>
+T& Value::as() &
+{
+  return boost::get<T>(*this);
+}
+
+
+template <typename T>
+T&& Value::as() &&
+{
+  return std::move(boost::get<T>(*this));
+}
+
+
+template <typename T>
+const T&& Value::as() const &&
+{
+  return std::move(boost::get<T>(*this));
 }
 
 
 template <>
-inline const Value& Value::as<Value>() const
+inline const Value& Value::as<Value>() const &
+{
+  return *this;
+}
+
+
+template <>
+inline Value& Value::as<Value>() &
 {
   return *this;
 }
@@ -850,35 +889,63 @@ inline std::ostream& operator<<(std::ostream& stream, const Null& null)
 
 namespace internal {
 
-inline Value convert(const picojson::value& value)
-{
-  if (value.is<picojson::null>()) {
-    return Null();
-  } else if (value.is<bool>()) {
-    return Boolean(value.get<bool>());
-  } else if (value.is<picojson::value::object>()) {
-    Object object;
-    foreachpair (const std::string& name,
-                 const picojson::value& v,
-                 value.get<picojson::value::object>()) {
-      object.values[name] = convert(v);
-    }
-    return object;
-  } else if (value.is<picojson::value::array>()) {
-    Array array;
-    foreach (const picojson::value& v, value.get<picojson::value::array>()) {
-      array.values.push_back(convert(v));
-    }
-    return array;
-  } else if (value.is<int64_t>()) {
-    return Number(value.get<int64_t>());
-  } else if (value.is<double>()) {
-    return Number(value.get<double>());
-  } else if (value.is<std::string>()) {
-    return String(value.get<std::string>());
+// Our implementation of picojson's parsing context that allows
+// us to parse directly into our JSON::Value.
+//
+// https://github.com/kazuho/picojson/blob/v1.3.0/picojson.h#L820-L870
+class ParseContext {
+public:
+  ParseContext(Value* _value) : value(_value) {}
+
+  ParseContext(const ParseContext&) = delete;
+  ParseContext &operator=(const ParseContext&) = delete;
+
+  bool set_null() { *value = Null(); return true; }
+  bool set_bool(bool b) { *value = Boolean(b); return true; }
+  bool set_int64(int64_t i) { *value = Number(i); return true; }
+
+  bool set_number(double f) {
+    // We take a trip through picojson::value here because it
+    // is where the validation takes place (i.e. it throws):
+    //   https://github.com/kazuho/picojson/issues/94
+    //   https://github.com/kazuho/picojson/blob/v1.3.0/picojson.h#L195-L208
+    picojson::value v(f);
+    *value = Number(v.get<double>());
+    return true;
   }
-  return Null();
-}
+
+  template <typename Iter>
+  bool parse_string(picojson::input<Iter>& in) {
+    *value = String();
+    return picojson::_parse_string(value->as<String>().value, in);
+  }
+
+  bool parse_array_start() { *value = Array(); return true; }
+
+  template <typename Iter>
+  bool parse_array_item(picojson::input<Iter>& in, size_t) {
+    Array& array = value->as<Array>();
+    array.values.push_back(Value());
+    ParseContext context(&array.values.back());
+    return picojson::_parse(context, in);
+  }
+
+  bool parse_array_stop(size_t) { return true; }
+
+  bool parse_object_start() {
+    *value = Object();
+    return true;
+  }
+
+  template <typename Iter>
+  bool parse_object_item(picojson::input<Iter>& in, const std::string& key) {
+    Object& object = value->as<Object>();
+    ParseContext context(&object.values[key]);
+    return picojson::_parse(context, in);
+  }
+
+  Value* value;
+};
 
 } // namespace internal {
 
@@ -886,19 +953,33 @@ inline Value convert(const picojson::value& value)
 inline Try<Value> parse(const std::string& s)
 {
   const char* parseBegin = s.c_str();
-  picojson::value value;
+  Value value;
   std::string error;
 
   // Because PicoJson supports repeated parsing of multiple objects/arrays in a
   // stream, it will quietly ignore trailing non-whitespace characters. We would
   // rather throw an error, however, so use `last_char` to check for this.
+  //
+  // TODO(alexr): Address cases when `s` is empty or consists only of whitespace
+  // characters.
   const char* lastVisibleChar =
     parseBegin + s.find_last_not_of(strings::WHITESPACE);
 
-  // Parse the string, returning a pointer to the character
-  // immediately following the last one parsed.
-  const char* parseEnd =
-    picojson::parse(value, parseBegin, parseBegin + s.size(), &error);
+  // Parse the string, returning a pointer to the character immediately
+  // following the last one parsed. Convert exceptions to `Error`s.
+  //
+  // TODO(alexr): Remove `try-catch` wrapper once picojson stops throwing
+  // on parsing, see https://github.com/kazuho/picojson/issues/94
+  const char* parseEnd;
+  try {
+    internal::ParseContext context(&value);
+    parseEnd =
+      picojson::_parse(context, parseBegin, parseBegin + s.size(), &error);
+  } catch (const std::overflow_error&) {
+    return Error("Value out of range");
+  } catch (...) {
+    return Error("Unknown JSON parse error");
+  }
 
   if (!error.empty()) {
     return Error(error);
@@ -908,7 +989,11 @@ inline Try<Value> parse(const std::string& s)
         + s.substr(parseEnd - parseBegin, lastVisibleChar + 1 - parseEnd));
   }
 
-  return internal::convert(value);
+  // TODO(bmahler): Newer compilers (clang-3.9 and gcc-5.1) can
+  // perform a move into the resultant Try with optimization on.
+  // Consider removing the `std::move` when we require these
+  // compilers.
+  return std::move(value);
 }
 
 
@@ -921,11 +1006,11 @@ Try<T> parse(const std::string& s)
     return Error(value.error());
   }
 
-  if (!value.get().is<T>()) {
+  if (!value->is<T>()) {
     return Error("Unexpected JSON type parsed");
   }
 
-  return value.get().as<T>();
+  return std::move(value->as<T>());
 }
 
 

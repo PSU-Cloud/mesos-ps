@@ -34,8 +34,10 @@
 #include <stout/strings.hpp>
 #include <stout/try.hpp>
 #include <stout/uuid.hpp>
+#include <stout/variant.hpp>
 
 #include "checks/checker_process.hpp"
+#include "checks/checks_runtime.hpp"
 
 #include "common/http.hpp"
 #include "common/status_utils.hpp"
@@ -88,11 +90,10 @@ Try<Owned<Checker>> Checker::create(
     const string& launcherDir,
     const lambda::function<void(const CheckStatusInfo&)>& callback,
     const TaskID& taskId,
-    const Option<pid_t>& taskPid,
-    const vector<string>& namespaces)
+    Variant<runtime::Plain, runtime::Docker, runtime::Nested> runtime)
 {
   // Validate the `CheckInfo` protobuf.
-  Option<Error> error = validation::checkInfo(check);
+  Option<Error> error = common::validation::validateCheckInfo(check);
   if (error.isSome()) {
     return error.get();
   }
@@ -103,42 +104,7 @@ Try<Owned<Checker>> Checker::create(
           launcherDir,
           callback,
           taskId,
-          taskPid,
-          namespaces,
-          None(),
-          None(),
-          None(),
-          false));
-}
-
-
-Try<Owned<Checker>> Checker::create(
-    const CheckInfo& check,
-    const string& launcherDir,
-    const lambda::function<void(const CheckStatusInfo&)>& callback,
-    const TaskID& taskId,
-    const ContainerID& taskContainerId,
-    const http::URL& agentURL,
-    const Option<string>& authorizationHeader)
-{
-  // Validate the `CheckInfo` protobuf.
-  Option<Error> error = validation::checkInfo(check);
-  if (error.isSome()) {
-    return error.get();
-  }
-
-  return Owned<Checker>(
-      new Checker(
-          check,
-          launcherDir,
-          callback,
-          taskId,
-          None(),
-          {},
-          taskContainerId,
-          agentURL,
-          authorizationHeader,
-          true));
+          std::move(runtime)));
 }
 
 
@@ -147,16 +113,11 @@ Checker::Checker(
     const string& _launcherDir,
     const lambda::function<void(const CheckStatusInfo&)>& _callback,
     const TaskID& _taskId,
-    const Option<pid_t>& _taskPid,
-    const vector<string>& _namespaces,
-    const Option<ContainerID>& _taskContainerId,
-    const Option<http::URL>& _agentURL,
-    const Option<string>& _authorizationHeader,
-    bool _commandCheckViaAgent)
+    Variant<runtime::Plain, runtime::Docker, runtime::Nested> _runtime)
   : check(_check),
     callback(_callback),
-    name(CheckInfo::Type_Name(check.type()) + " check"),
     taskId(_taskId),
+    name(CheckInfo::Type_Name(check.type()) + " check"),
     previousCheckStatus(createEmptyCheckStatusInfo(_check))
 {
   VLOG(1) << "Check configuration for task '" << taskId << "':"
@@ -168,14 +129,10 @@ Checker::Checker(
           _launcherDir,
           std::bind(&Checker::processCheckResult, this, lambda::_1),
           _taskId,
-          _taskPid,
-          _namespaces,
-          _taskContainerId,
-          _agentURL,
-          _authorizationHeader,
-          None(),
           name,
-          _commandCheckViaAgent));
+          std::move(_runtime),
+          None(),
+          false));
 
   spawn(process.get());
 }
@@ -222,123 +179,6 @@ void Checker::processCheckResult(const Try<CheckStatusInfo>& result) {
     previousCheckStatus = checkStatusInfo;
   }
 }
-
-
-namespace validation {
-
-Option<Error> checkInfo(const CheckInfo& checkInfo)
-{
-  if (!checkInfo.has_type()) {
-    return Error("CheckInfo must specify 'type'");
-  }
-
-  switch (checkInfo.type()) {
-    case CheckInfo::COMMAND: {
-      if (!checkInfo.has_command()) {
-        return Error("Expecting 'command' to be set for COMMAND check");
-      }
-
-      const CommandInfo& command = checkInfo.command().command();
-
-      if (!command.has_value()) {
-        string commandType =
-          (command.shell() ? "'shell command'" : "'executable path'");
-
-        return Error("Command check must contain " + commandType);
-      }
-
-      Option<Error> error =
-        common::validation::validateCommandInfo(command);
-      if (error.isSome()) {
-        return Error(
-            "Check's `CommandInfo` is invalid: " + error->message);
-      }
-
-      // TODO(alexr): Make sure irrelevant fields, e.g., `uris` are not set.
-
-      break;
-    }
-    case CheckInfo::HTTP: {
-      if (!checkInfo.has_http()) {
-        return Error("Expecting 'http' to be set for HTTP check");
-      }
-
-      const CheckInfo::Http& http = checkInfo.http();
-
-      if (http.has_path() && !strings::startsWith(http.path(), '/')) {
-        return Error(
-            "The path '" + http.path() + "' of HTTP check must start with '/'");
-      }
-
-      break;
-    }
-    case CheckInfo::TCP: {
-      if (!checkInfo.has_tcp()) {
-        return Error("Expecting 'tcp' to be set for TCP check");
-      }
-
-      break;
-    }
-    case CheckInfo::UNKNOWN: {
-      return Error(
-          "'" + CheckInfo::Type_Name(checkInfo.type()) + "'"
-          " is not a valid check type");
-    }
-  }
-
-  if (checkInfo.has_delay_seconds() && checkInfo.delay_seconds() < 0.0) {
-    return Error("Expecting 'delay_seconds' to be non-negative");
-  }
-
-  if (checkInfo.has_interval_seconds() && checkInfo.interval_seconds() < 0.0) {
-    return Error("Expecting 'interval_seconds' to be non-negative");
-  }
-
-  if (checkInfo.has_timeout_seconds() && checkInfo.timeout_seconds() < 0.0) {
-    return Error("Expecting 'timeout_seconds' to be non-negative");
-  }
-
-  return None();
-}
-
-
-Option<Error> checkStatusInfo(const CheckStatusInfo& checkStatusInfo)
-{
-  if (!checkStatusInfo.has_type()) {
-    return Error("CheckStatusInfo must specify 'type'");
-  }
-
-  switch (checkStatusInfo.type()) {
-    case CheckInfo::COMMAND: {
-      if (!checkStatusInfo.has_command()) {
-        return Error(
-            "Expecting 'command' to be set for COMMAND check's status");
-      }
-      break;
-    }
-    case CheckInfo::HTTP: {
-      if (!checkStatusInfo.has_http()) {
-        return Error("Expecting 'http' to be set for HTTP check's status");
-      }
-      break;
-    }
-    case CheckInfo::TCP: {
-      if (!checkStatusInfo.has_tcp()) {
-        return Error("Expecting 'tcp' to be set for TCP check's status");
-      }
-      break;
-    }
-    case CheckInfo::UNKNOWN: {
-      return Error(
-          "'" + CheckInfo::Type_Name(checkStatusInfo.type()) + "'"
-          " is not a valid check's status type");
-    }
-  }
-
-  return None();
-}
-
-} // namespace validation {
 
 } // namespace checks {
 } // namespace internal {

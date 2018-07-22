@@ -40,6 +40,15 @@ See more information in the [CMake documentation](../cmake.md).
   </tr>
   <tr>
     <td>
+      -DENABLE_GC_UNUSED=(TRUE|FALSE)
+    </td>
+    <td>
+      Enable garbage collection of unused program segments. This option
+      significantly reduces the size of the final build artifacts.  [default=FALSE]
+    </td>
+  </tr>
+  <tr>
+    <td>
       -DENABLE_PRECOMPILED_HEADERS=(TRUE|FALSE)
     </td>
     <td>
@@ -99,6 +108,24 @@ See more information in the [CMake documentation](../cmake.md).
   </tr>
   <tr>
     <td>
+      -DUNBUNDLED_LIBEVENT=(TRUE|FALSE)
+    </td>
+    <td>
+      Build libprocess with an installed libevent version instead of the bundled.
+      [default=TRUE for macOS, FALSE otherwise]
+    </td>
+  </tr>
+  <tr>
+    <td>
+      -DLIBEVENT_ROOT_DIR=[path]
+    </td>
+    <td>
+      Specify the path to libevent, e.g. "C:\libevent-Win64".
+      [default=unspecified]
+    </td>
+  </tr>
+  <tr>
+    <td>
       -DENABLE_SSL=(TRUE|FALSE)
     </td>
     <td>
@@ -128,6 +155,14 @@ See more information in the [CMake documentation](../cmake.md).
     </td>
     <td>
       Build Java components. Warning: this is SLOW. [default=FALSE]
+    </td>
+  </tr>
+  <tr>
+    <td>
+      -DENABLE_NEW_CLI=(TRUE|FALSE)
+    </td>
+    <td>
+      Build the new CLI instead of the old one. [default=FALSE]
     </td>
   </tr>
   <tr>

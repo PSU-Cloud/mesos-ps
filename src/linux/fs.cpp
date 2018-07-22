@@ -38,15 +38,15 @@ extern "C" {
 #include <stout/adaptor.hpp>
 #include <stout/check.hpp>
 #include <stout/error.hpp>
+#include <stout/fs.hpp>
 #include <stout/hashmap.hpp>
 #include <stout/hashset.hpp>
 #include <stout/numify.hpp>
+#include <stout/option.hpp>
+#include <stout/os.hpp>
 #include <stout/path.hpp>
 #include <stout/strings.hpp>
 #include <stout/synchronized.hpp>
-
-#include <stout/fs.hpp>
-#include <stout/os.hpp>
 
 #include <stout/os/read.hpp>
 #include <stout/os/realpath.hpp>
@@ -495,11 +495,11 @@ Try<Nothing> mount(const Option<string>& source,
   //           unsigned long mountflags,
   //           const void *data);
   if (::mount(
-        (source.isSome() ? source.get().c_str() : nullptr),
-        target.c_str(),
-        (type.isSome() ? type.get().c_str() : nullptr),
-        flags,
-        data) < 0) {
+          (source.isSome() ? source->c_str() : nullptr),
+          target.c_str(),
+          (type.isSome() ? type->c_str() : nullptr),
+          flags,
+          data) < 0) {
     return ErrnoError();
   }
 
@@ -518,7 +518,7 @@ Try<Nothing> mount(const Option<string>& source,
       target,
       type,
       flags,
-      options.isSome() ? options.get().c_str() : nullptr);
+      options.isSome() ? options->c_str() : nullptr);
 }
 
 
@@ -542,7 +542,7 @@ Try<Nothing> unmountAll(const string& target, int flags)
   }
 
   foreach (const MountTable::Entry& entry,
-           adaptor::reverse(mountTable.get().entries)) {
+           adaptor::reverse(mountTable->entries)) {
     if (strings::startsWith(entry.dir, target)) {
       Try<Nothing> unmount = fs::unmount(entry.dir, flags);
       if (unmount.isError()) {
@@ -554,17 +554,18 @@ Try<Nothing> unmountAll(const string& target, int flags)
       // still catch the error here in case there's an error somewhere
       // else while running this command.
       // TODO(xujyan): Consider using `setmntent(3)` to implement this.
-      int status = os::spawn("umount", {"umount", "--fake", entry.dir});
+      const Option<int> status =
+        os::spawn("umount", {"umount", "--fake", entry.dir});
 
       const string message =
         "Failed to clean up '" + entry.dir + "' in /etc/mtab";
 
-      if (status == -1) {
+      if (status.isNone()) {
         return ErrnoError(message);
       }
 
-      if (!WSUCCEEDED(status)) {
-        return Error(message + ": " + WSTRINGIFY(status));
+      if (!WSUCCEEDED(status.get())) {
+        return Error(message + ": " + WSTRINGIFY(status.get()));
       }
     }
   }
@@ -681,14 +682,131 @@ Try<Nothing> mountSpecialFilesystems(const string& root)
   // List of special filesystems useful for a chroot environment.
   // NOTE: This list is ordered, e.g., mount /proc before bind
   // mounting /proc/sys and then making it read-only.
-  const vector<Mount> mounts = {
-    {"proc",      "/proc",     "proc",   None(),      MS_NOSUID | MS_NOEXEC | MS_NODEV},             // NOLINT(whitespace/line_length)
-    {"/proc/sys", "/proc/sys", None(),   None(),      MS_BIND},
-    {None(),      "/proc/sys", None(),   None(),      MS_BIND | MS_RDONLY | MS_REMOUNT},             // NOLINT(whitespace/line_length)
-    {"sysfs",     "/sys",      "sysfs",  None(),      MS_RDONLY | MS_NOSUID | MS_NOEXEC | MS_NODEV}, // NOLINT(whitespace/line_length)
-    {"tmpfs",     "/dev",      "tmpfs",  "mode=755",  MS_NOSUID | MS_STRICTATIME | MS_NOEXEC},       // NOLINT(whitespace/line_length)
-    {"devpts",    "/dev/pts",  "devpts", "newinstance,ptmxmode=0666", MS_NOSUID | MS_NOEXEC},        // NOLINT(whitespace/line_length)
-    {"tmpfs",     "/dev/shm",  "tmpfs",  "mode=1777", MS_NOSUID | MS_NODEV | MS_STRICTATIME},        // NOLINT(whitespace/line_length)
+  //
+  // TODO(jasonlai): These special filesystem mount points need to be
+  // bind-mounted prior to all other mount points specified in
+  // `ContainerLaunchInfo`.
+  //
+  // One example of the known issues caused by this behavior is:
+  // https://issues.apache.org/jira/browse/MESOS-6798
+  // There will be follow-up efforts on moving the logic below to
+  // proper isolators.
+  //
+  // TODO(jasonlai): Consider adding knobs to allow write access to
+  // those system files if configured by the operator.
+  static const vector<Mount> mounts = {
+    {
+      "proc",
+      "/proc",
+      "proc",
+      None(),
+      MS_NOSUID | MS_NOEXEC | MS_NODEV
+    },
+    {
+      "/proc/bus",
+      "/proc/bus",
+      None(),
+      None(),
+      MS_BIND
+    },
+    {
+      None(),
+      "/proc/bus",
+      None(),
+      None(),
+      MS_BIND | MS_RDONLY | MS_REMOUNT | MS_NOSUID | MS_NOEXEC | MS_NODEV
+    },
+    {
+      "/proc/fs",
+      "/proc/fs",
+      None(),
+      None(),
+      MS_BIND
+    },
+    {
+      None(),
+      "/proc/fs",
+      None(),
+      None(),
+      MS_BIND | MS_RDONLY | MS_REMOUNT | MS_NOSUID | MS_NOEXEC | MS_NODEV
+    },
+    {
+      "/proc/irq",
+      "/proc/irq",
+      None(),
+      None(),
+      MS_BIND
+    },
+    {
+      None(),
+      "/proc/irq",
+      None(),
+      None(),
+      MS_BIND | MS_RDONLY | MS_REMOUNT | MS_NOSUID | MS_NOEXEC | MS_NODEV
+    },
+    {
+      "/proc/sys",
+      "/proc/sys",
+      None(),
+      None(),
+      MS_BIND
+    },
+    {
+      None(),
+      "/proc/sys",
+      None(),
+      None(),
+      MS_BIND | MS_RDONLY | MS_REMOUNT | MS_NOSUID | MS_NOEXEC | MS_NODEV
+    },
+    {
+      "/proc/sysrq-trigger",
+      "/proc/sysrq-trigger",
+      None(),
+      None(),
+      MS_BIND
+    },
+    {
+      None(),
+      "/proc/sysrq-trigger",
+      None(),
+      None(),
+      MS_BIND | MS_RDONLY | MS_REMOUNT | MS_NOSUID | MS_NOEXEC | MS_NODEV
+    },
+    {
+      "sysfs",
+      "/sys",
+      "sysfs",
+      None(),
+      MS_RDONLY | MS_NOSUID | MS_NOEXEC | MS_NODEV
+    },
+    {
+      "tmpfs",
+      "/sys/fs/cgroup",
+      "tmpfs",
+      "mode=755",
+      MS_NOSUID | MS_NOEXEC | MS_NODEV
+    },
+    {
+      "tmpfs",
+      "/dev",
+      "tmpfs",
+      "mode=755",
+      MS_NOSUID | MS_STRICTATIME | MS_NOEXEC
+    },
+    {
+      "devpts",
+      "/dev/pts",
+      "devpts",
+      "newinstance,ptmxmode=0666",
+      MS_NOSUID | MS_NOEXEC
+    },
+    {
+      "tmpfs",
+      "/dev/shm",
+      "tmpfs",
+      "mode=1777",
+      MS_NOSUID | MS_NODEV | MS_STRICTATIME
+    },
   };
 
   foreach (const Mount& mount, mounts) {
@@ -797,7 +915,7 @@ Try<Nothing> createStandardDevices(const string& root)
 
 
 // TODO(idownes): Add unit test.
-Try<Nothing> enter(const string& root)
+Try<Nothing> prepare(const string& root)
 {
   // Recursively mark current mounts as slaves to prevent propagation.
   Try<Nothing> mount =
@@ -826,6 +944,13 @@ Try<Nothing> enter(const string& root)
     return Error("Failed to create devices: " + create.error());
   }
 
+  return Nothing();
+}
+
+
+// TODO(idownes): Add unit test.
+Try<Nothing> enter(const string& root)
+{
   // Prepare /tmp in the new root. Note that we cannot assume that the
   // new root is writable (i.e., it could be a read only filesystem).
   // Therefore, we always mount a tmpfs on /tmp in the new root so
@@ -842,7 +967,7 @@ Try<Nothing> enter(const string& root)
   }
 
   // TODO(jieyu): Consider limiting the size of the tmpfs.
-  mount = fs::mount(
+  Try<Nothing> mount = fs::mount(
       "tmpfs",
       path::join(root, "tmp"),
       "tmpfs",
@@ -900,7 +1025,7 @@ Try<Nothing> enter(const string& root)
   // The old root is now relative to chroot so remove the chroot path.
   const string relativeOld = strings::remove(old.get(), root, strings::PREFIX);
 
-  foreach (const fs::MountTable::Entry& entry, mountTable.get().entries) {
+  foreach (const fs::MountTable::Entry& entry, mountTable->entries) {
     // TODO(idownes): sort the entries and remove depth first so we
     // don't rely on the lazy umount and can check the status.
     if (strings::startsWith(entry.dir, relativeOld)) {

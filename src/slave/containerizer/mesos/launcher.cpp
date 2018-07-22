@@ -38,7 +38,6 @@
 
 using namespace process;
 
-using std::list;
 using std::map;
 using std::string;
 using std::vector;
@@ -56,11 +55,11 @@ Try<Launcher*> SubprocessLauncher::create(const Flags& flags)
 
 
 Future<hashset<ContainerID>> SubprocessLauncher::recover(
-    const list<ContainerState>& states)
+    const vector<ContainerState>& states)
 {
   foreach (const ContainerState& state, states) {
     const ContainerID& containerId = state.container_id();
-    pid_t pid = state.pid();
+    pid_t pid = static_cast<pid_t>(state.pid());
 
     if (pids.containsValue(pid)) {
       // This should (almost) never occur. There is the possibility
@@ -85,13 +84,12 @@ Try<pid_t> SubprocessLauncher::fork(
     const ContainerID& containerId,
     const string& path,
     const vector<string>& argv,
-    const Subprocess::IO& in,
-    const Subprocess::IO& out,
-    const Subprocess::IO& err,
+    const mesos::slave::ContainerIO& containerIO,
     const flags::FlagsBase* flags,
     const Option<map<string, string>>& environment,
     const Option<int>& enterNamespaces,
-    const Option<int>& cloneNamespaces)
+    const Option<int>& cloneNamespaces,
+    const vector<int_fd>& whitelistFds)
 {
   if (enterNamespaces.isSome() && enterNamespaces.get() != 0) {
     return Error("Subprocess launcher does not support entering namespaces");
@@ -124,26 +122,27 @@ Try<pid_t> SubprocessLauncher::fork(
   Try<Subprocess> child = subprocess(
       path,
       argv,
-      in,
-      out,
-      err,
+      containerIO.in,
+      containerIO.out,
+      containerIO.err,
       flags,
       environment,
       None(),
       parentHooks,
-      {Subprocess::ChildHook::SETSID()});
+      {Subprocess::ChildHook::SETSID()},
+      whitelistFds);
 
   if (child.isError()) {
     return Error("Failed to fork a child process: " + child.error());
   }
 
-  LOG(INFO) << "Forked child with pid '" << child.get().pid()
+  LOG(INFO) << "Forked child with pid '" << child->pid()
             << "' for container '" << containerId << "'";
 
   // Store the pid (session id and process group id).
-  pids.put(containerId, child.get().pid());
+  pids.put(containerId, child->pid());
 
-  return child.get().pid();
+  return child->pid();
 }
 
 

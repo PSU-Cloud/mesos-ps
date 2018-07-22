@@ -26,7 +26,7 @@ Before we dive into the master failover improvements, I would like to recognize 
 
 ## Master Failover Time-To-Completion
 
-Our first area of focus was to improve the time it takes for a master failover to complete, where completion is defined as all of the agents successfully re-registering. Mesos is architected to use a centralized master with standby masters that participate in a quorum for high availability. For scalability reasons, the leading master stores the state of the cluster in-memory. During a master failover, the leading master needs to therefore re-build the in-memory state from all of the agents that re-register. During this time, the master is available to process other requests, but will be exposing only partial state to API consumers.
+Our first area of focus was to improve the time it takes for a master failover to complete, where completion is defined as all of the agents successfully reregistering. Mesos is architected to use a centralized master with standby masters that participate in a quorum for high availability. For scalability reasons, the leading master stores the state of the cluster in-memory. During a master failover, the leading master needs to therefore re-build the in-memory state from all of the agents that reregister. During this time, the master is available to process other requests, but will be exposing only partial state to API consumers.
 
 The rebuilding of the master’s in-memory state can be expensive for larger clusters, and so the focus of this effort was to improve the efficiency of this. Improvements were made via several areas, and only the highest-impact changes are listed below:
 
@@ -52,9 +52,9 @@ With these previous enhancements in place, we were able to eliminate many of the
 
 ### Benchmark and Results
 
-We wrote a synthetic benchmark to simulate a master failover. This benchmark prepares all the messages that would be sent to the master by the agents that need to re-register:
+We wrote a synthetic benchmark to simulate a master failover. This benchmark prepares all the messages that would be sent to the master by the agents that need to reregister:
 
-* The benchmark uses synthetic agents in that they are just an actor that knows how to re-register with the master.
+* The benchmark uses synthetic agents in that they are just an actor that knows how to reregister with the master.
 * Each "agent" will send a configurable number of active and completed tasks belonging to a configurable number of active and completed frameworks.
 * Each task has 10 small labels to introduce metadata overhead.
 
@@ -87,4 +87,4 @@ We're currently targeting the following areas for improvements:
   * **[Libprocess](https://github.com/apache/mesos/tree/master/3rdparty/libprocess) HTTP performance**: This will be undertaken as part of improving the v1 API performance, since it is HTTP-based.
 * **Master state API performance**: Currently, API queries of the master's state are serviced by the same master actor that processes all of the messages from schedulers and agents. Since the query processing can block the master from processing other events, users need to be careful not to query the master excessively. In practice, the master gets queried quite heavily due to the presence of several tools that rely on the master's state (e.g. DNS tooling, UIs, CLIs, etc) and so this is a critical problem for users. This effort will leverage the state streaming API to stream the state to a different actor that can serve the state API requests. This will ensure that expensive state queries do not affect the master's ability to process events.
 
-If you are a user and would like to suggest some areas for performance improvement, please let us know by emailing <dev@apache.mesos.org>.
+If you are a user and would like to suggest some areas for performance improvement, please let us know by emailing `dev@apache.mesos.org`.

@@ -53,7 +53,6 @@
 namespace io = process::io;
 
 using std::deque;
-using std::list;
 using std::string;
 using std::vector;
 
@@ -120,7 +119,7 @@ bool PosixDiskIsolatorProcess::supportsStandalone()
 
 
 Future<Nothing> PosixDiskIsolatorProcess::recover(
-    const list<ContainerState>& states,
+    const vector<ContainerState>& states,
     const hashset<ContainerID>& orphans)
 {
   foreach (const ContainerState& state, states) {
@@ -467,7 +466,7 @@ public:
   DiskUsageCollectorProcess(const Duration& _interval)
     : ProcessBase(process::ID::generate("posix-disk-usage-collector")),
       interval(_interval) {}
-  virtual ~DiskUsageCollectorProcess() {}
+  ~DiskUsageCollectorProcess() override {}
 
   Future<Bytes> usage(
       const string& path,
@@ -493,16 +492,16 @@ public:
   }
 
 protected:
-  void initialize()
+  void initialize() override
   {
     schedule();
   }
 
-  void finalize()
+  void finalize() override
   {
     foreach (const Owned<Entry>& entry, entries) {
-      if (entry->du.isSome() && entry->du.get().status().isPending()) {
-        os::killtree(entry->du.get().pid(), SIGKILL);
+      if (entry->du.isSome() && entry->du->status().isPending()) {
+        os::killtree(entry->du->pid(), SIGKILL);
       }
 
       entry->promise.fail("DiskUsageCollector is destroyed");
@@ -599,9 +598,9 @@ private:
 
     entry->du = s.get();
 
-    await(s.get().status(),
-          io::read(s.get().out().get()),
-          io::read(s.get().err().get()))
+    await(s->status(),
+          io::read(s->out().get()),
+          io::read(s->err().get()))
       .onAny(defer(self(), &Self::_schedule, lambda::_1));
   }
 
@@ -622,9 +621,9 @@ private:
       entry->promise.fail(
           "Failed to perform 'du': " +
           (status.isFailed() ? status.failure() : "discarded"));
-    } else if (status.get().isNone()) {
+    } else if (status->isNone()) {
       entry->promise.fail("Failed to reap the status of 'du'");
-    } else if (status.get().get() != 0) {
+    } else if (status->get() != 0) {
       const Future<string>& error = std::get<2>(future.get());
       if (!error.isReady()) {
         entry->promise.fail(

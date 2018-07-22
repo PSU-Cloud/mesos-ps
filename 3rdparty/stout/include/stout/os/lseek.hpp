@@ -13,32 +13,14 @@
 #ifndef __STOUT_OS_LSEEK_HPP__
 #define __STOUT_OS_LSEEK_HPP__
 
+
+// For readability, we minimize the number of #ifdef blocks in the code by
+// splitting platform specific system calls into separate directories.
 #ifdef __WINDOWS__
-#include <io.h>
+#include <stout/os/windows/lseek.hpp>
 #else
-#include <unistd.h>
-#endif
+#include <stout/os/posix/lseek.hpp>
+#endif // __WINDOWS__
 
-#include <stout/error.hpp>
-#include <stout/try.hpp>
-
-#include <stout/os/int_fd.hpp>
-
-namespace os {
-
-inline Try<off_t> lseek(int_fd fd, off_t offset, int whence)
-{
-#ifdef __WINDOWS__
-  off_t result = ::_lseek(fd.crt(), offset, whence);
-#else
-  off_t result = ::lseek(fd, offset, whence);
-#endif
-  if (result < 0) {
-    return ErrnoError();
-  }
-  return result;
-}
-
-} // namespace os {
 
 #endif // __STOUT_OS_LSEEK_HPP__

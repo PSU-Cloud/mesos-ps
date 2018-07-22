@@ -31,7 +31,6 @@
 #include <stout/os/realpath.hpp>
 
 namespace http = process::http;
-namespace unix = process::network::unix;
 
 using std::list;
 using std::string;
@@ -42,18 +41,20 @@ namespace csi {
 namespace paths {
 
 // File names.
-const char CONTAINER_INFO_FILE[] = "container.info";
-const char ENDPOINT_SOCKET_FILE[] = "endpoint.sock";
-const char VOLUME_STATE_FILE[] = "volume.state";
+constexpr char CONTAINER_INFO_FILE[] = "container.info";
+constexpr char ENDPOINT_SOCKET_FILE[] = "endpoint.sock";
+constexpr char VOLUME_STATE_FILE[] = "volume.state";
 
 
-const char CONTAINERS_DIR[] = "containers";
-const char VOLUMES_DIR[] = "volumes";
-const char MOUNTS_DIR[] = "mounts";
+constexpr char CONTAINERS_DIR[] = "containers";
+constexpr char VOLUMES_DIR[] = "volumes";
+constexpr char MOUNTS_DIR[] = "mounts";
+constexpr char STAGING_DIR[] = "staging";
+constexpr char TARGET_DIR[] = "target";
 
 
-const char ENDPOINT_DIR_SYMLINK[] = "endpoint";
-const char ENDPOINT_DIR[] = "mesos-csi-XXXXXX";
+constexpr char ENDPOINT_DIR_SYMLINK[] = "endpoint";
+constexpr char ENDPOINT_DIR[] = "mesos-csi-XXXXXX";
 
 
 Try<list<string>> getContainerPaths(
@@ -77,6 +78,41 @@ string getContainerPath(
       name,
       CONTAINERS_DIR,
       stringify(containerId));
+}
+
+
+Try<ContainerPath> parseContainerPath(const string& rootDir, const string& dir)
+{
+  // TODO(chhsiao): Consider using `<regex>`, which requires GCC 4.9+.
+
+  // Make sure there's a separator at the end of the `rootDir` so that
+  // we don't accidentally slice off part of a directory.
+  const string prefix = path::join(rootDir, "");
+
+  if (!strings::startsWith(dir, prefix)) {
+    return Error(
+        "Directory '" + dir + "' does not fall under the root directory '" +
+        rootDir + "'");
+  }
+
+  vector<string> tokens = strings::tokenize(
+      dir.substr(prefix.size()),
+      stringify(os::PATH_SEPARATOR));
+
+  // A complete container path consists of 4 tokens:
+  //   <type>/<name>/containers/<volume_id>
+  if (tokens.size() != 4 || tokens[2] != CONTAINERS_DIR) {
+    return Error(
+        "Path '" + path::join(tokens) + "' does not match the structure of a "
+        "container path");
+  }
+
+  ContainerPath path;
+  path.type = tokens[0];
+  path.name = tokens[1];
+  path.containerId.set_value(tokens[3]);
+
+  return path;
 }
 
 
@@ -110,6 +146,9 @@ Try<string> getEndpointSocketPath(
     const string& name,
     const ContainerID& containerId)
 {
+#ifdef __WINDOWS__
+  return Error("CSI is not supported on Windows");
+#else
   const string symlinkPath =
     getEndpointDirSymlinkPath(rootDir, type, name, containerId);
 
@@ -151,7 +190,8 @@ Try<string> getEndpointSocketPath(
   const string socketPath = path::join(mkdtemp.get(), ENDPOINT_SOCKET_FILE);
 
   // Check if the socket path is too long.
-  Try<unix::Address> address = unix::Address::create(socketPath);
+  Try<process::network::unix::Address> address =
+    process::network::unix::Address::create(socketPath);
   if (address.isError()) {
     return Error(
         "Failed to create address from '" + socketPath + "': " +
@@ -159,6 +199,7 @@ Try<string> getEndpointSocketPath(
   }
 
   return socketPath;
+#endif // __WINDOWS__
 }
 
 
@@ -186,7 +227,7 @@ Try<VolumePath> parseVolumePath(const string& rootDir, const string& dir)
 {
   // TODO(chhsiao): Consider using `<regex>`, which requires GCC 4.9+.
 
-  // Make sure there's a separator at the end of the `rootdir` so that
+  // Make sure there's a separator at the end of the `rootDir` so that
   // we don't accidentally slice off part of a directory.
   const string prefix = path::join(rootDir, "");
 
@@ -241,15 +282,19 @@ string getMountRootDir(
 }
 
 
-string getMountPath(
-    const string& rootDir,
-    const string& type,
-    const string& name,
+string getMountStagingPath(
+    const string& mountRootDir,
     const string& volumeId)
 {
-  return path::join(
-      getMountRootDir(rootDir, type, name),
-      http::encode(volumeId));
+  return path::join(mountRootDir, http::encode(volumeId), STAGING_DIR);
+}
+
+
+string getMountTargetPath(
+    const string& mountRootDir,
+    const string& volumeId)
+{
+  return path::join(mountRootDir, http::encode(volumeId), TARGET_DIR);
 }
 
 } // namespace paths {

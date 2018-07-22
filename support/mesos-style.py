@@ -186,9 +186,12 @@ class LinterBase(object):
             for candidate in self.find_candidates(source_dir):
                 candidates.append(candidate)
 
+        # Normalize paths of any files give.
+        modified_files = map(os.path.normpath, modified_files)
+
         # If file paths are specified, check all file paths that are
         # candidates; else check all candidates.
-        file_paths = modified_files if len(modified_files) > 0 else candidates
+        file_paths = modified_files if modified_files else candidates
 
         # Compute the set intersect of the input file paths and candidates.
         # This represents the reduced set of candidates to run lint on.
@@ -198,7 +201,10 @@ class LinterBase(object):
             candidates_set)
 
         if filtered_candidates_set:
-            plural = '' if len(filtered_candidates_set) == 1 else 's'
+            if len(filtered_candidates_set) == 1:
+                plural = ''
+            else:
+                plural = 's'
             print 'Checking {num_files} {linter} file{plural}'.format(
                 num_files=len(filtered_candidates_set),
                 linter=self.linter_type,
@@ -228,6 +234,7 @@ class CppLinter(LinterBase):
                    os.path.join('3rdparty', 'stout')]
 
     exclude_files = '(' \
+                    r'elfio\-3\.2|' \
                     r'protobuf\-2\.4\.1|' \
                     r'googletest\-release\-1\.8\.0|' \
                     r'glog\-0\.3\.3|' \
@@ -254,20 +261,21 @@ class CppLinter(LinterBase):
             'build/deprecated',
             'build/endif_comment',
             'build/nullptr',
-            'readability/todo',
+            'readability/inheritance',
             'readability/namespace',
+            'readability/todo',
             'runtime/vlog',
             'whitespace/blank_line',
             'whitespace/comma',
-            'whitespace/end_of_line',
+            'whitespace/comments',
             'whitespace/ending_newline',
+            'whitespace/end_of_line',
             'whitespace/forcolon',
             'whitespace/indent',
             'whitespace/line_length',
             'whitespace/operators',
             'whitespace/semicolon',
             'whitespace/tab',
-            'whitespace/comments',
             'whitespace/todo']
 
         rules_filter = '--filter=-,+' + ',+'.join(active_rules)
@@ -299,6 +307,7 @@ class JsLinter(LinterBase):
     exclude_files = '(' \
                     r'angular\-1\.2\.32|' \
                     r'angular\-route\-1\.2\.32|' \
+                    r'bootstrap\-table\-1\.11\.1|' \
                     r'clipboard\-1\.5\.16|' \
                     r'jquery\-3\.2\.1|' \
                     r'relative\-date|' \
@@ -338,9 +347,6 @@ class JsLinter(LinterBase):
 
         return num_errors
 
-    def main(self, modified_files):
-        return super(JsLinter, self).main(modified_files)
-
 
 class PyLinter(LinterBase):
     """The linter for Python files, uses pylint."""
@@ -349,7 +355,9 @@ class PyLinter(LinterBase):
     cli_dir = os.path.join('src', 'python', 'cli_new')
     lib_dir = os.path.join('src', 'python', 'lib')
     support_dir = 'support'
-    source_dirs = [cli_dir, lib_dir, support_dir]
+    source_dirs_to_lint_with_venv = [support_dir]
+    source_dirs_to_lint_with_tox = [cli_dir, lib_dir]
+    source_dirs = source_dirs_to_lint_with_tox + source_dirs_to_lint_with_venv
 
     exclude_files = '(' \
                     r'protobuf\-2\.4\.1|' \
@@ -357,12 +365,76 @@ class PyLinter(LinterBase):
                     r'glog\-0\.3\.3|' \
                     r'boost\-1\.53\.0|' \
                     r'libev\-4\.15|' \
-                    r'java/jni|\.virtualenv' \
+                    r'java/jni|' \
+                    r'\.virtualenv|' \
+                    r'\.tox|' \
+                    r'python3' \
                     ')'
 
     source_files = r'\.(py)$'
 
     comment_prefix = '#'
+
+    pylint_config = os.path.abspath(os.path.join('support', 'pylint.config'))
+
+    def run_tox(self, configfile, args, tox_env=None, recreate=False):
+        """
+        Runs tox with given configfile and args. Optionally set tox env
+        and/or recreate the tox-managed virtualenv.
+        """
+        support_dir = os.path.dirname(__file__)
+
+        cmd = [os.path.join(support_dir, '.virtualenv', 'bin', 'tox')]
+        cmd += ['-qq']
+        cmd += ['-c', configfile]
+        if tox_env is not None:
+            cmd += ['-e', tox_env]
+        if recreate:
+            cmd += ['--recreate']
+        cmd += ['--']
+        cmd += args
+
+        # We do not use `run_command_in_virtualenv()` here, as we
+        # directly call `tox` from inside the virtual environment bin
+        # directory without activating the virtualenv.
+        return subprocess.Popen(cmd, stdout=subprocess.PIPE)
+
+    def filter_source_files(self, source_dir, source_files):
+        """
+        Filters out files starting with source_dir.
+        """
+        return [f for f in source_files if f.startswith(source_dir)]
+
+    def lint_source_files_under_source_dir(self, source_dir, source_files):
+        """
+        Runs pylint directly or indirectly throgh tox on source_files which
+        are under source_dir. If tox is to be used, it must be configured
+        in source_dir, i.e. a tox.ini must be present.
+        """
+        filtered_source_files = self.filter_source_files(
+            source_dir, source_files)
+
+        if not filtered_source_files:
+            return 0
+
+        if source_dir in self.source_dirs_to_lint_with_tox:
+            process = self.run_tox(
+                configfile=os.path.join(source_dir, 'tox.ini'),
+                args=['--rcfile='+self.pylint_config] + filtered_source_files,
+                tox_env='py3-lint')
+        else:
+            process = self.run_command_in_virtualenv(
+                'pylint --score=n --rcfile={rcfile} {files}'.format(
+                    rcfile=self.pylint_config,
+                    files=' '.join(filtered_source_files)))
+
+        num_errors = 0
+        for line in process.stdout:
+            if re.match(r'^[RCWEF]: *[\d]+', line):
+                num_errors += 1
+            sys.stderr.write(line)
+
+        return num_errors
 
     def run_lint(self, source_paths):
         """
@@ -370,37 +442,13 @@ class PyLinter(LinterBase):
 
         https://google.github.io/styleguide/pyguide.html
         """
-
         num_errors = 0
 
-        pylint_config = os.path.join('support', 'pylint.config')
-
-        source_files = ''
-
         for source_dir in self.source_dirs:
-            source_dir_files = []
-            for source_path in source_paths:
-                if source_path.startswith(source_dir):
-                    source_dir_files.append(source_path)
-
-            source_files = ' '.join([source_files, ' '.join(source_dir_files)])
-
-        process = self.run_command_in_virtualenv(
-            'pylint --rcfile={rcfile} {files}'.format(
-                rcfile=pylint_config,
-                files=source_files
-            )
-        )
-
-        for line in process.stdout:
-            if not line.startswith('*'):
-                num_errors += 1
-            sys.stderr.write(line)
+            num_errors += self.lint_source_files_under_source_dir(
+                source_dir, source_paths)
 
         return num_errors
-
-    def main(self, modified_files):
-        return super(PyLinter, self).main(modified_files)
 
 
 def should_build_virtualenv(modified_files):
@@ -410,13 +458,15 @@ def should_build_virtualenv(modified_files):
     have changed or if the support script is run with no
     arguments (meaning that the entire codebase should be linted).
     """
-    if not os.path.isdir(os.path.join('support', '.virtualenv')):
-        print 'Virtualenv not detected... building'
+    # NOTE: If the file list is empty, we are linting the entire test
+    # codebase. We should always rebuild the vI've irtualenv in this case.
+    if not modified_files:
         return True
 
-    # NOTE: If the file list is empty, we are linting the entire
-    # codebase. We should always rebuild the virtualenv in this case.
-    if not modified_files:
+    support_dir = os.path.dirname(__file__)
+    interpreter = os.path.basename(sys.executable)
+    interpreter = os.path.join(support_dir, '.virtualenv', 'bin', interpreter)
+    if not os.path.isfile(interpreter):
         return True
 
     basenames = [os.path.basename(path) for path in modified_files]
@@ -428,6 +478,20 @@ def should_build_virtualenv(modified_files):
     if 'build-virtualenv' in basenames:
         print 'The "build-virtualenv" file has changed.'
         return True
+
+    # The JS and Python linters require a virtual environment.
+    # If all the files modified are not JS or Python files,
+    # we do not need to build the virtual environment.
+    # TODO(ArmandGrillet): There should be no duplicated logic to know
+    # which linters to instantiate depending on the files to analyze.
+    if not os.path.isdir(os.path.join('support', '.virtualenv')):
+        js_and_python_files = [JsLinter().source_files, PyLinter().source_files]
+        js_and_python_files_regex = re.compile('|'.join(js_and_python_files))
+
+        for basename in basenames:
+            if js_and_python_files_regex.search(basename) is not None:
+                print 'Virtualenv not detected and required... building'
+                return True
 
     return False
 
@@ -456,6 +520,14 @@ def build_virtualenv():
 if __name__ == '__main__':
     if should_build_virtualenv(sys.argv[1:]):
         build_virtualenv()
+
+    # TODO(ArmandGrillet): Remove this when we'll have switched to Python 3.
+    dir_path = os.path.dirname(os.path.realpath(__file__))
+    script_path = os.path.join(dir_path, 'check-python3.py')
+    subprocess.call('python ' + script_path, shell=True, cwd=dir_path)
+
+    # TODO(ArmandGrillet): We should only instantiate the linters
+    # required to lint the files to analyze. See MESOS-8351.
     CPP_LINTER = CppLinter()
     CPP_ERRORS = CPP_LINTER.main(sys.argv[1:])
     JS_LINTER = JsLinter()

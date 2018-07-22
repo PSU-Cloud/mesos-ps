@@ -21,7 +21,7 @@
 #include <vector>
 
 #include <process/metrics/counter.hpp>
-#include <process/metrics/gauge.hpp>
+#include <process/metrics/pull_gauge.hpp>
 #include <process/metrics/metrics.hpp>
 
 #include <stout/hashmap.hpp>
@@ -41,28 +41,28 @@ struct Metrics
 
   ~Metrics();
 
-  process::metrics::Gauge uptime_secs;
-  process::metrics::Gauge elected;
+  process::metrics::PullGauge uptime_secs;
+  process::metrics::PullGauge elected;
 
-  process::metrics::Gauge slaves_connected;
-  process::metrics::Gauge slaves_disconnected;
-  process::metrics::Gauge slaves_active;
-  process::metrics::Gauge slaves_inactive;
-  process::metrics::Gauge slaves_unreachable;
+  process::metrics::PullGauge slaves_connected;
+  process::metrics::PullGauge slaves_disconnected;
+  process::metrics::PullGauge slaves_active;
+  process::metrics::PullGauge slaves_inactive;
+  process::metrics::PullGauge slaves_unreachable;
 
-  process::metrics::Gauge frameworks_connected;
-  process::metrics::Gauge frameworks_disconnected;
-  process::metrics::Gauge frameworks_active;
-  process::metrics::Gauge frameworks_inactive;
+  process::metrics::PullGauge frameworks_connected;
+  process::metrics::PullGauge frameworks_disconnected;
+  process::metrics::PullGauge frameworks_active;
+  process::metrics::PullGauge frameworks_inactive;
 
-  process::metrics::Gauge outstanding_offers;
+  process::metrics::PullGauge outstanding_offers;
 
   // Task state metrics.
-  process::metrics::Gauge tasks_staging;
-  process::metrics::Gauge tasks_starting;
-  process::metrics::Gauge tasks_running;
-  process::metrics::Gauge tasks_unreachable;
-  process::metrics::Gauge tasks_killing;
+  process::metrics::PullGauge tasks_staging;
+  process::metrics::PullGauge tasks_starting;
+  process::metrics::PullGauge tasks_running;
+  process::metrics::PullGauge tasks_unreachable;
+  process::metrics::PullGauge tasks_killing;
   process::metrics::Counter tasks_finished;
   process::metrics::Counter tasks_failed;
   process::metrics::Counter tasks_killed;
@@ -135,8 +135,10 @@ struct Metrics
   process::metrics::Counter messages_decline_offers;
   process::metrics::Counter messages_revive_offers;
   process::metrics::Counter messages_suppress_offers;
+  process::metrics::Counter messages_reconcile_operations;
   process::metrics::Counter messages_reconcile_tasks;
   process::metrics::Counter messages_framework_to_executor;
+  process::metrics::Counter messages_operation_status_update_acknowledgement;
 
   // Messages from executors.
   process::metrics::Counter messages_executor_to_framework;
@@ -163,13 +165,16 @@ struct Metrics
   process::metrics::Counter valid_status_update_acknowledgements;
   process::metrics::Counter invalid_status_update_acknowledgements;
 
+  process::metrics::Counter valid_operation_status_update_acknowledgements;
+  process::metrics::Counter invalid_operation_status_update_acknowledgements;
+
   // Recovery counters.
   process::metrics::Counter recovery_slave_removals;
 
   // Process metrics.
-  process::metrics::Gauge event_queue_messages;
-  process::metrics::Gauge event_queue_dispatches;
-  process::metrics::Gauge event_queue_http_requests;
+  process::metrics::PullGauge event_queue_messages;
+  process::metrics::PullGauge event_queue_dispatches;
+  process::metrics::PullGauge event_queue_http_requests;
 
   // Successful registry operations.
   process::metrics::Counter slave_registrations;
@@ -192,14 +197,16 @@ struct Metrics
   process::metrics::Counter slave_unreachable_canceled;
 
   // Non-revocable resources.
-  std::vector<process::metrics::Gauge> resources_total;
-  std::vector<process::metrics::Gauge> resources_used;
-  std::vector<process::metrics::Gauge> resources_percent;
+  std::vector<process::metrics::PullGauge> resources_total;
+  std::vector<process::metrics::PullGauge> resources_used;
+  std::vector<process::metrics::PullGauge> resources_percent;
 
   // Revocable resources.
-  std::vector<process::metrics::Gauge> resources_revocable_total;
-  std::vector<process::metrics::Gauge> resources_revocable_used;
-  std::vector<process::metrics::Gauge> resources_revocable_percent;
+  std::vector<process::metrics::PullGauge> resources_revocable_total;
+  std::vector<process::metrics::PullGauge> resources_revocable_used;
+  std::vector<process::metrics::PullGauge> resources_revocable_percent;
+
+  void incrementInvalidSchedulerCalls(const scheduler::Call& call);
 
   void incrementTasksStates(
       const TaskState& state,

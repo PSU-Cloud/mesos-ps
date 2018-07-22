@@ -105,32 +105,6 @@ const char LOGROTATE_CONTAINER_LOGGER_NAME[] =
 #endif // __WINDOWS__
 
 
-// Definition of a mock ContainerLogger to be used in tests with gmock.
-class MockContainerLogger : public ContainerLogger
-{
-public:
-  MockContainerLogger()
-  {
-    // Set up default behaviors.
-    EXPECT_CALL(*this, initialize())
-      .WillRepeatedly(Return(Nothing()));
-
-    // All output is redirected to STDOUT_FILENO and STDERR_FILENO.
-    EXPECT_CALL(*this, prepare(_, _, _))
-      .WillRepeatedly(Return(mesos::slave::ContainerIO()));
-  }
-
-  virtual ~MockContainerLogger() {}
-
-  MOCK_METHOD0(initialize, Try<Nothing>(void));
-
-  MOCK_METHOD3(
-      prepare,
-      Future<mesos::slave::ContainerIO>(
-          const ExecutorInfo&, const string&, const Option<string>&));
-};
-
-
 class ContainerLoggerTest : public MesosTest {};
 
 
@@ -370,8 +344,8 @@ TEST_F(ContainerLoggerTest, LOGROTATE_RotateInSandbox)
   // one MB since there is also the executor's output besides the task's stdout.
   Try<Bytes> stdoutSize = os::stat::size(stdoutPath);
   ASSERT_SOME(stdoutSize);
-  EXPECT_LE(1024u, stdoutSize->kilobytes());
-  EXPECT_GE(1050u, stdoutSize->kilobytes());
+  EXPECT_LE(1024u, stdoutSize->bytes() / Bytes::KILOBYTES);
+  EXPECT_GE(1050u, stdoutSize->bytes() / Bytes::KILOBYTES);
 
   // We should only have files up to "stdout.4".
   stdoutPath = path::join(sandboxDirectory, "stdout.5");
@@ -385,8 +359,8 @@ TEST_F(ContainerLoggerTest, LOGROTATE_RotateInSandbox)
     // NOTE: The rotated files are written in contiguous blocks, meaning that
     // each file may be less than the maximum allowed size.
     stdoutSize = os::stat::size(stdoutPath);
-    EXPECT_LE(2040u, stdoutSize->kilobytes());
-    EXPECT_GE(2048u, stdoutSize->kilobytes());
+    EXPECT_LE(2040u, stdoutSize->bytes() / Bytes::KILOBYTES);
+    EXPECT_GE(2048u, stdoutSize->bytes() / Bytes::KILOBYTES);
   }
 }
 
@@ -625,7 +599,8 @@ INSTANTIATE_TEST_CASE_P(
 //    launch subprocesses with the same user as the executor.
 // 2. When `--switch_user` is false on the agent, the logger module should
 //    inherit the user of the agent.
-TEST_P(UserContainerLoggerTest, ROOT_LOGROTATE_RotateWithSwitchUserTrueOrFalse)
+TEST_P(UserContainerLoggerTest,
+       ROOT_LOGROTATE_UNPRIVILEGED_USER_RotateWithSwitchUserTrueOrFalse)
 {
   // Create a master, agent, and framework.
   Try<Owned<cluster::Master>> master = StartMaster();
@@ -697,8 +672,11 @@ TEST_P(UserContainerLoggerTest, ROOT_LOGROTATE_RotateWithSwitchUserTrueOrFalse)
       "i=0; while [ $i -lt 3072 ]; "
       "do printf '%-1024d\\n' $i; i=$((i+1)); done");
 
+  Option<string> user = os::getenv("SUDO_USER");
+  ASSERT_SOME(user);
+
   // Start the task as a non-root user.
-  task.mutable_command()->set_user("nobody");
+  task.mutable_command()->set_user(user.get());
 
   Future<TaskStatus> statusStarting;
   Future<TaskStatus> statusRunning;
@@ -770,10 +748,10 @@ TEST_P(UserContainerLoggerTest, ROOT_LOGROTATE_RotateWithSwitchUserTrueOrFalse)
   ASSERT_GE(::stat(stdoutPath.c_str(), &stdoutStat), 0);
 
   // Depending on the `--switch_user`, the expected user is either
-  // "nobody" or "root".
+  // "$SUDO_USER" or "root".
   Result<string> stdoutUser = os::user(stdoutStat.st_uid);
   if (GetParam()) {
-    ASSERT_SOME_EQ("nobody", stdoutUser);
+    ASSERT_SOME_EQ(user.get(), stdoutUser);
   } else {
     ASSERT_SOME_EQ("root", stdoutUser);
   }
@@ -783,8 +761,8 @@ TEST_P(UserContainerLoggerTest, ROOT_LOGROTATE_RotateWithSwitchUserTrueOrFalse)
   // one MB since there is also the executor's output besides the task's stdout.
   Try<Bytes> stdoutSize = os::stat::size(stdoutPath);
   ASSERT_SOME(stdoutSize);
-  EXPECT_LE(1024u, stdoutSize->kilobytes());
-  EXPECT_GE(1050u, stdoutSize->kilobytes());
+  EXPECT_LE(1024u, stdoutSize->bytes() / Bytes::KILOBYTES);
+  EXPECT_GE(1050u, stdoutSize->bytes() / Bytes::KILOBYTES);
 
   // We should only have files up to "stdout.1".
   stdoutPath = path::join(sandboxDirectory, "stdout.2");
@@ -798,8 +776,8 @@ TEST_P(UserContainerLoggerTest, ROOT_LOGROTATE_RotateWithSwitchUserTrueOrFalse)
   // each file may be less than the maximum allowed size.
   stdoutSize = os::stat::size(stdoutPath);
   ASSERT_SOME(stdoutSize);
-  EXPECT_LE(2040u, stdoutSize->kilobytes());
-  EXPECT_GE(2048u, stdoutSize->kilobytes());
+  EXPECT_LE(2040u, stdoutSize->bytes() / Bytes::KILOBYTES);
+  EXPECT_GE(2048u, stdoutSize->bytes() / Bytes::KILOBYTES);
 }
 #endif // __WINDOWS__
 

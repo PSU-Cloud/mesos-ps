@@ -24,7 +24,7 @@ endif ()
 
 project(Mesos)
 set(MESOS_MAJOR_VERSION 1)
-set(MESOS_MINOR_VERSION 5)
+set(MESOS_MINOR_VERSION 7)
 set(MESOS_PATCH_VERSION 0)
 set(PACKAGE_VERSION
   ${MESOS_MAJOR_VERSION}.${MESOS_MINOR_VERSION}.${MESOS_PATCH_VERSION})
@@ -57,7 +57,13 @@ add_subdirectory(src)
 # TESTS.
 ########
 add_custom_target(check COMMAND ctest -V -C $<CONFIG> DEPENDS tests)
-add_custom_target(tests DEPENDS stout-tests libprocess-tests mesos-tests)
+add_custom_target(
+  tests
+  DEPENDS stout-tests libprocess-tests mesos-tests)
+
+if (ENABLE_NEW_CLI)
+  add_dependencies(tests cli-tests)
+endif ()
 
 # PACKAGING.
 ############

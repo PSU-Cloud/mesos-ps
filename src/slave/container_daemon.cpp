@@ -16,19 +16,16 @@
 
 #include "slave/container_daemon.hpp"
 
-#include <mesos/agent/agent.hpp>
-
 #include <process/defer.hpp>
 #include <process/id.hpp>
-#include <process/process.hpp>
 
 #include <stout/lambda.hpp>
 #include <stout/stringify.hpp>
 #include <stout/unreachable.hpp>
 
-#include "common/http.hpp"
-
 #include "internal/evolve.hpp"
+
+#include "slave/container_daemon_process.hpp"
 
 namespace http = process::http;
 
@@ -62,46 +59,6 @@ static inline http::Headers getAuthHeader(const Option<string>& authToken)
 
   return headers;
 }
-
-
-class ContainerDaemonProcess : public Process<ContainerDaemonProcess>
-{
-public:
-  explicit ContainerDaemonProcess(
-      const http::URL& _agentUrl,
-      const Option<string>& _authToken,
-      const ContainerID& containerId,
-      const Option<CommandInfo>& commandInfo,
-      const Option<Resources>& resources,
-      const Option<ContainerInfo>& containerInfo,
-      const Option<std::function<Future<Nothing>()>>& _postStartHook,
-      const Option<std::function<Future<Nothing>()>>& _postStopHook);
-
-  ContainerDaemonProcess(const ContainerDaemonProcess& other) = delete;
-
-  ContainerDaemonProcess& operator=(
-      const ContainerDaemonProcess& other) = delete;
-
-  Future<Nothing> wait();
-
-protected:
-  void initialize() override;
-
-private:
-  void launchContainer();
-  void waitContainer();
-
-  const http::URL agentUrl;
-  const Option<string> authToken;
-  const ContentType contentType;
-  const Option<std::function<Future<Nothing>()>> postStartHook;
-  const Option<std::function<Future<Nothing>()>> postStopHook;
-
-  Call launchCall;
-  Call waitCall;
-
-  Promise<Nothing> terminated;
-};
 
 
 ContainerDaemonProcess::ContainerDaemonProcess(
@@ -159,6 +116,10 @@ void ContainerDaemonProcess::initialize()
 
 void ContainerDaemonProcess::launchContainer()
 {
+  const ContainerID& containerId = launchCall.launch_container().container_id();
+
+  LOG(INFO) << "Launching container '" << containerId << "'";
+
   http::post(
       agentUrl,
       getAuthHeader(authToken),
@@ -175,13 +136,29 @@ void ContainerDaemonProcess::launchContainer()
             response.body + ")");
       }
 
-      return postStartHook.isSome() ? postStartHook.get()() : Nothing();
+      if (postStartHook.isSome()) {
+        LOG(INFO)
+          << "Invoking post-start hook for container '" << containerId << "'";
+
+        return postStartHook.get()();
+      }
+
+      return Nothing();
     }))
     .onReady(defer(self(), &Self::waitContainer))
     .onFailed(defer(self(), [=](const string& failure) {
+      LOG(ERROR)
+        << "Failed to launch container '"
+        << launchCall.launch_container().container_id() << "': " << failure;
+
       terminated.fail(failure);
     }))
     .onDiscarded(defer(self(), [=] {
+      LOG(ERROR)
+        << "Failed to launch container '"
+        << launchCall.launch_container().container_id()
+        << "': future discarded";
+
       terminated.discard();
     }));
 }
@@ -189,6 +166,10 @@ void ContainerDaemonProcess::launchContainer()
 
 void ContainerDaemonProcess::waitContainer()
 {
+  const ContainerID& containerId = waitCall.wait_container().container_id();
+
+  LOG(INFO) << "Waiting for container '" << containerId << "'";
+
   http::post(
       agentUrl,
       getAuthHeader(authToken),
@@ -204,13 +185,28 @@ void ContainerDaemonProcess::waitContainer()
             response.body + ")");
       }
 
-      return postStopHook.isSome() ? postStopHook.get()() : Nothing();
+      if (postStopHook.isSome()) {
+        LOG(INFO)
+          << "Invoking post-stop hook for container '" << containerId << "'";
+
+        return postStopHook.get()();
+      }
+
+      return Nothing();
     }))
     .onReady(defer(self(), &Self::launchContainer))
     .onFailed(defer(self(), [=](const string& failure) {
+      LOG(ERROR)
+        << "Failed to wait for container '"
+        << waitCall.wait_container().container_id() << "': " << failure;
+
       terminated.fail(failure);
     }))
     .onDiscarded(defer(self(), [=] {
+      LOG(ERROR)
+        << "Failed to wait for container '"
+        << waitCall.wait_container().container_id() << "': future discarded";
+
       terminated.discard();
     }));
 }

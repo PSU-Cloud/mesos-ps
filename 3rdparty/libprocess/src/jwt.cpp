@@ -12,6 +12,7 @@
 
 #include <process/jwt.hpp>
 
+#include <memory>
 #include <vector>
 
 #include <process/clock.hpp>
@@ -28,11 +29,13 @@ namespace authentication {
 using process::Clock;
 
 using process::network::openssl::generate_hmac_sha256;
+using process::network::openssl::sign_rsa_sha256;
+using process::network::openssl::verify_rsa_sha256;
 
 using std::ostream;
+using std::shared_ptr;
 using std::string;
 using std::vector;
-
 
 namespace {
 
@@ -100,6 +103,8 @@ Try<JWT::Header> parse_header(const string& component)
     alg = JWT::Alg::None;
   } else if (alg_value == "HS256") {
     alg = JWT::Alg::HS256;
+  } else if (alg_value == "RS256") {
+    alg = JWT::Alg::RS256;
   } else {
     return Error("Unsupported token algorithm: " + alg_value);
   }
@@ -152,6 +157,24 @@ Try<JSON::Object> parse_payload(const string& component)
 
   // TODO(nfnt): Validate other standard claims.
   return payload;
+}
+
+
+// Implements equality between strings which run in constant time by either
+// comparing the sizes, and thus ignoring their content, or checking the whole
+// content of them, thus avoiding timing attacks when comparing hashes.
+bool constantTimeEquals(const string& left, const string& right)
+{
+  if (left.size() != right.size()) {
+    return false;
+  }
+
+  unsigned valid = 0;
+  for (size_t i = 0; i < left.size(); ++i) {
+    valid |= left[i] ^ right[i];
+  }
+
+  return valid == 0;
 }
 
 } // namespace {
@@ -245,11 +268,63 @@ Try<JWT, JWTError> JWT::parse(const string& token, const string& secret)
         JWTError::Type::UNKNOWN);
   }
 
-  const bool valid = hmac.get() == signature.get();
-
-  if (!valid) {
+  if (!constantTimeEquals(hmac.get(), signature.get())) {
     return JWTError(
         "Token signature does not match",
+        JWTError::Type::INVALID_TOKEN);
+  }
+
+  return JWT(header.get(), payload.get(), signature.get());
+}
+
+
+Try<JWT, JWTError> JWT::parse(const string& token, shared_ptr<RSA> publicKey)
+{
+  CHECK_NOTNULL(publicKey.get());
+
+  const vector<string> components = strings::split(token, ".");
+
+  if (components.size() != 3) {
+    return JWTError(
+        "Expected 3 components in token, got " + stringify(components.size()),
+        JWTError::Type::INVALID_TOKEN);
+  }
+
+  Try<JWT::Header> header = parse_header(components[0]);
+
+  if (header.isError()) {
+    return JWTError(header.error(), JWTError::Type::INVALID_TOKEN);
+  }
+
+  if (header->alg != JWT::Alg::RS256) {
+    return JWTError(
+        "Token 'alg' value \"" + stringify(header->alg) +
+        "\" does not match, expected \"RS256\"",
+        JWTError::Type::INVALID_TOKEN);
+  }
+
+  Try<JSON::Object> payload = parse_payload(components[1]);
+
+  if (payload.isError()) {
+    return JWTError(payload.error(), JWTError::Type::INVALID_TOKEN);
+  }
+
+  const Try<string> signature = base64::decode_url_safe(components[2]);
+
+  if (signature.isError()) {
+    return JWTError(
+        "Failed to base64url-decode token signature: " + signature.error(),
+        JWTError::Type::INVALID_TOKEN);
+  }
+
+  // Validate RSA SHA-256 signature.
+
+  const Try<Nothing> valid = verify_rsa_sha256(
+      components[0] + "." + components[1], signature.get(), publicKey);
+
+  if (valid.isError()) {
+    return JWTError(
+        "Failed to verify token: " + valid.error(),
         JWTError::Type::INVALID_TOKEN);
   }
 
@@ -286,6 +361,32 @@ Try<JWT, JWTError> JWT::create(
 }
 
 
+Try<JWT, JWTError> JWT::create(
+    const JSON::Object& payload,
+    shared_ptr<RSA> privateKey)
+{
+  CHECK_NOTNULL(privateKey.get());
+
+  const Header header{Alg::RS256, "JWT"};
+
+  const string message = base64::encode_url_safe(stringify(header), false) +
+    "." + base64::encode_url_safe(stringify(payload), false);
+
+  const Try<string> signature = sign_rsa_sha256(message, privateKey);
+
+  if (signature.isError()) {
+    return JWTError(
+        "Failed to generate RSA signature: " + signature.error(),
+        JWTError::Type::UNKNOWN);
+  }
+
+  return JWT(
+    header,
+    payload,
+    base64::encode_url_safe(signature.get(), false));
+}
+
+
 JWT::JWT(
     const Header& _header,
     const JSON::Object& _payload,
@@ -301,6 +402,9 @@ ostream& operator<<(ostream& stream, const JWT::Alg& alg)
       break;
     case JWT::Alg::HS256:
       stream << "HS256";
+      break;
+    case JWT::Alg::RS256:
+      stream << "RS256";
       break;
   }
 

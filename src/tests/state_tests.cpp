@@ -77,8 +77,6 @@ using mesos::state::ZooKeeperStorage;
 using mesos::state::protobuf::State;
 using mesos::state::protobuf::Variable;
 
-using mesos::internal::state::Operation;
-
 namespace mesos {
 namespace internal {
 namespace tests {
@@ -86,6 +84,9 @@ namespace tests {
 typedef mesos::internal::Registry::Slaves Slaves;
 typedef mesos::internal::Registry::Slave Slave;
 
+// We declare this here to avoid collision with the top-level
+// `mesos::Operation` protobuf message
+using mesos::internal::state::Operation;
 
 void FetchAndStoreAndFetch(State* state)
 {
@@ -182,7 +183,7 @@ void FetchAndStoreAndStoreFailAndFetch(State* state)
 
   future2 = state->store(variable2);
   AWAIT_READY(future2);
-  EXPECT_TRUE(future2->isNone());
+  EXPECT_NONE(future2.get());
 
   future1 = state->fetch<Slaves>("slaves");
   AWAIT_READY(future1);
@@ -335,13 +336,13 @@ public:
       state(nullptr) {}
 
 protected:
-  virtual void SetUp()
+  void SetUp() override
   {
     storage = new mesos::state::InMemoryStorage();
     state = new State(storage);
   }
 
-  virtual void TearDown()
+  void TearDown() override
   {
     delete state;
     delete storage;
@@ -402,7 +403,7 @@ public:
       state(nullptr) {}
 
 protected:
-  virtual void SetUp()
+  void SetUp() override
   {
     TemporaryDirectoryTest::SetUp();
 
@@ -413,7 +414,7 @@ protected:
     state = new State(storage);
   }
 
-  virtual void TearDown()
+  void TearDown() override
   {
     delete state;
     delete storage;
@@ -481,7 +482,7 @@ public:
       log(nullptr) {}
 
 protected:
-  virtual void SetUp()
+  void SetUp() override
   {
     TemporaryDirectoryTest::SetUp();
 
@@ -509,7 +510,7 @@ protected:
     state = new State(storage);
   }
 
-  virtual void TearDown()
+  void TearDown() override
   {
     delete state;
     delete storage;
@@ -700,7 +701,7 @@ public:
       state(nullptr) {}
 
 protected:
-  virtual void SetUp()
+  void SetUp() override
   {
     ZooKeeperTest::SetUp();
     storage = new mesos::state::ZooKeeperStorage(
@@ -710,7 +711,7 @@ protected:
     state = new State(storage);
   }
 
-  virtual void TearDown()
+  void TearDown() override
   {
     delete state;
     delete storage;

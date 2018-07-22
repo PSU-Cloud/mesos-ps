@@ -68,7 +68,7 @@ public:
         lambda::_4);
   }
 
-  virtual void initialize()
+  void initialize() override
   {
     // There are two different timeouts here:
     //
@@ -117,8 +117,9 @@ public:
       //   (1) Empty / invalid 'host' string format.
       //   (2) Any getaddrinfo error other than EAI_NONAME,
       //       EAI_NODATA, and EAI_MEMORY are mapped to EINVAL.
+      // The errors EAI_NONAME and EAI_NODATA are mapped to ENOENT.
       // Either way, retrying is not problematic.
-      if (zh == nullptr && errno == EINVAL) {
+      if (zh == nullptr && (errno == EINVAL || errno == ENOENT)) {
         ErrnoError error("zookeeper_init failed");
         LOG(WARNING) << error.message << " ; retrying in 1 second";
         os::sleep(Seconds(1));
@@ -133,7 +134,7 @@ public:
     }
   }
 
-  virtual void finalize()
+  void finalize() override
   {
     int ret = zookeeper_close(zh);
     if (ret != ZOK) {
@@ -173,7 +174,7 @@ public:
         zh,
         scheme.c_str(),
         credentials.data(),
-        credentials.size(),
+        static_cast<int>(credentials.size()),
         voidCompletion,
         args);
 
@@ -204,7 +205,7 @@ public:
         zh,
         path.c_str(),
         data.data(),
-        data.size(),
+        static_cast<int>(data.size()),
         &acl,
         flags,
         stringCompletion,
@@ -391,7 +392,7 @@ public:
         zh,
         path.c_str(),
         data.data(),
-        data.size(),
+        static_cast<int>(data.size()),
         version,
         statCompletion,
         args);

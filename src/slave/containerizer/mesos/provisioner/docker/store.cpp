@@ -33,7 +33,9 @@
 #include <process/dispatch.hpp>
 #include <process/executor.hpp>
 #include <process/id.hpp>
-#include <process/metrics/counter.hpp>
+
+#include <process/metrics/metrics.hpp>
+#include <process/metrics/timer.hpp>
 
 #include "slave/containerizer/mesos/provisioner/constants.hpp"
 #include "slave/containerizer/mesos/provisioner/utils.hpp"
@@ -82,7 +84,7 @@ public:
   {
   }
 
-  ~StoreProcess() {}
+  ~StoreProcess() override {}
 
   Future<Nothing> recover();
 
@@ -95,6 +97,23 @@ public:
       const hashset<string>& activeLayerPaths);
 
 private:
+  struct Metrics
+  {
+    Metrics() :
+        image_pull(
+          "containerizer/mesos/provisioner/docker_store/image_pull", Hours(1))
+    {
+      process::metrics::add(image_pull);
+    }
+
+    ~Metrics()
+    {
+      process::metrics::remove(image_pull);
+    }
+
+    process::metrics::Timer<Milliseconds> image_pull;
+  };
+
   Future<Image> _get(
       const spec::ImageReference& reference,
       const Option<Secret>& config,
@@ -127,6 +146,8 @@ private:
 
   // For executing path removals in a separated actor.
   process::Executor executor;
+
+  Metrics metrics;
 };
 
 
@@ -141,7 +162,12 @@ Try<Owned<slave::Store>> Store::create(
   // TODO(dpravat): Remove after resolving MESOS-5473.
 #ifndef __WINDOWS__
   _flags.docker_config = flags.docker_config;
+  _flags.docker_stall_timeout = flags.fetcher_stall_timeout;
 #endif
+
+  if (flags.hadoop_home.isSome()) {
+    _flags.hadoop_client = path::join(flags.hadoop_home.get(), "bin", "hadoop");
+  }
 
   Try<Owned<uri::Fetcher>> fetcher = uri::fetcher::create(_flags);
   if (fetcher.isError()) {
@@ -288,7 +314,7 @@ Future<Image> StoreProcess::_get(
     // layer exists for a cached image.
     bool layerMissed = false;
 
-    foreach (const string& layerId, image.get().layer_ids()) {
+    foreach (const string& layerId, image->layer_ids()) {
       const string rootfsPath = paths::getImageLayerRootfsPath(
           flags.docker_store_dir,
           layerId,
@@ -320,7 +346,7 @@ Future<Image> StoreProcess::_get(
 
     Owned<Promise<Image>> promise(new Promise<Image>());
 
-    Future<Image> future = puller->pull(
+    Future<Image> future = metrics.image_pull.time(puller->pull(
         reference,
         staging.get(),
         backend,
@@ -341,7 +367,7 @@ Future<Image> StoreProcess::_get(
           LOG(WARNING) << "Failed to remove staging directory: "
                        << rmdir.error();
         }
-      }));
+      })));
 
     promise->associate(future);
     pulling[name] = promise;
@@ -367,22 +393,26 @@ Future<ImageInfo> StoreProcess::__get(
         backend));
   }
 
+  const string path = paths::getImageLayerManifestPath(
+      flags.docker_store_dir,
+      image.layer_ids(image.layer_ids_size() - 1));
+
   // Read the manifest from the last layer because all runtime config
   // are merged at the leaf already.
-  Try<string> manifest = os::read(
-      paths::getImageLayerManifestPath(
-          flags.docker_store_dir,
-          image.layer_ids(image.layer_ids_size() - 1)));
-
+  Try<string> manifest = os::read(path);
   if (manifest.isError()) {
-    return Failure("Failed to read manifest: " + manifest.error());
+    return Failure(
+        "Failed to read manifest from '" + path + "': " +
+        manifest.error());
   }
 
   Try<::docker::spec::v1::ImageManifest> v1 =
     ::docker::spec::v1::parse(manifest.get());
 
   if (v1.isError()) {
-    return Failure("Failed to parse docker v1 manifest: " + v1.error());
+    return Failure(
+        "Failed to parse docker v1 manifest from '" + path + "': " +
+        v1.error());
   }
 
   return ImageInfo{layerPaths, v1.get()};
@@ -394,7 +424,7 @@ Future<vector<string>> StoreProcess::moveLayers(
     const vector<string>& layerIds,
     const string& backend)
 {
-  list<Future<Nothing>> futures;
+  vector<Future<Nothing>> futures;
   foreach (const string& layerId, layerIds) {
     futures.push_back(moveLayer(staging, layerId, backend));
   }

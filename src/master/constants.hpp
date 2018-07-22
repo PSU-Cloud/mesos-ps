@@ -63,9 +63,9 @@ constexpr Duration DEFAULT_AGENT_PING_TIMEOUT = Seconds(15);
 constexpr size_t DEFAULT_MAX_AGENT_PING_TIMEOUTS = 5;
 
 // The minimum timeout that can be used by a newly elected leader to
-// allow re-registration of slaves. Any slaves that do not re-register
+// allow re-registration of slaves. Any slaves that do not reregister
 // within this timeout will be marked unreachable; if/when the agent
-// re-registers, non-partition-aware tasks running on the agent will
+// reregisters, non-partition-aware tasks running on the agent will
 // be terminated.
 constexpr Duration MIN_AGENT_REREGISTER_TIMEOUT = Minutes(10);
 
@@ -127,8 +127,8 @@ constexpr Duration ZOOKEEPER_SESSION_TIMEOUT = Seconds(10);
 // Name of the default, CRAM-MD5 authenticator.
 constexpr char DEFAULT_AUTHENTICATOR[] = "crammd5";
 
-// Name of the default, HierarchicalDRF authenticator.
-constexpr char DEFAULT_ALLOCATOR[] = "HierarchicalDRF";
+// Name of the default hierarchical allocator.
+constexpr char DEFAULT_ALLOCATOR[] = "hierarchical";
 
 // The default interval between allocations.
 constexpr Duration DEFAULT_ALLOCATION_INTERVAL = Seconds(1);

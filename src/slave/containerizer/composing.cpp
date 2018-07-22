@@ -14,7 +14,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <list>
 #include <vector>
 
 #include <process/collect.hpp>
@@ -37,7 +36,6 @@
 
 using namespace process;
 
-using std::list;
 using std::map;
 using std::string;
 using std::vector;
@@ -60,7 +58,7 @@ public:
     : ProcessBase(process::ID::generate("composing-containerizer")),
       containerizers_(containerizers) {}
 
-  virtual ~ComposingContainerizerProcess();
+  ~ComposingContainerizerProcess() override;
 
   Future<Nothing> recover(
       const Option<state::SlaveState>& state);
@@ -87,7 +85,8 @@ public:
   Future<Option<ContainerTermination>> wait(
       const ContainerID& containerId);
 
-  Future<bool> destroy(const ContainerID& containerId);
+  Future<Option<ContainerTermination>> destroy(
+      const ContainerID& containerId);
 
   Future<bool> kill(const ContainerID& containerId, int signal);
 
@@ -118,12 +117,6 @@ private:
       const ContainerID& containerId,
       Containerizer::LaunchResult launchResult);
 
-  // Last step in the container destruction chain; when it finishes, the
-  // container must be removed from the internal collection.
-  void _destroy(
-      const ContainerID& containerId,
-      const Future<Option<ContainerTermination>>& future);
-
   vector<Containerizer*> containerizers_;
 
   // The states that the composing containerizer cares about for the
@@ -141,7 +134,6 @@ private:
   {
     State state;
     Containerizer* containerizer;
-    Promise<Option<ContainerTermination>> termination;
   };
 
   hashmap<ContainerID, Container*> containers_;
@@ -234,7 +226,8 @@ Future<Option<ContainerTermination>> ComposingContainerizer::wait(
 }
 
 
-Future<bool> ComposingContainerizer::destroy(const ContainerID& containerId)
+Future<Option<ContainerTermination>> ComposingContainerizer::destroy(
+    const ContainerID& containerId)
 {
   return dispatch(process,
                   &ComposingContainerizerProcess::destroy,
@@ -292,7 +285,7 @@ Future<Nothing> ComposingContainerizerProcess::recover(
     const Option<state::SlaveState>& state)
 {
   // Recover each containerizer in parallel.
-  list<Future<Nothing>> futures;
+  vector<Future<Nothing>> futures;
   foreach (Containerizer* containerizer, containerizers_) {
     futures.push_back(containerizer->recover(state));
   }
@@ -305,7 +298,7 @@ Future<Nothing> ComposingContainerizerProcess::recover(
 Future<Nothing> ComposingContainerizerProcess::_recover()
 {
   // Now collect all the running containers in order to multiplex.
-  list<Future<Nothing>> futures;
+  vector<Future<Nothing>> futures;
   foreach (Containerizer* containerizer, containerizers_) {
     Future<Nothing> future = containerizer->containers()
       .then(defer(self(), &Self::__recover, containerizer, lambda::_1));
@@ -326,6 +319,16 @@ Future<Nothing> ComposingContainerizerProcess::__recover(
     container->state = LAUNCHED;
     container->containerizer = containerizer;
     containers_[containerId] = container;
+
+    // This is needed for eventually removing the given container from
+    // the list of active containers.
+    containerizer->wait(containerId)
+      .onAny(defer(self(), [=](const Future<Option<ContainerTermination>>&) {
+        if (containers_.contains(containerId)) {
+          delete containers_.at(containerId);
+          containers_.erase(containerId);
+        }
+      }));
   }
   return Nothing();
 }
@@ -333,6 +336,8 @@ Future<Nothing> ComposingContainerizerProcess::__recover(
 
 Future<Nothing> ComposingContainerizerProcess::___recover()
 {
+  LOG(INFO) << "Finished recovering all containerizers";
+
   return Nothing();
 }
 
@@ -360,7 +365,12 @@ Future<Containerizer::LaunchResult> ComposingContainerizerProcess::_launch(
       // This is needed for eventually removing the given container from
       // the list of active containers.
       container->containerizer->wait(containerId)
-        .onAny(defer(self(), &Self::_destroy, containerId, lambda::_1));
+        .onAny(defer(self(), [=](const Future<Option<ContainerTermination>>&) {
+          if (containers_.contains(containerId)) {
+            delete containers_.at(containerId);
+            containers_.erase(containerId);
+          }
+        }));
     }
 
     // Note that the return value is not impacted
@@ -376,11 +386,6 @@ Future<Containerizer::LaunchResult> ComposingContainerizerProcess::_launch(
   if (containerizer == containerizers_.end()) {
     // If we are here none of the containerizers support the launch.
 
-    // We set this to `None` because the container has no chance of
-    // getting launched by any containerizer. This is similar to what
-    // would happen if the destroy "started" after launch returned false.
-    container->termination.set(Option<ContainerTermination>::none());
-
     // We destroy the container irrespective whether
     // a destroy is already in progress, for simplicity.
     containers_.erase(containerId);
@@ -394,16 +399,7 @@ Future<Containerizer::LaunchResult> ComposingContainerizerProcess::_launch(
     // If we are here there is at least one more containerizer that could
     // potentially launch this container. But since a destroy is in progress
     // we do not try any other containerizers.
-
-    // If the destroy-in-progress stopped an launch-in-progress (using the next
-    // containerizer), then we need to set a value to the `termination` promise,
-    // because we consider `wait()` and `destroy()` operations as successful.
-    container->termination.set(
-        Option<ContainerTermination>(ContainerTermination()));
-
-    containers_.erase(containerId);
-    delete container;
-
+    //
     // We return failure here because there is a chance some other
     // containerizer might be able to launch this container but
     // we are not trying it because a destroy is in progress.
@@ -509,7 +505,12 @@ Future<Containerizer::LaunchResult> ComposingContainerizerProcess::_launch(
       // This is needed for eventually removing the given container from
       // the list of active containers.
       container->containerizer->wait(containerId)
-        .onAny(defer(self(), &Self::_destroy, containerId, lambda::_1));
+        .onAny(defer(self(), [=](const Future<Option<ContainerTermination>>&) {
+          if (containers_.contains(containerId)) {
+            delete containers_.at(containerId);
+            containers_.erase(containerId);
+          }
+        }));
     }
 
     // Note that the return value is not impacted
@@ -518,11 +519,6 @@ Future<Containerizer::LaunchResult> ComposingContainerizerProcess::_launch(
   }
 
   // If we are here, the launch is not supported by the containerizer.
-
-  // We set this to `None` because the container has no chance of
-  // getting launched. This is similar to what would happen if the
-  // destroy "started" after launch returned false.
-  container->termination.set(Option<ContainerTermination>::none());
 
   // We destroy the container irrespective whether
   // a destroy is already in progress, for simplicity.
@@ -582,10 +578,6 @@ Future<ContainerStatus> ComposingContainerizerProcess::status(
 Future<Option<ContainerTermination>> ComposingContainerizerProcess::wait(
     const ContainerID& containerId)
 {
-  if (containers_.contains(containerId)) {
-    return containers_[containerId]->termination.future();
-  }
-
   // A nested container might have already been terminated, therefore
   // `containers_` might not contain it, but its exit status might have
   // been checkpointed.
@@ -602,7 +594,7 @@ Future<Option<ContainerTermination>> ComposingContainerizerProcess::wait(
 }
 
 
-Future<bool> ComposingContainerizerProcess::destroy(
+Future<Option<ContainerTermination>> ComposingContainerizerProcess::destroy(
     const ContainerID& containerId)
 {
   if (!containers_.contains(containerId)) {
@@ -611,54 +603,31 @@ Future<bool> ComposingContainerizerProcess::destroy(
     // Move this logging into the callers.
     LOG(WARNING) << "Attempted to destroy unknown container " << containerId;
 
-    return false;
+    // A nested container might have already been terminated, therefore
+    // `containers_` might not contain it, but its exit status might have
+    // been checkpointed.
+    return wait(containerId);
   }
 
   Container* container = containers_.at(containerId);
 
-  switch (container->state) {
-    case DESTROYING:
-      break; // No-op.
-
-    case LAUNCHING:
-    case LAUNCHED:
-      container->state = DESTROYING;
-
-      // If the container is destroyed while `launch()` is in progress,
-      // `wait()` will not be called in `_launch()`, so we should call
-      // `wait()` to cleanup state of the container in `_destroy()`.
-      // Note that it is safe to call `_destroy()` multiple times.
-      container->containerizer->wait(containerId)
-        .onAny(defer(self(), &Self::_destroy, containerId, lambda::_1));
-
-      // Forward the destroy request to the containerizer. Note that
-      // a containerizer is expected to handle a destroy while
-      // `launch()` is in progress. If the containerizer could not
-      // handle launching the container (`launch()` returns false),
-      // then the containerizer may no longer know about this
-      // container. If the launch returns false, we will stop trying
-      // to launch the container on other containerizers.
-      container->containerizer->destroy(containerId);
-
-      break;
+  if (container->state == LAUNCHING || container->state == LAUNCHED) {
+    // Note that this method might be called between two successive attempts to
+    // launch a container using different containerizers. In this case, we will
+    // return `None`, because there is no underlying containerizer that is
+    // actually aware of launching a container.
+    container->state = DESTROYING;
   }
 
-  return container->termination.future()
-    .then([](const Option<ContainerTermination>& termination) {
-      return termination.isSome();
-    });
-}
+  CHECK_EQ(container->state, DESTROYING);
 
-
-void ComposingContainerizerProcess::_destroy(
-    const ContainerID& containerId,
-    const Future<Option<ContainerTermination>>& future)
-{
-  if (containers_.contains(containerId)) {
-    containers_.at(containerId)->termination.associate(future);
-    delete containers_.at(containerId);
-    containers_.erase(containerId);
-  }
+  return container->containerizer->destroy(containerId)
+    .onAny(defer(self(), [=](const Future<Option<ContainerTermination>>&) {
+      if (containers_.contains(containerId)) {
+        delete containers_.at(containerId);
+        containers_.erase(containerId);
+      }
+    }));
 }
 
 
@@ -702,7 +671,7 @@ Future<Nothing> ComposingContainerizerProcess::remove(
 Future<Nothing> ComposingContainerizerProcess::pruneImages(
     const vector<Image>& excludedImages)
 {
-  list<Future<Nothing>> futures;
+  vector<Future<Nothing>> futures;
 
   foreach (Containerizer* containerizer, containerizers_) {
     futures.push_back(containerizer->pruneImages(excludedImages));

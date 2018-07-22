@@ -324,6 +324,11 @@ public:
   // Tests if the given Resource object is shared.
   static bool isShared(const Resource& resource);
 
+  // Tests if the given Resources object is a "pure" scalar quantity which
+  // consists of resource objects with ONLY name, type (set to "Scalar")
+  // and scalar fields set.
+  static bool isScalarQuantity(const Resources& resources);
+
   // Tests if the given Resource object has refined reservations.
   static bool hasRefinedReservations(const Resource& resource);
 
@@ -333,6 +338,13 @@ public:
   // Returns the role to which the given Resource object is reserved for.
   // This must be called only when the resource is reserved!
   static const std::string& reservationRole(const Resource& resource);
+
+  // Shrinks a scalar type `resource` to the target size.
+  // Returns true if the resource was shrunk to the target size,
+  // or the resource is already within the target size.
+  // Returns false otherwise (i.e. the resource is indivisible.
+  // E.g. MOUNT volume).
+  static bool shrink(Resource* resource, const Value::Scalar& target);
 
   // Returns the summed up Resources given a hashmap<Key, Resources>.
   //
@@ -455,11 +467,9 @@ public:
   Resources toUnreserved() const;
 
   // Returns a Resources object that contains all the scalar resources
-  // in this object, but with their AllocationInfo, ReservationInfo,
-  // DiskInfo, and SharedInfo omitted. The `role` and RevocableInfo,
-  // if any, are preserved. Because we clear ReservationInfo but
-  // preserve `role`, this means that stripping a dynamically reserved
-  // resource makes it effectively statically reserved.
+  // but with all the meta-data fields, such as AllocationInfo,
+  // ReservationInfo and etc. cleared. Only scalar resources' name,
+  // type (SCALAR) and value are preserved.
   //
   // This is intended for code that would like to aggregate together
   // Resource values without regard for metadata like whether the
@@ -484,6 +494,11 @@ public:
   // resources and adding back the `converted` resources. Returns an
   // Error if the conversion cannot be applied.
   Try<Resources> apply(const ResourceConversion& conversion) const;
+
+  // Finds a resource object with the same metadata (i.e. AllocationInfo,
+  // ReservationInfo, etc.) as the given one, ignoring the actual value.
+  // If multiple matching resources exist, the first match is returned.
+  Option<Resource> match(const Resource& resource) const;
 
   // Obtains the conversion from the given operation and applies the
   // conversion. This method serves a syntax sugar for applying a

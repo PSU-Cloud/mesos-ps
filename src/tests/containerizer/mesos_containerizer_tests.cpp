@@ -234,14 +234,13 @@ TEST_F(MesosContainerizerTest, Destroy)
 
   AWAIT_ASSERT_EQ(Containerizer::LaunchResult::SUCCESS, launch);
 
-  Future<Option<ContainerTermination>> wait = containerizer->wait(containerId);
+  Future<Option<ContainerTermination>> termination =
+    containerizer->destroy(containerId);
 
-  containerizer->destroy(containerId);
-
-  AWAIT_READY(wait);
-  ASSERT_SOME(wait.get());
-  ASSERT_TRUE(wait.get()->has_status());
-  EXPECT_WTERMSIG_EQ(SIGKILL, wait.get()->status());
+  AWAIT_READY(termination);
+  ASSERT_SOME(termination.get());
+  ASSERT_TRUE(termination.get()->has_status());
+  EXPECT_WTERMSIG_EQ(SIGKILL, termination.get()->status());
 }
 
 
@@ -291,14 +290,13 @@ TEST_F(MesosContainerizerTest, StatusWithContainerID)
 
   EXPECT_EQ(containerId, status->container_id());
 
-  Future<Option<ContainerTermination>> wait = containerizer->wait(containerId);
+  Future<Option<ContainerTermination>> termination =
+    containerizer->destroy(containerId);
 
-  containerizer->destroy(containerId);
-
-  AWAIT_READY(wait);
-  ASSERT_SOME(wait.get());
-  ASSERT_TRUE(wait.get()->has_status());
-  EXPECT_WTERMSIG_EQ(SIGKILL, wait.get()->status());
+  AWAIT_READY(termination);
+  ASSERT_SOME(termination.get());
+  ASSERT_TRUE(termination.get()->has_status());
+  EXPECT_WTERMSIG_EQ(SIGKILL, termination.get()->status());
 }
 
 
@@ -399,9 +397,6 @@ TEST_F(MesosContainerizerIsolatorPreparationTest, ScriptSucceeds)
 
   // Check the preparation script actually ran.
   EXPECT_TRUE(os::exists(file));
-
-  // Destroy the container.
-  containerizer->destroy(containerId);
 }
 
 
@@ -446,9 +441,6 @@ TEST_F(MesosContainerizerIsolatorPreparationTest, ScriptFails)
 
   // Check the preparation script actually ran.
   EXPECT_TRUE(os::exists(file));
-
-  // Destroy the container.
-  containerizer->destroy(containerId);
 }
 
 
@@ -505,9 +497,6 @@ TEST_F(MesosContainerizerIsolatorPreparationTest, MultipleScripts)
 
   // Check the failing preparation script has actually ran.
   EXPECT_TRUE(os::exists(file2));
-
-  // Destroy the container.
-  containerizer->destroy(containerId);
 }
 
 
@@ -582,9 +571,6 @@ TEST_F(MesosContainerizerIsolatorPreparationTest, ExecutorEnvironmentVariable)
   // Check the preparation script actually ran.
   EXPECT_TRUE(os::exists(file));
 
-  // Destroy the container.
-  containerizer->destroy(containerId);
-
   // Reset LIBPROCESS_IP if necessary.
   if (libprocessIP.isSome()) {
     os::setenv("LIBPROCESS_IP", libprocessIP.get());
@@ -657,7 +643,8 @@ TEST_F(MesosContainerizerExecuteTest, IoRedirection)
 
 // This test verified that the stdout and stderr files in the task's sandbox
 // are owned by the task user.
-TEST_F(MesosContainerizerExecuteTest, ROOT_SandboxFileOwnership)
+TEST_F(MesosContainerizerExecuteTest,
+       ROOT_UNPRIVILEGED_USER_SandboxFileOwnership)
 {
   slave::Flags flags;
   flags.launcher_dir = getLauncherDir();
@@ -673,10 +660,11 @@ TEST_F(MesosContainerizerExecuteTest, ROOT_SandboxFileOwnership)
   ContainerID containerId;
   containerId.set_value(id::UUID::random().toString());
 
-  const string user = "nobody";
+  Option<string> user = os::getenv("SUDO_USER");
+  ASSERT_SOME(user);
 
   ExecutorInfo executor = createExecutorInfo("executor", "exit 0");
-  executor.mutable_command()->set_user(user);
+  executor.mutable_command()->set_user(user.get());
 
   Future<Containerizer::LaunchResult> launch = containerizer->launch(
       containerId,
@@ -687,7 +675,7 @@ TEST_F(MesosContainerizerExecuteTest, ROOT_SandboxFileOwnership)
   // Wait for the launch to complete.
   AWAIT_ASSERT_EQ(Containerizer::LaunchResult::SUCCESS, launch);
 
-  Result<uid_t> uid = os::getuid(user);
+  Result<uid_t> uid = os::getuid(user.get());
   ASSERT_SOME(uid);
 
   // Verify that stdout is owned by the task user.
@@ -885,7 +873,11 @@ TEST_F(MesosContainerizerDestroyTest, DestroyUnknownContainer)
   ContainerID containerId;
   containerId.set_value(id::UUID::random().toString());
 
-  AWAIT_EXPECT_FALSE(containerizer->destroy(containerId));
+  Future<Option<ContainerTermination>> destroyed =
+    containerizer->destroy(containerId);
+
+  AWAIT_READY(destroyed);
+  EXPECT_NONE(destroyed.get());
 }
 
 
@@ -980,16 +972,13 @@ TEST_F(MesosContainerizerProvisionerTest, ProvisionFailed)
 
   AWAIT_FAILED(launch);
 
-  Future<Option<ContainerTermination>> wait = containerizer->wait(containerId);
+  Future<Option<ContainerTermination>> termination =
+    containerizer->destroy(containerId);
 
-  containerizer->destroy(containerId);
+  AWAIT_READY(termination);
+  ASSERT_SOME(termination.get());
 
-  AWAIT_READY(wait);
-  ASSERT_SOME(wait.get());
-
-  ContainerTermination termination = wait->get();
-
-  EXPECT_FALSE(termination.has_status());
+  EXPECT_FALSE(termination->get().has_status());
 }
 
 
@@ -1235,12 +1224,11 @@ TEST_F(MesosContainerizerDestroyTest, LauncherDestroyFailure)
 
   AWAIT_ASSERT_EQ(Containerizer::LaunchResult::SUCCESS, launch);
 
-  Future<Option<ContainerTermination>> wait = containerizer->wait(containerId);
-
-  containerizer->destroy(containerId);
+  Future<Option<ContainerTermination>> termination =
+    containerizer->destroy(containerId);
 
   // The container destroy should fail.
-  AWAIT_FAILED(wait);
+  AWAIT_FAILED(termination);
 
   // We settle the clock here to ensure that the processing of
   // 'MesosContainerizerProcess::__destroy()' is complete and the
@@ -1335,20 +1323,19 @@ TEST_F(MesosLauncherStatusTest, ExecutorPIDTest)
       containerId,
       path::join(flags.launcher_dir, MESOS_CONTAINERIZER),
       vector<string>(),
-      Subprocess::FD(STDIN_FILENO),
-      Subprocess::FD(STDOUT_FILENO),
-      Subprocess::FD(STDERR_FILENO),
+      mesos::slave::ContainerIO(),
       nullptr,
       None(),
       None(),
-      None());
+      None(),
+      vector<int_fd>());
 
   ASSERT_SOME(forked);
 
   Future<ContainerStatus> validStatus = launcher.get()->status(containerId);
 
   AWAIT_READY(validStatus);
-  EXPECT_EQ(validStatus->executor_pid(), forked.get());
+  EXPECT_EQ(static_cast<pid_t>(validStatus->executor_pid()), forked.get());
 
   Future<ContainerStatus> invalidStatus =
     launcher.get()->status(invalidContainerId);

@@ -37,6 +37,8 @@
 
 #include <stout/os/exists.hpp>
 
+#include "common/resources_utils.hpp"
+
 #ifdef __linux__
 #include "linux/fs.hpp"
 #endif // __linux__
@@ -91,21 +93,12 @@ enum PersistentVolumeSourceType
 };
 
 
-enum ResourceProviderCapability
-{
-  DISABLED,
-  ENABLED
-};
-
-
 class PersistentVolumeTest
   : public MesosTest,
-    public WithParamInterface<::testing::tuple<
-        PersistentVolumeSourceType,
-        ResourceProviderCapability>>
+    public WithParamInterface<PersistentVolumeSourceType>
 {
 protected:
-  virtual void SetUp()
+  void SetUp() override
   {
     MesosTest::SetUp();
 
@@ -114,7 +107,7 @@ protected:
 
     diskPath = path.get();
 
-    if (::testing::get<0>(GetParam()) == MOUNT) {
+    if (GetParam() == MOUNT) {
       // On linux we mount a `tmpfs`.
 #ifdef __linux__
       for (size_t i = 1; i <= NUM_DISKS; ++i) {
@@ -132,10 +125,10 @@ protected:
     }
   }
 
-  virtual void TearDown()
+  void TearDown() override
   {
 #ifdef __linux__
-    if (::testing::get<0>(GetParam()) == MOUNT) {
+    if (GetParam() == MOUNT) {
       for (size_t i = 1; i <= NUM_DISKS; ++i) {
         ASSERT_SOME(
             fs::unmountAll(path::join(diskPath, "disk" + stringify(i))));
@@ -168,84 +161,40 @@ protected:
     return flags;
   }
 
-  virtual slave::Flags CreateSlaveFlags()
-  {
-    slave::Flags slaveFlags = MesosTest::CreateSlaveFlags();
-    if (::testing::get<1>(GetParam()) == ENABLED) {
-      constexpr SlaveInfo::Capability::Type capabilities[] = {
-        SlaveInfo::Capability::MULTI_ROLE,
-        SlaveInfo::Capability::HIERARCHICAL_ROLE,
-        SlaveInfo::Capability::RESERVATION_REFINEMENT,
-        SlaveInfo::Capability::RESOURCE_PROVIDER};
-
-      slaveFlags.agent_features = SlaveCapabilities();
-      foreach (SlaveInfo::Capability::Type type, capabilities) {
-        SlaveInfo::Capability* capability =
-          slaveFlags.agent_features->add_capabilities();
-        capability->set_type(type);
-      }
-    }
-
-    return slaveFlags;
-  }
-
   // Depending on the agent capability, the master will send different
   // messages to the agent when a persistent volume is applied.
   template<typename To>
   Future<Resources> getOperationMessage(To to)
   {
-    if (::testing::get<1>(GetParam()) == ENABLED) {
-      return FUTURE_PROTOBUF(ApplyOfferOperationMessage(), _, to)
-        .then([](const ApplyOfferOperationMessage& message) {
-          switch (message.operation_info().type()) {
-            case Offer::Operation::UNKNOWN:
-            case Offer::Operation::LAUNCH:
-            case Offer::Operation::LAUNCH_GROUP:
-            case Offer::Operation::RESERVE:
-            case Offer::Operation::UNRESERVE:
-            case Offer::Operation::CREATE_VOLUME:
-            case Offer::Operation::DESTROY_VOLUME:
-            case Offer::Operation::CREATE_BLOCK:
-            case Offer::Operation::DESTROY_BLOCK:
-              UNREACHABLE();
-            case Offer::Operation::CREATE: {
-              Resources resources = message.operation_info().create().volumes();
-              resources.unallocate();
+    return FUTURE_PROTOBUF(ApplyOperationMessage(), _, to)
+      .then([](const ApplyOperationMessage& message) {
+        switch (message.operation_info().type()) {
+          case Offer::Operation::UNKNOWN:
+          case Offer::Operation::LAUNCH:
+          case Offer::Operation::LAUNCH_GROUP:
+          case Offer::Operation::RESERVE:
+          case Offer::Operation::UNRESERVE:
+          case Offer::Operation::CREATE_DISK:
+          case Offer::Operation::DESTROY_DISK:
+          case Offer::Operation::GROW_VOLUME:
+          case Offer::Operation::SHRINK_VOLUME:
+            UNREACHABLE();
+          case Offer::Operation::CREATE: {
+            Resources resources = message.operation_info().create().volumes();
+            resources.unallocate();
 
-              return resources;
-            }
-            case Offer::Operation::DESTROY: {
-              Resources resources =
-                message.operation_info().destroy().volumes();
-              resources.unallocate();
-
-              return resources;
-            }
+            return resources;
           }
+          case Offer::Operation::DESTROY: {
+            Resources resources = message.operation_info().destroy().volumes();
+            resources.unallocate();
 
-          UNREACHABLE();
-        });
-    }
+            return resources;
+          }
+        }
 
-    return FUTURE_PROTOBUF(CheckpointResourcesMessage(), _, to)
-      .then([](const CheckpointResourcesMessage& message) {
-        return Resources(message.resources());
+        UNREACHABLE();
       });
-  }
-
-  // Agents with enabled 'RESOURCE_PROVIDER' capability will send a
-  // 'UpdateSlaveMessage' after (re-)registration. Offers will be
-  // rescinded if they were created prior to this message. Hence, we
-  // have to wait for this message before accepting offers.
-  Future<Nothing> getSlaveReady()
-  {
-    if (::testing::get<1>(GetParam()) == ENABLED) {
-      return FUTURE_PROTOBUF(UpdateSlaveMessage(), _, _).then([] {
-        return Nothing();
-      });
-    }
-
-    return Nothing();
   }
 
   // Creates a disk with / without a `source` based on the
@@ -257,10 +206,10 @@ protected:
     CHECK_GE(NUM_DISKS, id);
     Resource diskResource;
 
-    switch (::testing::get<0>(GetParam())) {
+    switch (GetParam()) {
       case NONE: {
         diskResource = createDiskResource(
-            stringify(mb.megabytes()),
+            stringify((double) mb.bytes() / Bytes::MEGABYTES),
             DEFAULT_TEST_ROLE,
             None(),
             None());
@@ -269,7 +218,7 @@ protected:
       }
       case PATH: {
         diskResource = createDiskResource(
-            stringify(mb.megabytes()),
+            stringify((double) mb.bytes() / Bytes::MEGABYTES),
             DEFAULT_TEST_ROLE,
             None(),
             None(),
@@ -279,7 +228,7 @@ protected:
       }
       case MOUNT: {
         diskResource = createDiskResource(
-            stringify(mb.megabytes()),
+            stringify((double) mb.bytes() / Bytes::MEGABYTES),
             DEFAULT_TEST_ROLE,
             None(),
             None(),
@@ -314,12 +263,8 @@ protected:
 INSTANTIATE_TEST_CASE_P(
     DiskResource,
     PersistentVolumeTest,
-    ::testing::Combine(
-        ::testing::Values(
-            PersistentVolumeSourceType::NONE, PersistentVolumeSourceType::PATH),
-        ::testing::Values(
-            ResourceProviderCapability::DISABLED,
-            ResourceProviderCapability::ENABLED)));
+    ::testing::Values(
+        PersistentVolumeSourceType::NONE, PersistentVolumeSourceType::PATH));
 
 
 // We also want to parameterize them for `MOUNT`. On linux this means
@@ -330,22 +275,14 @@ INSTANTIATE_TEST_CASE_P(
 INSTANTIATE_TEST_CASE_P(
     ROOT_MountDiskResource,
     PersistentVolumeTest,
-    ::testing::Combine(
-        ::testing::Values(PersistentVolumeSourceType::MOUNT),
-        ::testing::Values(
-            ResourceProviderCapability::DISABLED,
-            ResourceProviderCapability::ENABLED)));
+    ::testing::Values(PersistentVolumeSourceType::MOUNT));
 #else // __linux__
 // Otherwise we can run it without root privileges as we just require
 // a directory.
 INSTANTIATE_TEST_CASE_P(
     MountDiskResource,
     PersistentVolumeTest,
-    ::testing::Combine(
-        ::testing::Values(PersistentVolumeSourceType::MOUNT),
-        ::testing::Values(
-            ResourceProviderCapability::DISABLED,
-            ResourceProviderCapability::ENABLED)));
+    ::testing::Values(PersistentVolumeSourceType::MOUNT));
 #endif // __linux__
 
 
@@ -366,13 +303,14 @@ TEST_P(PersistentVolumeTest, CreateAndDestroyPersistentVolumes)
   slave::Flags slaveFlags = CreateSlaveFlags();
   slaveFlags.resources = getSlaveResources();
 
-  Future<Nothing> slaveReady = getSlaveReady();
+  Future<UpdateSlaveMessage> updateSlaveMessage =
+    FUTURE_PROTOBUF(UpdateSlaveMessage(), _, _);
 
   Owned<MasterDetector> detector = master.get()->createDetector();
   Try<Owned<cluster::Slave>> slave = StartSlave(detector.get(), slaveFlags);
   ASSERT_SOME(slave);
 
-  AWAIT_READY(slaveReady);
+  AWAIT_READY(updateSlaveMessage);
 
   MockScheduler sched;
   MesosSchedulerDriver driver(
@@ -423,7 +361,7 @@ TEST_P(PersistentVolumeTest, CreateAndDestroyPersistentVolumes)
   // exist (it is created by the test `SetUp()` function). For
   // non-MOUNT disks, the directory is created when the persistent
   // volume is created.
-  if (::testing::get<0>(GetParam()) == MOUNT) {
+  if (GetParam() == MOUNT) {
     EXPECT_TRUE(os::exists(volume1Path));
     EXPECT_TRUE(os::exists(volume2Path));
   } else {
@@ -482,12 +420,7 @@ TEST_P(PersistentVolumeTest, CreateAndDestroyPersistentVolumes)
       filters);
 
   AWAIT_READY(message3);
-  if (::testing::get<1>(GetParam()) == ENABLED) {
-    EXPECT_TRUE(message3->contains(volume1));
-  } else {
-    EXPECT_TRUE(message3->contains(volume2));
-    EXPECT_FALSE(message3->contains(volume1));
-  }
+  EXPECT_TRUE(message3->contains(volume1));
 
   // Ensure that the messages reach the slave.
   Clock::settle();
@@ -496,7 +429,7 @@ TEST_P(PersistentVolumeTest, CreateAndDestroyPersistentVolumes)
   // delete all of the files and subdirectories underneath it). For
   // non-MOUNT disks, the volume directory should be removed when the
   // volume is destroyed.
-  if (::testing::get<0>(GetParam()) == MOUNT) {
+  if (GetParam() == MOUNT) {
     EXPECT_TRUE(os::exists(volume1Path));
 
     Try<list<string>> files = ::fs::list(path::join(volume1Path, "*"));
@@ -515,6 +448,1026 @@ TEST_P(PersistentVolumeTest, CreateAndDestroyPersistentVolumes)
 }
 
 
+// This test verifies that a framework can grow a persistent volume and use the
+// grown volume afterward.
+TEST_P(PersistentVolumeTest, GrowVolume)
+{
+  if (GetParam() == MOUNT) {
+    // It is not possible to have a valid `GrowVolume` on a MOUNT disk because
+    // the volume must use up all disk space at `Create` and no space will be
+    // left for `addition`. Therefore we skip this test.
+    // TODO(zhitao): Make MOUNT a meaningful parameter value for this test, or
+    // create a new fixture to avoid testing against it.
+    return;
+  }
+
+  Clock::pause();
+
+  // Register a framework with role "default-role/foo" for dynamic reservations.
+  FrameworkInfo frameworkInfo = DEFAULT_FRAMEWORK_INFO;
+  frameworkInfo.set_roles(0, strings::join("/", DEFAULT_TEST_ROLE, "foo"));
+
+  // Create a master.
+  master::Flags masterFlags = CreateMasterFlags();
+
+  Try<Owned<cluster::Master>> master = StartMaster(masterFlags);
+  ASSERT_SOME(master);
+
+  slave::Flags slaveFlags = CreateSlaveFlags();
+  slaveFlags.resources = getSlaveResources();
+
+  Owned<MasterDetector> detector = master.get()->createDetector();
+  Try<Owned<cluster::Slave>> slave = StartSlave(detector.get(), slaveFlags);
+  ASSERT_SOME(slave);
+
+  MockScheduler sched;
+  MesosSchedulerDriver driver(
+      &sched, frameworkInfo, master.get()->pid, DEFAULT_CREDENTIAL);
+
+  EXPECT_CALL(sched, registered(&driver, _, _));
+
+  Future<vector<Offer>> offersBeforeCreate;
+  EXPECT_CALL(sched, resourceOffers(&driver, _))
+    .WillOnce(FutureArg<1>(&offersBeforeCreate));
+
+  driver.start();
+
+  Clock::advance(masterFlags.allocation_interval);
+
+  AWAIT_READY(offersBeforeCreate);
+  ASSERT_FALSE(offersBeforeCreate->empty());
+
+  Offer offer = offersBeforeCreate->at(0);
+
+  // The disk spaces will be merged if the fixture parameter is `NONE`.
+  Bytes totalBytes = GetParam() == NONE ? Megabytes(4096) : Megabytes(2048);
+
+  Bytes additionBytes = Megabytes(512);
+
+  // Construct a dynamic reservation for all disk resources.
+  // NOTE: We dynamically reserve all disk resources so they become checkpointed
+  // resources and thus will be verified on the agent when launching a task.
+  Resource::ReservationInfo dynamicReservation = createDynamicReservationInfo(
+      frameworkInfo.roles(0),
+      frameworkInfo.principal());
+
+  Resource dynamicallyReserved = getDiskResource(totalBytes, 1);
+  dynamicallyReserved.add_reservations()->CopyFrom(dynamicReservation);
+
+  // Construct a persistent volume which does not use up all disk resources.
+  Resource volume = createPersistentVolume(
+      getDiskResource(totalBytes - additionBytes, 1),
+      "id1",
+      "path1",
+      None(),
+      frameworkInfo.principal());
+  volume.add_reservations()->CopyFrom(dynamicReservation);
+  ASSERT_TRUE(needCheckpointing(volume));
+
+  Resource addition = getDiskResource(additionBytes, 1);
+  addition.add_reservations()->CopyFrom(dynamicReservation);
+  ASSERT_TRUE(needCheckpointing(addition));
+
+  Resource grownVolume = createPersistentVolume(
+      getDiskResource(totalBytes, 1),
+      "id1",
+      "path1",
+      None(),
+      frameworkInfo.principal());
+  grownVolume.add_reservations()->CopyFrom(dynamicReservation);
+  ASSERT_TRUE(needCheckpointing(grownVolume));
+
+  Future<vector<Offer>> offersBeforeGrow;
+
+  EXPECT_CALL(sched, resourceOffers(&driver, _))
+    .WillOnce(FutureArg<1>(&offersBeforeGrow));
+
+  // We use the filter explicitly here so that the resources will not
+  // be filtered for 5 seconds (the default).
+  Filters filters;
+  filters.set_refuse_seconds(0);
+
+  // Create the persistent volume.
+  driver.acceptOffers(
+      {offer.id()},
+      {RESERVE(dynamicallyReserved), CREATE(volume)},
+      filters);
+
+  Clock::settle();
+  Clock::advance(masterFlags.allocation_interval);
+
+  AWAIT_READY(offersBeforeGrow);
+  ASSERT_FALSE(offersBeforeGrow->empty());
+
+  offer = offersBeforeGrow->at(0);
+
+  EXPECT_EQ(
+      allocatedResources(Resources(volume), frameworkInfo.roles(0)),
+      Resources(offer.resources()).persistentVolumes());
+
+  EXPECT_TRUE(
+      Resources(offer.resources()).contains(
+      allocatedResources(addition, frameworkInfo.roles(0))));
+
+  // Make sure the volume exists, and leave a non-empty file there.
+  string volumePath = slave::paths::getPersistentVolumePath(
+      slaveFlags.work_dir, volume);
+
+  EXPECT_TRUE(os::exists(volumePath));
+  string filePath = path::join(volumePath, "file");
+  ASSERT_SOME(os::write(filePath, "abc"));
+
+  Future<vector<Offer>> offersAfterGrow;
+
+  EXPECT_CALL(sched, resourceOffers(&driver, _))
+    .WillOnce(FutureArg<1>(&offersAfterGrow));
+
+  // Grow the volume.
+  driver.acceptOffers(
+      {offer.id()},
+      {GROW_VOLUME(volume, addition)},
+      filters);
+
+  Clock::settle();
+  Clock::advance(masterFlags.allocation_interval);
+
+  AWAIT_READY(offersAfterGrow);
+  ASSERT_FALSE(offersAfterGrow->empty());
+
+  offer = offersAfterGrow->at(0);
+
+  EXPECT_EQ(
+      allocatedResources(Resources(grownVolume), frameworkInfo.roles(0)),
+      Resources(offer.resources()).persistentVolumes());
+
+  EXPECT_FALSE(
+      Resources(offer.resources()).contains(
+      allocatedResources(addition, frameworkInfo.roles(0))));
+
+  Future<TaskStatus> taskStarting;
+  Future<TaskStatus> taskRunning;
+  Future<TaskStatus> taskFinished;
+
+  EXPECT_CALL(sched, statusUpdate(&driver, _))
+    .WillOnce(FutureArg<1>(&taskStarting))
+    .WillOnce(FutureArg<1>(&taskRunning))
+    .WillOnce(FutureArg<1>(&taskFinished));
+
+  TaskInfo task = createTask(
+      offer.slave_id(),
+      offer.resources(),
+      "test `cat path1/file` = abc");
+
+  // Launch a task to verify that `GROW_VOLUME` takes effect on the agent and
+  // the task can use the grown volume.
+  driver.acceptOffers({offer.id()}, {LAUNCH({task})}, filters);
+
+  AWAIT_READY(taskStarting);
+  EXPECT_EQ(task.task_id(), taskStarting->task_id());
+  EXPECT_EQ(TASK_STARTING, taskStarting->state());
+
+  AWAIT_READY(taskRunning);
+  EXPECT_EQ(task.task_id(), taskRunning->task_id());
+  EXPECT_EQ(TASK_RUNNING, taskRunning->state());
+
+  AWAIT_READY(taskFinished);
+  EXPECT_EQ(task.task_id(), taskFinished->task_id());
+  EXPECT_EQ(TASK_FINISHED, taskFinished->state());
+
+  driver.stop();
+  driver.join();
+
+  Clock::resume();
+}
+
+
+// This test verifies that a framework can shrink a persistent volume and use
+// the shrunk volume afterward.
+TEST_P(PersistentVolumeTest, ShrinkVolume)
+{
+  Clock::pause();
+
+  // Register a framework with role "default-role/foo" for dynamic reservations.
+  FrameworkInfo frameworkInfo = DEFAULT_FRAMEWORK_INFO;
+  frameworkInfo.set_roles(0, strings::join("/", DEFAULT_TEST_ROLE, "foo"));
+
+  // Create a master.
+  master::Flags masterFlags = CreateMasterFlags();
+
+  Try<Owned<cluster::Master>> master = StartMaster(masterFlags);
+  ASSERT_SOME(master);
+
+  slave::Flags slaveFlags = CreateSlaveFlags();
+  slaveFlags.resources = getSlaveResources();
+
+  Owned<MasterDetector> detector = master.get()->createDetector();
+  Try<Owned<cluster::Slave>> slave = StartSlave(detector.get(), slaveFlags);
+  ASSERT_SOME(slave);
+
+  MockScheduler sched;
+  MesosSchedulerDriver driver(
+      &sched, frameworkInfo, master.get()->pid, DEFAULT_CREDENTIAL);
+
+  EXPECT_CALL(sched, registered(&driver, _, _));
+
+  Future<vector<Offer>> offersBeforeCreate;
+  EXPECT_CALL(sched, resourceOffers(&driver, _))
+    .WillOnce(FutureArg<1>(&offersBeforeCreate));
+
+  driver.start();
+
+  Clock::advance(masterFlags.allocation_interval);
+
+  AWAIT_READY(offersBeforeCreate);
+  ASSERT_FALSE(offersBeforeCreate->empty());
+
+  Offer offer = offersBeforeCreate->at(0);
+
+  // The disk spaces will be merged if the fixture parameter is `NONE`.
+  Bytes totalBytes = GetParam() == NONE ? Megabytes(4096) : Megabytes(2048);
+
+  Bytes subtractBytes = Megabytes(512);
+
+  // Construct a dynamic reservation for all disk resources.
+  // NOTE: We dynamically reserve all disk resources so they become checkpointed
+  // resources and thus will be verified on the agent when launching a task.
+  Resource::ReservationInfo dynamicReservation = createDynamicReservationInfo(
+      frameworkInfo.roles(0),
+      frameworkInfo.principal());
+
+  Resource dynamicallyReserved = getDiskResource(totalBytes, 1);
+  dynamicallyReserved.add_reservations()->CopyFrom(dynamicReservation);
+
+  // Construct a persistent volume which uses up all disk resources.
+  Resource volume = createPersistentVolume(
+      getDiskResource(totalBytes, 1),
+      "id1",
+      "path1",
+      None(),
+      frameworkInfo.principal());
+  volume.add_reservations()->CopyFrom(dynamicReservation);
+  ASSERT_TRUE(needCheckpointing(volume));
+
+  Resource subtract = getDiskResource(subtractBytes, 1);
+  subtract.add_reservations()->CopyFrom(dynamicReservation);
+  ASSERT_TRUE(needCheckpointing(subtract));
+
+  Resource shrunkVolume = createPersistentVolume(
+      getDiskResource(totalBytes - subtractBytes, 1),
+      "id1",
+      "path1",
+      None(),
+      frameworkInfo.principal());
+  shrunkVolume.add_reservations()->CopyFrom(dynamicReservation);
+  ASSERT_TRUE(needCheckpointing(shrunkVolume));
+
+  Future<vector<Offer>> offersBeforeShrink;
+
+  // Expect an offer containing the original volume.
+  EXPECT_CALL(sched, resourceOffers(&driver, _))
+    .WillOnce(FutureArg<1>(&offersBeforeShrink));
+
+  // We use the filter explicitly here so that the resources will not
+  // be filtered for 5 seconds (the default).
+  Filters filters;
+  filters.set_refuse_seconds(0);
+
+  // Create the persistent volume.
+  driver.acceptOffers(
+      {offer.id()},
+      {RESERVE(dynamicallyReserved), CREATE(volume)},
+      filters);
+
+  Clock::settle();
+  Clock::advance(masterFlags.allocation_interval);
+
+  AWAIT_READY(offersBeforeShrink);
+  ASSERT_FALSE(offersBeforeShrink->empty());
+
+  offer = offersBeforeShrink->at(0);
+
+  EXPECT_EQ(
+      allocatedResources(Resources(volume), frameworkInfo.roles(0)),
+      Resources(offer.resources()).persistentVolumes());
+
+  EXPECT_FALSE(
+      Resources(offer.resources()).contains(
+      allocatedResources(subtract, frameworkInfo.roles(0))));
+
+  // Make sure the volume exists, and leaves a non-empty file there.
+  string volumePath = slave::paths::getPersistentVolumePath(
+      slaveFlags.work_dir, volume);
+
+  EXPECT_TRUE(os::exists(volumePath));
+  string filePath = path::join(volumePath, "file");
+  ASSERT_SOME(os::write(filePath, "abc"));
+
+  Future<vector<Offer>> offersAfterShrink;
+
+  // Expect an offer containing shrunk volume.
+  EXPECT_CALL(sched, resourceOffers(&driver, _))
+    .WillOnce(FutureArg<1>(&offersAfterShrink));
+
+  driver.acceptOffers(
+      {offer.id()},
+      {SHRINK_VOLUME(volume, subtract.scalar())},
+      filters);
+
+  Clock::settle();
+  Clock::advance(masterFlags.allocation_interval);
+
+  AWAIT_READY(offersAfterShrink);
+  ASSERT_FALSE(offersAfterShrink->empty());
+
+  offer = offersAfterShrink->at(0);
+
+  if (GetParam() != MOUNT) {
+    EXPECT_EQ(
+        allocatedResources(Resources(shrunkVolume), frameworkInfo.roles(0)),
+        Resources(offer.resources()).persistentVolumes());
+
+    EXPECT_TRUE(
+        Resources(offer.resources()).contains(
+        allocatedResources(subtract, frameworkInfo.roles(0))));
+  } else {
+    EXPECT_EQ(
+        allocatedResources(Resources(volume), frameworkInfo.roles(0)),
+        Resources(offer.resources()).persistentVolumes());
+
+    EXPECT_FALSE(
+        Resources(offer.resources()).contains(
+        allocatedResources(subtract, frameworkInfo.roles(0))));
+  }
+
+  Future<TaskStatus> taskStarting;
+  Future<TaskStatus> taskRunning;
+  Future<TaskStatus> taskFinished;
+
+  EXPECT_CALL(sched, statusUpdate(&driver, _))
+    .WillOnce(FutureArg<1>(&taskStarting))
+    .WillOnce(FutureArg<1>(&taskRunning))
+    .WillOnce(FutureArg<1>(&taskFinished));
+
+  TaskInfo task = createTask(
+      offer.slave_id(),
+      offer.resources(),
+      "test `cat path1/file` = abc");
+
+  // Launch a task to verify that: if the fixture parameter is NONE or PATH,
+  // `SHRINK_VOLUME` takes effect on the agent and the task can use the shrunk
+  // volume as well as the freed disk resource; otherwise, `SHRINK_VOLUME`
+  // takes no effect on the agent.
+  driver.acceptOffers({offer.id()}, {LAUNCH({task})}, filters);
+
+  AWAIT_READY(taskStarting);
+  EXPECT_EQ(task.task_id(), taskStarting->task_id());
+  EXPECT_EQ(TASK_STARTING, taskStarting->state());
+
+  AWAIT_READY(taskRunning);
+  EXPECT_EQ(task.task_id(), taskRunning->task_id());
+  EXPECT_EQ(TASK_RUNNING, taskRunning->state());
+
+  AWAIT_READY(taskFinished);
+  EXPECT_EQ(task.task_id(), taskFinished->task_id());
+  EXPECT_EQ(TASK_FINISHED, taskFinished->state());
+
+  driver.stop();
+  driver.join();
+
+  Clock::resume();
+}
+
+
+// This test verifies that any task to launch after a `GROW_VOLUME` in the same
+// `ACCEPT` call is dropped if the task consumes the original or grown volume,
+// because we intend to make `GROW_VOLUME` non-speculative.
+TEST_P(PersistentVolumeTest, NonSpeculativeGrowAndLaunch)
+{
+  if (GetParam() == MOUNT) {
+    // It is not possible to have a valid `GrowVolume` on a MOUNT disk because
+    // the volume must use up all disk space at `Create` and no space will be
+    // left for `addition`. Therefore we skip this test.
+    // TODO(zhitao): Make MOUNT a meaningful parameter value for this test, or
+    // create a new fixture to avoid testing against it.
+    return;
+  }
+
+  Clock::pause();
+
+  FrameworkInfo frameworkInfo = DEFAULT_FRAMEWORK_INFO;
+  frameworkInfo.set_roles(0, DEFAULT_TEST_ROLE);
+
+  // Create a master.
+  master::Flags masterFlags = CreateMasterFlags();
+
+  Try<Owned<cluster::Master>> master = StartMaster(masterFlags);
+  ASSERT_SOME(master);
+
+  slave::Flags slaveFlags = CreateSlaveFlags();
+  slaveFlags.resources = getSlaveResources();
+
+  Owned<MasterDetector> detector = master.get()->createDetector();
+  Try<Owned<cluster::Slave>> slave = StartSlave(detector.get(), slaveFlags);
+  ASSERT_SOME(slave);
+
+  MockScheduler sched;
+  MesosSchedulerDriver driver(
+      &sched, frameworkInfo, master.get()->pid, DEFAULT_CREDENTIAL);
+
+  EXPECT_CALL(sched, registered(&driver, _, _));
+
+  Future<vector<Offer>> offersBeforeOperations;
+  EXPECT_CALL(sched, resourceOffers(&driver, _))
+    .WillOnce(FutureArg<1>(&offersBeforeOperations));
+
+  driver.start();
+
+  Clock::settle();
+  Clock::advance(masterFlags.allocation_interval);
+
+  AWAIT_READY(offersBeforeOperations);
+  ASSERT_FALSE(offersBeforeOperations->empty());
+
+  Offer offer = offersBeforeOperations->at(0);
+
+  // Disk spaces will be merged if fixture parameter is `NONE`.
+  Bytes totalBytes = GetParam() == NONE ? Megabytes(4096) : Megabytes(2048);
+
+  Bytes additionBytes = Megabytes(512);
+
+  // Construct a persistent volume which do not use up all disk resources.
+  Resource volume = createPersistentVolume(
+      getDiskResource(totalBytes - additionBytes, 1),
+      "id1",
+      "path1",
+      None(),
+      frameworkInfo.principal());
+
+  Resource addition = getDiskResource(additionBytes, 1);
+
+  Resource grownVolume = createPersistentVolume(
+      getDiskResource(totalBytes, 1),
+      "id1",
+      "path1",
+      None(),
+      frameworkInfo.principal());
+
+  Future<TaskStatus> taskError1;
+  Future<TaskStatus> taskError2;
+
+  EXPECT_CALL(sched, statusUpdate(&driver, _))
+    .WillOnce(FutureArg<1>(&taskError1))
+    .WillOnce(FutureArg<1>(&taskError2));
+
+  TaskInfo task1 = createTask(
+      offer.slave_id(),
+      Resources::parse("cpus:1;mem:128").get() + grownVolume,
+      "echo abc > path1/file");
+
+  TaskInfo task2 = createTask(
+      offer.slave_id(),
+      Resources::parse("cpus:1;mem:128").get() + volume,
+      "echo abc > path1/file");
+
+  Future<vector<Offer>> offersAfterOperations;
+
+  EXPECT_CALL(sched, resourceOffers(&driver, _))
+    .WillOnce(FutureArg<1>(&offersAfterOperations));
+
+  // We use the filter explicitly here so that the resources will not
+  // be filtered for 5 seconds (the default).
+  Filters filters;
+  filters.set_refuse_seconds(0);
+
+  // The create and grow volume operations will succeed, but the tasks will be
+  // dropped with `TASK_ERROR`.
+  driver.acceptOffers(
+      {offer.id()},
+      {CREATE(volume), GROW_VOLUME(volume, addition), LAUNCH({task1, task2})},
+      filters);
+
+  AWAIT_READY(taskError1);
+  AWAIT_READY(taskError2);
+
+  hashset<TaskID> expectedTasks = {task1.task_id(), task2.task_id()};
+  hashset<TaskID> actualTasks = {taskError1->task_id(), taskError2->task_id()};
+  EXPECT_EQ(expectedTasks, actualTasks);
+  EXPECT_EQ(TASK_ERROR, taskError1->state());
+  EXPECT_EQ(TASK_ERROR, taskError2->state());
+
+  Clock::settle();
+  Clock::advance(masterFlags.allocation_interval);
+
+  AWAIT_READY(offersAfterOperations);
+  ASSERT_FALSE(offersAfterOperations->empty());
+
+  offer = offersAfterOperations->at(0);
+
+  EXPECT_EQ(
+      allocatedResources(Resources(grownVolume), frameworkInfo.roles(0)),
+      Resources(offer.resources()).persistentVolumes());
+
+  driver.stop();
+  driver.join();
+
+  Clock::resume();
+}
+
+
+// This test verifies that any task to launch after a `SHRINK_VOLUME` in the
+// same `ACCEPT` call is dropped if the task consumes the original or shrunk
+// volume, because we intend to make `SHRINK_VOLUME` non-speculative.
+TEST_P(PersistentVolumeTest, NonSpeculativeShrinkAndLaunch)
+{
+  if (GetParam() == MOUNT) {
+    // It is not possible to have a valid `GrowVolume` on a MOUNT disk because
+    // the volume must use up all disk space at `Create` and no space will be
+    // left for `addition`. Therefore we skip this test.
+    // TODO(zhitao): Make MOUNT a meaningful parameter value for this test, or
+    // create a new fixture to avoid testing against it.
+    return;
+  }
+
+  Clock::pause();
+
+  FrameworkInfo frameworkInfo = DEFAULT_FRAMEWORK_INFO;
+  frameworkInfo.set_roles(0, DEFAULT_TEST_ROLE);
+
+  // Create a master.
+  master::Flags masterFlags = CreateMasterFlags();
+  Try<Owned<cluster::Master>> master = StartMaster(masterFlags);
+  ASSERT_SOME(master);
+
+  slave::Flags slaveFlags = CreateSlaveFlags();
+  slaveFlags.resources = getSlaveResources();
+
+  Owned<MasterDetector> detector = master.get()->createDetector();
+  Try<Owned<cluster::Slave>> slave = StartSlave(detector.get(), slaveFlags);
+  ASSERT_SOME(slave);
+
+  MockScheduler sched;
+  MesosSchedulerDriver driver(
+      &sched, frameworkInfo, master.get()->pid, DEFAULT_CREDENTIAL);
+
+  EXPECT_CALL(sched, registered(&driver, _, _));
+
+  Future<vector<Offer>> offersBeforeOperations;
+  EXPECT_CALL(sched, resourceOffers(&driver, _))
+    .WillOnce(FutureArg<1>(&offersBeforeOperations));
+
+  driver.start();
+
+  Clock::advance(masterFlags.allocation_interval);
+
+  AWAIT_READY(offersBeforeOperations);
+  ASSERT_FALSE(offersBeforeOperations->empty());
+
+  Offer offer = offersBeforeOperations->at(0);
+
+  Resource volume = createPersistentVolume(
+      getDiskResource(Megabytes(1024), 1),
+      "id1",
+      "path1",
+      None(),
+      frameworkInfo.principal());
+
+  Value::Scalar subtract;
+  subtract.set_value(512);
+
+  Resource shrunkVolume = createPersistentVolume(
+      getDiskResource(Megabytes(512), 1),
+      "id1",
+      "path1",
+      None(),
+      frameworkInfo.principal());
+
+  Future<TaskStatus> taskError1;
+  Future<TaskStatus> taskError2;
+
+  EXPECT_CALL(sched, statusUpdate(&driver, _))
+    .WillOnce(FutureArg<1>(&taskError1))
+    .WillOnce(FutureArg<1>(&taskError2));
+
+  TaskInfo task1 = createTask(
+      offer.slave_id(),
+      Resources::parse("cpus:1;mem:128").get() + shrunkVolume,
+      "echo abc > path1/file");
+
+  TaskInfo task2 = createTask(
+      offer.slave_id(),
+      Resources::parse("cpus:1;mem:128").get() + volume,
+      "echo abc > path1/file");
+
+  Future<vector<Offer>> offersAfterOperations;
+
+  EXPECT_CALL(sched, resourceOffers(&driver, _))
+    .WillOnce(FutureArg<1>(&offersAfterOperations));
+
+  // We use the filter explicitly here so that the resources will not
+  // be filtered for 5 seconds (the default).
+  Filters filters;
+  filters.set_refuse_seconds(0);
+
+  // The create and shrink volume operations will succeed, but the tasks will be
+  // dropped with `TASK_ERROR`.
+  driver.acceptOffers(
+      {offer.id()},
+      {CREATE(volume), SHRINK_VOLUME(volume, subtract), LAUNCH({task1, task2})},
+      filters);
+
+  AWAIT_READY(taskError1);
+  AWAIT_READY(taskError2);
+
+  hashset<TaskID> expectedTasks = {task1.task_id(), task2.task_id()};
+  hashset<TaskID> actualTasks = {taskError1->task_id(), taskError2->task_id()};
+  EXPECT_EQ(expectedTasks, actualTasks);
+  EXPECT_EQ(TASK_ERROR, taskError1->state());
+  EXPECT_EQ(TASK_ERROR, taskError2->state());
+
+  Clock::settle();
+  Clock::advance(masterFlags.allocation_interval);
+
+  AWAIT_READY(offersAfterOperations);
+  ASSERT_FALSE(offersAfterOperations->empty());
+  offer = offersAfterOperations->at(0);
+
+  EXPECT_EQ(
+      allocatedResources(Resources(shrunkVolume), frameworkInfo.roles(0)),
+      Resources(offer.resources()).persistentVolumes());
+
+  driver.stop();
+  driver.join();
+
+  Clock::resume();
+}
+
+
+// This test verifies that grow and shrink operations can complete
+// successfully when authorization succeeds.
+TEST_P(PersistentVolumeTest, GoodACLGrowThenShrink)
+{
+  if (GetParam() == MOUNT) {
+    // It is not possible to have a valid `GrowVolume` on a MOUNT disk because
+    // the volume must use up all disk space at `Create` and no space will be
+    // left for `addition`. Therefore we skip this test.
+    // TODO(zhitao): Make MOUNT a meaningful parameter value for this test, or
+    // create a new fixture to avoid testing against it.
+    return;
+  }
+
+  Clock::pause();
+
+  ACLs acls;
+
+  // This ACL declares that the principal of `DEFAULT_CREDENTIAL`
+  // can resize persistent volumes for DEFAULT_TEST_ROLE.
+  mesos::ACL::ResizeVolume* resize = acls.add_resize_volumes();
+  resize->mutable_principals()->add_values(DEFAULT_CREDENTIAL.principal());
+  resize->mutable_roles()->add_values(DEFAULT_TEST_ROLE);
+
+  // Create a master.
+  master::Flags masterFlags = CreateMasterFlags();
+  masterFlags.acls = acls;
+
+  Try<Owned<cluster::Master>> master = StartMaster(masterFlags);
+  ASSERT_SOME(master);
+
+  slave::Flags slaveFlags = CreateSlaveFlags();
+  slaveFlags.resources = getSlaveResources();
+
+  Owned<MasterDetector> detector = master.get()->createDetector();
+  Try<Owned<cluster::Slave>> slave = StartSlave(detector.get(), slaveFlags);
+  ASSERT_SOME(slave);
+
+  FrameworkInfo frameworkInfo = DEFAULT_FRAMEWORK_INFO;
+  frameworkInfo.set_roles(0, DEFAULT_TEST_ROLE);
+
+  MockScheduler sched;
+  MesosSchedulerDriver driver(
+      &sched, frameworkInfo, master.get()->pid, DEFAULT_CREDENTIAL);
+
+  EXPECT_CALL(sched, registered(&driver, _, _));
+
+  Future<vector<Offer>> offersBeforeCreate;
+  EXPECT_CALL(sched, resourceOffers(&driver, _))
+    .WillOnce(FutureArg<1>(&offersBeforeCreate));
+
+  driver.start();
+
+  Clock::advance(masterFlags.allocation_interval);
+
+  AWAIT_READY(offersBeforeCreate);
+  ASSERT_FALSE(offersBeforeCreate->empty());
+
+  Offer offer = offersBeforeCreate->at(0);
+
+  // The disk spaces will be merged if the fixture parameter is `NONE`.
+  Bytes totalBytes = GetParam() == NONE ? Megabytes(4096) : Megabytes(2048);
+
+  Bytes bytesDifference = Megabytes(512);
+
+  // Construct a persistent volume which do not use up all disk resources.
+  Resource volume = createPersistentVolume(
+      getDiskResource(totalBytes - bytesDifference, 1),
+      "id1",
+      "path1",
+      None(),
+      frameworkInfo.principal());
+
+  Resource difference = getDiskResource(bytesDifference, 1);
+
+  Resource grownVolume = createPersistentVolume(
+      getDiskResource(totalBytes, 1),
+      "id1",
+      "path1",
+      None(),
+      frameworkInfo.principal());
+
+  Future<vector<Offer>> offersAfterGrow;
+
+  EXPECT_CALL(sched, resourceOffers(&driver, _))
+    .WillOnce(FutureArg<1>(&offersAfterGrow));
+
+  // We use the filter explicitly here so that the resources will not
+  // be filtered for 5 seconds (the default).
+  Filters filters;
+  filters.set_refuse_seconds(0);
+
+  // Create a persistent volume then grow it.
+  driver.acceptOffers(
+      {offer.id()},
+      {CREATE(volume), GROW_VOLUME(volume, difference)},
+      filters);
+
+  Clock::settle();
+  Clock::advance(masterFlags.allocation_interval);
+
+  AWAIT_READY(offersAfterGrow);
+  ASSERT_FALSE(offersAfterGrow->empty());
+
+  offer = offersAfterGrow->at(0);
+
+  EXPECT_EQ(
+      allocatedResources(Resources(grownVolume), frameworkInfo.roles(0)),
+      Resources(offer.resources()).persistentVolumes());
+
+  EXPECT_FALSE(
+      Resources(offer.resources()).contains(
+      allocatedResources(difference, frameworkInfo.roles(0))));
+
+  Future<vector<Offer>> offersAfterShrink;
+
+  EXPECT_CALL(sched, resourceOffers(&driver, _))
+    .WillOnce(FutureArg<1>(&offersAfterShrink));
+
+  // Shrink the volume back to original size.
+  driver.acceptOffers(
+      {offer.id()},
+      {SHRINK_VOLUME(grownVolume, difference.scalar())},
+      filters);
+
+  Clock::settle();
+  Clock::advance(masterFlags.allocation_interval);
+
+  AWAIT_READY(offersAfterShrink);
+  ASSERT_FALSE(offersAfterShrink->empty());
+  offer = offersAfterShrink->at(0);
+
+  EXPECT_EQ(
+      allocatedResources(Resources(volume), frameworkInfo.roles(0)),
+      Resources(offer.resources()).persistentVolumes());
+
+  EXPECT_TRUE(
+      Resources(offer.resources()).contains(
+      allocatedResources(difference, frameworkInfo.roles(0))));
+
+  driver.stop();
+  driver.join();
+
+  Clock::resume();
+}
+
+// This test verifies that grow and shrink operations get dropped if
+// authorization fails and no principal is supplied.
+TEST_P(PersistentVolumeTest, BadACLDropGrowAndShrink)
+{
+  if (GetParam() == MOUNT) {
+    // It is not possible to have a valid `GrowVolume` on a MOUNT disk because
+    // the volume must use up all disk space at `Create` and no space will be
+    // left for `addition`. Therefore we skip this test.
+    // TODO(zhitao): Make MOUNT a meaningful parameter value for this test, or
+    // create a new fixture to avoid testing against it.
+    return;
+  }
+
+  Clock::pause();
+
+  ACLs acls;
+
+  // This ACL declares that no principal can resize any volume.
+  mesos::ACL::ResizeVolume* resize = acls.add_resize_volumes();
+  resize->mutable_principals()->set_type(mesos::ACL::Entity::ANY);
+  resize->mutable_roles()->set_type(mesos::ACL::Entity::NONE);
+
+  // Create a master.
+  master::Flags masterFlags = CreateMasterFlags();
+  masterFlags.acls = acls;
+
+  Try<Owned<cluster::Master>> master = StartMaster(masterFlags);
+  ASSERT_SOME(master);
+
+  slave::Flags slaveFlags = CreateSlaveFlags();
+  slaveFlags.resources = getSlaveResources();
+
+  Owned<MasterDetector> detector = master.get()->createDetector();
+  Try<Owned<cluster::Slave>> slave = StartSlave(detector.get(), slaveFlags);
+  ASSERT_SOME(slave);
+
+  // DEFAULT_FRAMEWORK_INFO uses DEFAULT_CREDENTIAL.
+  FrameworkInfo frameworkInfo1 = DEFAULT_FRAMEWORK_INFO;
+  frameworkInfo1.set_roles(0, DEFAULT_TEST_ROLE);
+
+  MockScheduler sched1;
+  MesosSchedulerDriver driver1(
+      &sched1, frameworkInfo1, master.get()->pid, DEFAULT_CREDENTIAL);
+
+  EXPECT_CALL(sched1, registered(&driver1, _, _));
+
+  Future<vector<Offer>> offersBeforeCreate;
+  EXPECT_CALL(sched1, resourceOffers(&driver1, _))
+    .WillOnce(FutureArg<1>(&offersBeforeCreate));
+
+  driver1.start();
+
+  Clock::advance(masterFlags.allocation_interval);
+
+  AWAIT_READY(offersBeforeCreate);
+  ASSERT_FALSE(offersBeforeCreate->empty());
+
+  Offer offer = offersBeforeCreate->at(0);
+
+  // Disk spaces will be merged if fixture parameter is `NONE`.
+  Bytes totalBytes = GetParam() == NONE ? Megabytes(4096) : Megabytes(2048);
+
+  Bytes bytesDifference = Megabytes(512);
+
+  // Construct a persistent volume which does not use up all disk resources.
+  Resource volume = createPersistentVolume(
+      getDiskResource(totalBytes - bytesDifference, 1),
+      "id1",
+      "path1",
+      None(),
+      frameworkInfo1.principal());
+
+  Resource difference = getDiskResource(bytesDifference, 1);
+
+  Resource grownVolume = createPersistentVolume(
+      getDiskResource(totalBytes, 1),
+      "id1",
+      "path1",
+      None(),
+      frameworkInfo1.principal());
+
+  Future<vector<Offer>> offersAfterGrow1;
+
+  EXPECT_CALL(sched1, resourceOffers(&driver1, _))
+    .WillOnce(FutureArg<1>(&offersAfterGrow1));
+
+  // We use the filter explicitly here so that the resources will not
+  // be filtered for 5 seconds (the default).
+  Filters filters;
+  filters.set_refuse_seconds(0);
+
+  // Creating the persistent volume will succeed, but growing will fail due to
+  // ACL.
+  driver1.acceptOffers(
+      {offer.id()},
+      {CREATE(volume), GROW_VOLUME(volume, difference)},
+      filters);
+
+  Clock::settle();
+  Clock::advance(masterFlags.allocation_interval);
+
+  AWAIT_READY(offersAfterGrow1);
+  ASSERT_FALSE(offersAfterGrow1->empty());
+
+  offer = offersAfterGrow1->at(0);
+
+  EXPECT_EQ(
+      allocatedResources(Resources(volume), DEFAULT_TEST_ROLE),
+      Resources(offer.resources()).persistentVolumes());
+
+  EXPECT_TRUE(
+      Resources(offer.resources()).contains(
+      allocatedResources(difference, DEFAULT_TEST_ROLE)));
+
+  Future<vector<Offer>> offersAfterShrink1;
+
+  EXPECT_CALL(sched1, resourceOffers(&driver1, _))
+    .WillOnce(FutureArg<1>(&offersAfterShrink1));
+
+  driver1.acceptOffers(
+      {offer.id()},
+      {SHRINK_VOLUME(volume, difference.scalar())},
+      filters);
+
+  Clock::settle();
+  Clock::advance(masterFlags.allocation_interval);
+
+  AWAIT_READY(offersAfterShrink1);
+  ASSERT_FALSE(offersAfterShrink1->empty());
+
+  offer = offersAfterShrink1->at(0);
+
+  EXPECT_EQ(
+      allocatedResources(Resources(volume), DEFAULT_TEST_ROLE),
+      Resources(offer.resources()).persistentVolumes());
+
+  driver1.stop();
+  driver1.join();
+
+  // Start the second framework with no principal.
+  FrameworkInfo frameworkInfo2 = DEFAULT_FRAMEWORK_INFO;
+  frameworkInfo2.clear_principal();
+  frameworkInfo2.set_roles(0, DEFAULT_TEST_ROLE);
+
+  MockScheduler sched2;
+  MesosSchedulerDriver driver2(
+      &sched2, frameworkInfo2, master.get()->pid, DEFAULT_CREDENTIAL);
+
+  EXPECT_CALL(sched2, registered(&driver2, _, _));
+
+  Future<vector<Offer>> offersBeforeGrow2;
+  EXPECT_CALL(sched2, resourceOffers(&driver2, _))
+    .WillOnce(FutureArg<1>(&offersBeforeGrow2));
+
+  driver2.start();
+
+  Clock::settle();
+  Clock::advance(masterFlags.allocation_interval);
+
+  AWAIT_READY(offersBeforeGrow2);
+  ASSERT_FALSE(offersBeforeGrow2->empty());
+
+  offer = offersBeforeGrow2->at(0);
+
+  EXPECT_EQ(
+      allocatedResources(Resources(volume), DEFAULT_TEST_ROLE),
+      Resources(offer.resources()).persistentVolumes());
+
+  EXPECT_TRUE(
+      Resources(offer.resources()).contains(
+      allocatedResources(difference, DEFAULT_TEST_ROLE)));
+
+  Future<vector<Offer>> offersAfterGrow2;
+
+  EXPECT_CALL(sched2, resourceOffers(&driver2, _))
+    .WillOnce(FutureArg<1>(&offersAfterGrow2));
+
+  driver2.acceptOffers(
+      {offer.id()},
+      {GROW_VOLUME(volume, difference)},
+      filters);
+
+  Clock::settle();
+  Clock::advance(masterFlags.allocation_interval);
+
+  AWAIT_READY(offersAfterGrow2);
+  ASSERT_FALSE(offersAfterGrow2->empty());
+  offer = offersAfterGrow2->at(0);
+
+  EXPECT_EQ(
+      allocatedResources(Resources(volume), DEFAULT_TEST_ROLE),
+      Resources(offer.resources()).persistentVolumes());
+
+  Future<vector<Offer>> offersAfterShrink2;
+
+  EXPECT_CALL(sched2, resourceOffers(&driver2, _))
+    .WillOnce(FutureArg<1>(&offersAfterShrink2));
+
+  driver2.acceptOffers(
+      {offer.id()},
+      {SHRINK_VOLUME(volume, difference.scalar())},
+      filters);
+
+  Clock::settle();
+  Clock::advance(masterFlags.allocation_interval);
+
+  AWAIT_READY(offersAfterShrink2);
+  ASSERT_FALSE(offersAfterShrink2->empty());
+  offer = offersAfterShrink2->at(0);
+
+  EXPECT_EQ(
+      allocatedResources(Resources(volume), DEFAULT_TEST_ROLE),
+      Resources(offer.resources()).persistentVolumes());
+
+  driver2.stop();
+  driver2.join();
+
+  Clock::resume();
+}
+
+
 // This test verifies that the slave checkpoints the resources for
 // persistent volumes to the disk, recovers them upon restart, and
 // sends them to the master during re-registration.
@@ -526,13 +1479,14 @@ TEST_P(PersistentVolumeTest, ResourcesCheckpointing)
   slave::Flags slaveFlags = CreateSlaveFlags();
   slaveFlags.resources = getSlaveResources();
 
-  Future<Nothing> slaveReady = getSlaveReady();
+  Future<UpdateSlaveMessage> updateSlaveMessage =
+    FUTURE_PROTOBUF(UpdateSlaveMessage(), _, _);
 
   Owned<MasterDetector> detector = master.get()->createDetector();
   Try<Owned<cluster::Slave>> slave = StartSlave(detector.get(), slaveFlags);
   ASSERT_SOME(slave);
 
-  AWAIT_READY(slaveReady);
+  AWAIT_READY(updateSlaveMessage);
 
   FrameworkInfo frameworkInfo = DEFAULT_FRAMEWORK_INFO;
   frameworkInfo.set_roles(0, DEFAULT_TEST_ROLE);
@@ -581,12 +1535,10 @@ TEST_P(PersistentVolumeTest, ResourcesCheckpointing)
 
   AWAIT_READY(reregisterSlave);
 
-  google::protobuf::RepeatedPtrField<Resource> checkpointedResources =
-    reregisterSlave->checkpointed_resources();
+  ReregisterSlaveMessage reregisterSlave_ = reregisterSlave.get();
+  upgradeResources(&reregisterSlave_);
 
-  convertResourceFormat(&checkpointedResources, POST_RESERVATION_REFINEMENT);
-
-  EXPECT_EQ(Resources(checkpointedResources), volume);
+  EXPECT_EQ(Resources(reregisterSlave_.checkpointed_resources()), volume);
 
   driver.stop();
   driver.join();
@@ -601,13 +1553,14 @@ TEST_P(PersistentVolumeTest, PreparePersistentVolume)
   slave::Flags slaveFlags = CreateSlaveFlags();
   slaveFlags.resources = getSlaveResources();
 
-  Future<Nothing> slaveReady = getSlaveReady();
+  Future<UpdateSlaveMessage> updateSlaveMessage =
+    FUTURE_PROTOBUF(UpdateSlaveMessage(), _, _);
 
   Owned<MasterDetector> detector = master.get()->createDetector();
   Try<Owned<cluster::Slave>> slave = StartSlave(detector.get(), slaveFlags);
   ASSERT_SOME(slave);
 
-  AWAIT_READY(slaveReady);
+  AWAIT_READY(updateSlaveMessage);
 
   FrameworkInfo frameworkInfo = DEFAULT_FRAMEWORK_INFO;
   frameworkInfo.set_roles(0, DEFAULT_TEST_ROLE);
@@ -674,12 +1627,13 @@ TEST_P(PersistentVolumeTest, MasterFailover)
   slave::Flags slaveFlags = CreateSlaveFlags();
   slaveFlags.resources = getSlaveResources();
 
-  Future<Nothing> slaveReady1 = getSlaveReady();
+  Future<UpdateSlaveMessage> updateSlaveMessage1 =
+    FUTURE_PROTOBUF(UpdateSlaveMessage(), _, _);
 
   Try<Owned<cluster::Slave>> slave = StartSlave(&detector, slaveFlags);
   ASSERT_SOME(slave);
 
-  AWAIT_READY(slaveReady1);
+  AWAIT_READY(updateSlaveMessage1);
 
   FrameworkInfo frameworkInfo = DEFAULT_FRAMEWORK_INFO;
   frameworkInfo.set_roles(0, DEFAULT_TEST_ROLE);
@@ -728,10 +1682,8 @@ TEST_P(PersistentVolumeTest, MasterFailover)
 
   EXPECT_CALL(sched, registered(&driver, _, _));
 
-  Future<SlaveReregisteredMessage> slaveReregistered =
-    FUTURE_PROTOBUF(SlaveReregisteredMessage(), _, _);
-
-  Future<Nothing> slaveReady2 = getSlaveReady();
+  Future<UpdateSlaveMessage> updateSlaveMessage2 =
+    FUTURE_PROTOBUF(UpdateSlaveMessage(), _, _);
 
   Future<vector<Offer>> offers2;
   EXPECT_CALL(sched, resourceOffers(&driver, _))
@@ -751,8 +1703,7 @@ TEST_P(PersistentVolumeTest, MasterFailover)
   Clock::settle();
   Clock::resume();
 
-  AWAIT_READY(slaveReregistered);
-  AWAIT_READY(slaveReady2);
+  AWAIT_READY(updateSlaveMessage2);
 
   AWAIT_READY(offers2);
   ASSERT_FALSE(offers2->empty());
@@ -778,7 +1729,8 @@ TEST_P(PersistentVolumeTest, IncompatibleCheckpointedResources)
   slave::Flags slaveFlags = CreateSlaveFlags();
   slaveFlags.resources = getSlaveResources();
 
-  Future<Nothing> slaveReady = getSlaveReady();
+  Future<UpdateSlaveMessage> updateSlaveMessage =
+    FUTURE_PROTOBUF(UpdateSlaveMessage(), _, _);
 
   MockExecutor exec(DEFAULT_EXECUTOR_ID);
   TestContainerizer containerizer(&exec);
@@ -795,7 +1747,7 @@ TEST_P(PersistentVolumeTest, IncompatibleCheckpointedResources)
 
   slave1.get()->start();
 
-  AWAIT_READY(slaveReady);
+  AWAIT_READY(updateSlaveMessage);
 
   FrameworkInfo frameworkInfo = DEFAULT_FRAMEWORK_INFO;
   frameworkInfo.set_roles(0, DEFAULT_TEST_ROLE);
@@ -884,7 +1836,8 @@ TEST_P(PersistentVolumeTest, AccessPersistentVolume)
 
   slaveFlags.resources = getSlaveResources();
 
-  Future<Nothing> slaveReady = getSlaveReady();
+  Future<UpdateSlaveMessage> updateSlaveMessage =
+    FUTURE_PROTOBUF(UpdateSlaveMessage(), _, _);
 
   Owned<MasterDetector> detector = master.get()->createDetector();
   Try<Owned<cluster::Slave>> slave = StartSlave(detector.get(), slaveFlags);
@@ -892,7 +1845,7 @@ TEST_P(PersistentVolumeTest, AccessPersistentVolume)
 
   Clock::advance(slaveFlags.registration_backoff_factor);
   Clock::settle();
-  AWAIT_READY(slaveReady);
+  AWAIT_READY(updateSlaveMessage);
 
   FrameworkInfo frameworkInfo = DEFAULT_FRAMEWORK_INFO;
   frameworkInfo.set_roles(0, DEFAULT_TEST_ROLE);
@@ -1021,11 +1974,7 @@ TEST_P(PersistentVolumeTest, AccessPersistentVolume)
   driver.acceptOffers({offer.id()}, {DESTROY(volume)});
 
   AWAIT_READY(message);
-  if (::testing::get<1>(GetParam()) == ENABLED) {
-    EXPECT_TRUE(message->contains(volume));
-  } else {
-    EXPECT_FALSE(message->contains(volume));
-  }
+  EXPECT_TRUE(message->contains(volume));
 
   // Ensure that operation message reaches the slave.
   Clock::settle();
@@ -1036,7 +1985,7 @@ TEST_P(PersistentVolumeTest, AccessPersistentVolume)
   // delete all of the files and subdirectories underneath it). For
   // non-MOUNT disks, the volume directory should be removed when the
   // volume is destroyed.
-  if (::testing::get<0>(GetParam()) == MOUNT) {
+  if (GetParam() == MOUNT) {
     EXPECT_TRUE(os::exists(volumePath));
 
     Try<list<string>> files = ::fs::list(path::join(volumePath, "*"));
@@ -1064,13 +2013,14 @@ TEST_P(PersistentVolumeTest, SharedPersistentVolumeMultipleTasks)
   slaveFlags.resources =
     "cpus:2;mem:1024;disk(" + string(DEFAULT_TEST_ROLE) + "):1024";
 
-  Future<Nothing> slaveReady = getSlaveReady();
+  Future<UpdateSlaveMessage> updateSlaveMessage =
+    FUTURE_PROTOBUF(UpdateSlaveMessage(), _, _);
 
   Owned<MasterDetector> detector = master.get()->createDetector();
   Try<Owned<cluster::Slave>> slave = StartSlave(detector.get(), slaveFlags);
   ASSERT_SOME(slave);
 
-  AWAIT_READY(slaveReady);
+  AWAIT_READY(updateSlaveMessage);
 
   FrameworkInfo frameworkInfo = DEFAULT_FRAMEWORK_INFO;
   frameworkInfo.set_roles(0, DEFAULT_TEST_ROLE);
@@ -1187,7 +2137,8 @@ TEST_P(PersistentVolumeTest, SharedPersistentVolumeRescindOnDestroy)
 
   slaveFlags.resources = getSlaveResources();
 
-  Future<Nothing> slaveReady = getSlaveReady();
+  Future<UpdateSlaveMessage> updateSlaveMessage =
+    FUTURE_PROTOBUF(UpdateSlaveMessage(), _, _);
 
   Owned<MasterDetector> detector = master.get()->createDetector();
   Try<Owned<cluster::Slave>> slave = StartSlave(detector.get(), slaveFlags);
@@ -1195,7 +2146,7 @@ TEST_P(PersistentVolumeTest, SharedPersistentVolumeRescindOnDestroy)
 
   Clock::advance(slaveFlags.registration_backoff_factor);
   Clock::settle();
-  AWAIT_READY(slaveReady);
+  AWAIT_READY(updateSlaveMessage);
 
   // 1. Create framework1 so that all resources are offered to this framework.
   FrameworkInfo frameworkInfo1 = DEFAULT_FRAMEWORK_INFO;
@@ -1367,7 +2318,8 @@ TEST_P(PersistentVolumeTest, SharedPersistentVolumeMultipleFrameworks)
 
   slaveFlags.resources = getSlaveResources();
 
-  Future<Nothing> slaveReady = getSlaveReady();
+  Future<UpdateSlaveMessage> updateSlaveMessage =
+    FUTURE_PROTOBUF(UpdateSlaveMessage(), _, _);
 
   Owned<MasterDetector> detector = master.get()->createDetector();
   Try<Owned<cluster::Slave>> slave = StartSlave(detector.get(), slaveFlags);
@@ -1375,7 +2327,7 @@ TEST_P(PersistentVolumeTest, SharedPersistentVolumeMultipleFrameworks)
 
   Clock::advance(slaveFlags.registration_backoff_factor);
   Clock::settle();
-  AWAIT_READY(slaveReady);
+  AWAIT_READY(updateSlaveMessage);
 
   // 1. Create framework1 so that all resources are offered to this framework.
   FrameworkInfo frameworkInfo1 = DEFAULT_FRAMEWORK_INFO;
@@ -1562,12 +2514,13 @@ TEST_P(PersistentVolumeTest, SharedPersistentVolumeMasterFailover)
   slave::Flags slaveFlags = CreateSlaveFlags();
   slaveFlags.resources = getSlaveResources();
 
-  Future<Nothing> slaveReady1 = getSlaveReady();
+  Future<UpdateSlaveMessage> updateSlaveMessage1 =
+    FUTURE_PROTOBUF(UpdateSlaveMessage(), _, _);
 
   Try<Owned<cluster::Slave>> slave = StartSlave(&detector, slaveFlags);
   ASSERT_SOME(slave);
 
-  AWAIT_READY(slaveReady1);
+  AWAIT_READY(updateSlaveMessage1);
 
   // Create the framework with SHARED_RESOURCES capability.
   FrameworkInfo frameworkInfo = DEFAULT_FRAMEWORK_INFO;
@@ -1653,10 +2606,8 @@ TEST_P(PersistentVolumeTest, SharedPersistentVolumeMasterFailover)
 
   EXPECT_CALL(sched, registered(&driver, _, _));
 
-  Future<SlaveReregisteredMessage> slaveReregistered =
-    FUTURE_PROTOBUF(SlaveReregisteredMessage(), _, _);
-
-  Future<Nothing> slaveReady2 = getSlaveReady();
+  Future<UpdateSlaveMessage> updateSlaveMessage2 =
+    FUTURE_PROTOBUF(UpdateSlaveMessage(), _, _);
 
   Future<vector<Offer>> offers2;
   EXPECT_CALL(sched, resourceOffers(&driver, _))
@@ -1670,8 +2621,7 @@ TEST_P(PersistentVolumeTest, SharedPersistentVolumeMasterFailover)
   // slave will do a re-registration.
   detector.appoint(master.get()->pid);
 
-  AWAIT_READY(slaveReregistered);
-  AWAIT_READY(slaveReady2);
+  AWAIT_READY(updateSlaveMessage2);
 
   AWAIT_READY(offers2);
   ASSERT_FALSE(offers2->empty());
@@ -1720,7 +2670,8 @@ TEST_P(PersistentVolumeTest, DestroyPersistentVolumeMultipleTasks)
   slave::Flags slaveFlags = CreateSlaveFlags();
   slaveFlags.resources = getSlaveResources();
 
-  Future<Nothing> slaveReady = getSlaveReady();
+  Future<UpdateSlaveMessage> updateSlaveMessage =
+    FUTURE_PROTOBUF(UpdateSlaveMessage(), _, _);
 
   Owned<MasterDetector> detector = master.get()->createDetector();
   Try<Owned<cluster::Slave>> slave = StartSlave(detector.get(), slaveFlags);
@@ -1728,7 +2679,7 @@ TEST_P(PersistentVolumeTest, DestroyPersistentVolumeMultipleTasks)
 
   Clock::advance(slaveFlags.registration_backoff_factor);
   Clock::settle();
-  AWAIT_READY(slaveReady);
+  AWAIT_READY(updateSlaveMessage);
 
   // Create a scheduler/framework.
   MockScheduler sched;
@@ -1940,7 +2891,8 @@ TEST_P(PersistentVolumeTest, SharedPersistentVolumeMultipleIterations)
 
   slaveFlags.resources = getSlaveResources();
 
-  Future<Nothing> slaveReady = getSlaveReady();
+  Future<UpdateSlaveMessage> updateSlaveMessage =
+    FUTURE_PROTOBUF(UpdateSlaveMessage(), _, _);
 
   Owned<MasterDetector> detector = master.get()->createDetector();
   Try<Owned<cluster::Slave>> slave = StartSlave(detector.get(), slaveFlags);
@@ -1948,7 +2900,7 @@ TEST_P(PersistentVolumeTest, SharedPersistentVolumeMultipleIterations)
 
   Clock::advance(slaveFlags.registration_backoff_factor);
   Clock::settle();
-  AWAIT_READY(slaveReady);
+  AWAIT_READY(updateSlaveMessage);
 
   // 1. Create framework so that all resources are offered to this framework.
   FrameworkInfo frameworkInfo = DEFAULT_FRAMEWORK_INFO;
@@ -2085,13 +3037,14 @@ TEST_P(PersistentVolumeTest, SlaveRecovery)
 
   slaveFlags.resources = getSlaveResources();
 
-  Future<Nothing> slaveReady = getSlaveReady();
+  Future<UpdateSlaveMessage> updateSlaveMessage =
+    FUTURE_PROTOBUF(UpdateSlaveMessage(), _, _);
 
   Owned<MasterDetector> detector = master.get()->createDetector();
   Try<Owned<cluster::Slave>> slave = StartSlave(detector.get(), slaveFlags);
   ASSERT_SOME(slave);
 
-  AWAIT_READY(slaveReady);
+  AWAIT_READY(updateSlaveMessage);
 
   FrameworkInfo frameworkInfo = DEFAULT_FRAMEWORK_INFO;
   frameworkInfo.set_roles(0, DEFAULT_TEST_ROLE);
@@ -2191,7 +3144,7 @@ TEST_P(PersistentVolumeTest, SlaveRecovery)
 
   Clock::resume();
 
-  // Wait for the slave to re-register.
+  // Wait for the slave to reregister.
   AWAIT_READY(slaveReregisteredMessage);
 
   // The framework should not receive a TASK_FAILED here since the
@@ -2255,7 +3208,8 @@ TEST_P(PersistentVolumeTest, GoodACLCreateThenDestroy)
   slave::Flags slaveFlags = CreateSlaveFlags();
   slaveFlags.resources = getSlaveResources();
 
-  Future<Nothing> slaveReady = getSlaveReady();
+  Future<UpdateSlaveMessage> updateSlaveMessage =
+    FUTURE_PROTOBUF(UpdateSlaveMessage(), _, _);
 
   Owned<MasterDetector> detector = master.get()->createDetector();
   Try<Owned<cluster::Slave>> slave = StartSlave(detector.get(), slaveFlags);
@@ -2263,7 +3217,7 @@ TEST_P(PersistentVolumeTest, GoodACLCreateThenDestroy)
 
   Clock::advance(slaveFlags.registration_backoff_factor);
   Clock::settle();
-  AWAIT_READY(slaveReady);
+  AWAIT_READY(updateSlaveMessage);
 
   // Create a scheduler/framework.
   MockScheduler sched;
@@ -2337,11 +3291,7 @@ TEST_P(PersistentVolumeTest, GoodACLCreateThenDestroy)
       filters);
 
   AWAIT_READY(message2);
-  if (::testing::get<1>(GetParam()) == ENABLED) {
-    EXPECT_TRUE(message2->contains(volume));
-  } else {
-    EXPECT_FALSE(message2->contains(volume));
-  }
+  EXPECT_TRUE(message2->contains(volume));
 
   // Expect an offer that does not contain the persistent volume.
   EXPECT_CALL(sched, resourceOffers(&driver, _))
@@ -2411,7 +3361,8 @@ TEST_P(PersistentVolumeTest, GoodACLNoPrincipal)
   slave::Flags slaveFlags = CreateSlaveFlags();
   slaveFlags.resources = getSlaveResources();
 
-  Future<Nothing> slaveReady = getSlaveReady();
+  Future<UpdateSlaveMessage> updateSlaveMessage =
+    FUTURE_PROTOBUF(UpdateSlaveMessage(), _, _);
 
   Owned<MasterDetector> detector = master.get()->createDetector();
   Try<Owned<cluster::Slave>> slave = StartSlave(detector.get(), slaveFlags);
@@ -2419,7 +3370,7 @@ TEST_P(PersistentVolumeTest, GoodACLNoPrincipal)
 
   Clock::advance(slaveFlags.registration_backoff_factor);
   Clock::settle();
-  AWAIT_READY(slaveReady);
+  AWAIT_READY(updateSlaveMessage);
 
   // Create a scheduler/framework.
   MockScheduler sched;
@@ -2509,11 +3460,7 @@ TEST_P(PersistentVolumeTest, GoodACLNoPrincipal)
   // Check that the persistent volume was not created.
   EXPECT_FALSE(Resources(offer.resources()).contains(
       allocatedResources(volume, frameworkInfo.roles(0))));
-  if (::testing::get<1>(GetParam()) == ENABLED) {
-    EXPECT_TRUE(message2->contains(volume));
-  } else {
-    EXPECT_FALSE(message2->contains(volume));
-  }
+  EXPECT_TRUE(message2->contains(volume));
 
   driver.stop();
   driver.join();
@@ -2576,7 +3523,8 @@ TEST_P(PersistentVolumeTest, BadACLNoPrincipal)
   slave::Flags slaveFlags = CreateSlaveFlags();
   slaveFlags.resources = getSlaveResources();
 
-  Future<Nothing> slaveReady = getSlaveReady();
+  Future<UpdateSlaveMessage> updateSlaveMessage =
+    FUTURE_PROTOBUF(UpdateSlaveMessage(), _, _);
 
   Owned<MasterDetector> detector = master.get()->createDetector();
   Try<Owned<cluster::Slave>> slave = StartSlave(detector.get(), slaveFlags);
@@ -2584,7 +3532,7 @@ TEST_P(PersistentVolumeTest, BadACLNoPrincipal)
 
   Clock::advance(slaveFlags.registration_backoff_factor);
   Clock::settle();
-  AWAIT_READY(slaveReady);
+  AWAIT_READY(updateSlaveMessage);
 
   // Create a scheduler/framework.
   MockScheduler sched1;
@@ -2804,7 +3752,8 @@ TEST_P(PersistentVolumeTest, BadACLDropCreateAndDestroy)
   slave::Flags slaveFlags = CreateSlaveFlags();
   slaveFlags.resources = getSlaveResources();
 
-  Future<Nothing> slaveReady = getSlaveReady();
+  Future<UpdateSlaveMessage> updateSlaveMessage =
+    FUTURE_PROTOBUF(UpdateSlaveMessage(), _, _);
 
   Owned<MasterDetector> detector = master.get()->createDetector();
   Try<Owned<cluster::Slave>> slave = StartSlave(detector.get(), slaveFlags);
@@ -2812,7 +3761,7 @@ TEST_P(PersistentVolumeTest, BadACLDropCreateAndDestroy)
 
   Clock::advance(slaveFlags.registration_backoff_factor);
   Clock::settle();
-  AWAIT_READY(slaveReady);
+  AWAIT_READY(updateSlaveMessage);
 
   // Create a scheduler/framework.
   MockScheduler sched1;

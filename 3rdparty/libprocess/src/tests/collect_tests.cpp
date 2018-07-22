@@ -23,28 +23,29 @@ using process::Future;
 using process::Owned;
 using process::Promise;
 
-using std::list;
 using std::string;
+using std::vector;
 
 TEST(CollectTest, Ready)
 {
   // First ensure an empty list functions correctly.
-  list<Future<int>> empty;
-  Future<list<int>> collect = process::collect(empty);
+  vector<Future<int>> empty;
+  Future<vector<int>> collect = process::collect(empty);
 
   AWAIT_READY(collect);
-  EXPECT_TRUE(collect.get().empty());
+  EXPECT_TRUE(collect->empty());
 
   Promise<int> promise1;
   Promise<int> promise2;
   Promise<int> promise3;
   Promise<int> promise4;
 
-  list<Future<int>> futures;
-  futures.push_back(promise1.future());
-  futures.push_back(promise2.future());
-  futures.push_back(promise3.future());
-  futures.push_back(promise4.future());
+  vector<Future<int>> futures = {
+    promise1.future(),
+    promise2.future(),
+    promise3.future(),
+    promise4.future(),
+  };
 
   // Set them out-of-order.
   promise4.set(4);
@@ -56,11 +57,7 @@ TEST(CollectTest, Ready)
 
   AWAIT_ASSERT_READY(collect);
 
-  list<int> values;
-  values.push_back(1);
-  values.push_back(2);
-  values.push_back(3);
-  values.push_back(4);
+  vector<int> values = {1, 2, 3, 4};
 
   // We expect them to be returned in the same order as the
   // future list that was passed in.
@@ -165,21 +162,22 @@ TEST(CollectTest, AbandonedPropagation)
 TEST(AwaitTest, Success)
 {
   // First ensure an empty list functions correctly.
-  list<Future<int>> empty;
-  Future<list<Future<int>>> future = process::await(empty);
+  vector<Future<int>> empty;
+  Future<vector<Future<int>>> future = process::await(empty);
   AWAIT_ASSERT_READY(future);
-  EXPECT_TRUE(future.get().empty());
+  EXPECT_TRUE(future->empty());
 
   Promise<int> promise1;
   Promise<int> promise2;
   Promise<int> promise3;
   Promise<int> promise4;
 
-  list<Future<int>> futures;
-  futures.push_back(promise1.future());
-  futures.push_back(promise2.future());
-  futures.push_back(promise3.future());
-  futures.push_back(promise4.future());
+  vector<Future<int>> futures = {
+    promise1.future(),
+    promise2.future(),
+    promise3.future(),
+    promise4.future(),
+  };
 
   // Set them out-of-order.
   promise4.set(4);
@@ -191,7 +189,7 @@ TEST(AwaitTest, Success)
 
   AWAIT_ASSERT_READY(future);
 
-  EXPECT_EQ(futures.size(), future.get().size());
+  EXPECT_EQ(futures.size(), future->size());
 
   // We expect them to be returned in the same order as the
   // future list that was passed in.

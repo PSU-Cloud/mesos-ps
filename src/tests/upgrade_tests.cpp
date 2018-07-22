@@ -88,7 +88,7 @@ class UpgradeTest : public MesosTest {};
 
 
 // This tests that when a non-MULTI_ROLE agent with task running
-// re-registers with MULTI_ROLE master, master will inject the
+// reregisters with MULTI_ROLE master, master will inject the
 // allocation role in the tasks and executors.
 //
 // Firstly we start a regular MULTI_ROLE agent and launch a long
@@ -165,7 +165,7 @@ TEST_F(UpgradeTest, ReregisterOldAgentWithMultiRoleMaster)
   master = StartMaster(masterFlags);
   ASSERT_SOME(master);
 
-  // Cause the scheduler to re-register with the master.
+  // Cause the scheduler to reregister with the master.
   Future<Nothing> disconnected;
   EXPECT_CALL(sched, disconnected(&driver))
     .WillOnce(FutureSatisfy(&disconnected));
@@ -374,11 +374,11 @@ TEST_F(UpgradeTest, UpgradeSlaveIntoMultiRole)
   Future<SlaveReregisteredMessage> slaveReregisteredMessage =
     FUTURE_PROTOBUF(SlaveReregisteredMessage(), _, _);
 
-  detector.appoint(master.get()->pid);
-
   Future<vector<Offer>> offers;
   EXPECT_CALL(sched, resourceOffers(&driver, _))
     .WillOnce(FutureArg<1>(&offers));
+
+  detector.appoint(master.get()->pid);
 
   Clock::advance(slaveFlags.authentication_backoff_factor);
   Clock::advance(slaveFlags.registration_backoff_factor);
@@ -647,10 +647,10 @@ TEST_F(UpgradeTest, UpgradeAgentIntoHierarchicalRoleForNonHierarchicalRole)
   Future<SlaveReregisteredMessage> slaveReregisteredMessage =
     FUTURE_PROTOBUF(SlaveReregisteredMessage(), _, _);
 
-  detector.appoint(master.get()->pid);
-
   EXPECT_CALL(sched, resourceOffers(&driver, _))
     .WillOnce(FutureArg<1>(&offers));
+
+  detector.appoint(master.get()->pid);
 
   Clock::advance(slaveFlags.authentication_backoff_factor);
   Clock::advance(slaveFlags.registration_backoff_factor);

@@ -119,11 +119,11 @@ TEST_F(EnvironmentSecretIsolatorTest, ResolveSecret)
   driver.launchTasks(offers.get()[0].id(), {task});
 
   AWAIT_READY(statusStarting);
-  EXPECT_EQ(TASK_STARTING, statusStarting.get().state());
+  EXPECT_EQ(TASK_STARTING, statusStarting->state());
   AWAIT_READY(statusRunning);
-  EXPECT_EQ(TASK_RUNNING, statusRunning.get().state());
+  EXPECT_EQ(TASK_RUNNING, statusRunning->state());
   AWAIT_READY(statusFinished);
-  EXPECT_EQ(TASK_FINISHED, statusFinished.get().state());
+  EXPECT_EQ(TASK_FINISHED, statusFinished->state());
 
   driver.stop();
   driver.join();
@@ -138,14 +138,6 @@ TEST_F(EnvironmentSecretIsolatorTest, ResolveSecretDefaultExecutor)
   ASSERT_SOME(master);
 
   mesos::internal::slave::Flags flags = CreateSlaveFlags();
-
-#ifndef USE_SSL_SOCKET
-  // Disable operator API authentication for the default executor. Executor
-  // authentication currently has SSL as a dependency, so we cannot require
-  // executors to authenticate with the agent operator API if Mesos was not
-  // built with SSL support.
-  flags.authenticate_http_readwrite = false;
-#endif // USE_SSL_SOCKET
 
   Fetcher fetcher(flags);
   Try<SecretResolver*> secretResolver = SecretResolver::create();

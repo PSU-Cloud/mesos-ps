@@ -31,22 +31,22 @@ namespace mesos {
 namespace internal {
 namespace slave {
 
-Try<Owned<Subsystem>> CpuacctSubsystem::create(
+Try<Owned<SubsystemProcess>> CpuacctSubsystemProcess::create(
     const Flags& flags,
     const string& hierarchy)
 {
-  return Owned<Subsystem>(new CpuacctSubsystem(flags, hierarchy));
+  return Owned<SubsystemProcess>(new CpuacctSubsystemProcess(flags, hierarchy));
 }
 
 
-CpuacctSubsystem::CpuacctSubsystem(
+CpuacctSubsystemProcess::CpuacctSubsystemProcess(
     const Flags& _flags,
     const string& _hierarchy)
   : ProcessBase(process::ID::generate("cgroups-cpuacct-subsystem")),
-    Subsystem(_flags, _hierarchy) {}
+    SubsystemProcess(_flags, _hierarchy) {}
 
 
-Future<ResourceStatistics> CpuacctSubsystem::usage(
+Future<ResourceStatistics> CpuacctSubsystemProcess::usage(
     const ContainerID& containerId,
     const string& cgroup)
 {
@@ -71,7 +71,7 @@ Future<ResourceStatistics> CpuacctSubsystem::usage(
       return Failure("Failed to get number of processes: " + pids.error());
     }
 
-    result.set_processes(pids.get().size());
+    result.set_processes(pids->size());
 
     Try<set<pid_t>> tids = cgroups::threads(hierarchy, cgroup);
 
@@ -79,7 +79,7 @@ Future<ResourceStatistics> CpuacctSubsystem::usage(
       return Failure("Failed to get number of threads: " + tids.error());
     }
 
-    result.set_threads(tids.get().size());
+    result.set_threads(tids->size());
   }
 
   // Get the number of clock ticks, used for cpu accounting.
@@ -99,8 +99,8 @@ Future<ResourceStatistics> CpuacctSubsystem::usage(
 
   // TODO(bmahler): Add namespacing to cgroups to enforce the expected
   // structure, e.g., cgroups::cpuacct::stat.
-  Option<uint64_t> user = stat.get().get("user");
-  Option<uint64_t> system = stat.get().get("system");
+  Option<uint64_t> user = stat->get("user");
+  Option<uint64_t> system = stat->get("system");
 
   if (user.isSome() && system.isSome()) {
     result.set_cpus_user_time_secs((double) user.get() / (double) ticks);

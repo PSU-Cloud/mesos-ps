@@ -14,24 +14,28 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <functional>
+#include <ostream>
+
 #include <process/gtest.hpp>
 
-#include <stout/lambda.hpp>
-#include <stout/path.hpp>
+#include <stout/nothing.hpp>
 #include <stout/strings.hpp>
+#include <stout/unreachable.hpp>
 
 #include <stout/tests/utils.hpp>
 
 #include "csi/client.hpp"
+#include "csi/rpc.hpp"
 
 #include "tests/mock_csi_plugin.hpp"
 
+using std::ostream;
 using std::string;
-
-using mesos::csi::Client;
 
 using process::Future;
 
+using process::grpc::client::Connection;
 using process::grpc::client::Runtime;
 
 using testing::TestParamInfo;
@@ -46,22 +50,27 @@ struct RPCParam
 {
   struct Printer
   {
-    const string& operator()(const TestParamInfo<RPCParam>& info) const
+    string operator()(const TestParamInfo<RPCParam>& info) const
     {
-      return info.param.name;
+      return strings::replace(stringify(info.param.value), ".", "_");
     }
   };
 
-  template <typename Request, typename Response>
-  RPCParam(const string& _name, Future<Response>(Client::*rpc)(const Request&))
-    : name(_name),
-      call([=](const string& address, const Runtime runtime) {
-        return (Client(address, runtime).*rpc)(Request())
+  template <csi::v0::RPC rpc>
+  static RPCParam create()
+  {
+    return RPCParam{
+      rpc,
+      [](csi::v0::Client client) {
+        return client
+          .call<rpc>(typename csi::v0::RPCTraits<rpc>::request_type())
           .then([] { return Nothing(); });
-      }) {}
+      }
+    };
+  }
 
-  string name;
-  lambda::function<Future<Nothing>(const string&, const Runtime&)> call;
+  const csi::v0::RPC value;
+  const std::function<Future<Nothing>(csi::v0::Client)> call;
 };
 
 
@@ -70,78 +79,73 @@ class CSIClientTest
     public WithParamInterface<RPCParam>
 {
 protected:
-  virtual void SetUp() override
+  void SetUp() override
   {
     TemporaryDirectoryTest::SetUp();
 
-    ASSERT_SOME(plugin.Startup(GetPluginAddress()));
+    Try<Connection> _connection = plugin.startup();
+    ASSERT_SOME(_connection);
+
+    connection = _connection.get();
   }
 
-  virtual void TearDown() override
+  void TearDown() override
   {
     runtime.terminate();
     AWAIT_ASSERT_READY(runtime.wait());
 
-    ASSERT_SOME(plugin.Shutdown());
-  }
-
-  string GetPluginAddress()
-  {
-    // TODO(chhsiao): Use in-process tranport instead of a Unix domain
-    // socket once gRPC supports it for Windows support.
-    // https://github.com/grpc/grpc/pull/11145
-    return "unix://" + path::join(sandbox.get(), "socket");
+    ASSERT_SOME(plugin.shutdown());
   }
 
   MockCSIPlugin plugin;
+  Option<process::grpc::client::Connection> connection;
   process::grpc::client::Runtime runtime;
 };
-
-
-#define RPC_PARAM(method) \
-  RPCParam(strings::replace(#method, "::", "_"), &method)
 
 
 INSTANTIATE_TEST_CASE_P(
     Identity,
     CSIClientTest,
     Values(
-        RPC_PARAM(Client::GetSupportedVersions),
-        RPC_PARAM(Client::GetPluginInfo)),
+        RPCParam::create<csi::v0::GET_PLUGIN_INFO>(),
+        RPCParam::create<csi::v0::GET_PLUGIN_CAPABILITIES>(),
+        RPCParam::create<csi::v0::PROBE>()),
     RPCParam::Printer());
+
 
 INSTANTIATE_TEST_CASE_P(
     Controller,
     CSIClientTest,
     Values(
-        RPC_PARAM(Client::CreateVolume),
-        RPC_PARAM(Client::DeleteVolume),
-        RPC_PARAM(Client::ControllerPublishVolume),
-        RPC_PARAM(Client::ControllerUnpublishVolume),
-        RPC_PARAM(Client::ValidateVolumeCapabilities),
-        RPC_PARAM(Client::ListVolumes),
-        RPC_PARAM(Client::GetCapacity),
-        RPC_PARAM(Client::ControllerProbe),
-        RPC_PARAM(Client::ControllerGetCapabilities)),
+        RPCParam::create<csi::v0::CREATE_VOLUME>(),
+        RPCParam::create<csi::v0::DELETE_VOLUME>(),
+        RPCParam::create<csi::v0::CONTROLLER_PUBLISH_VOLUME>(),
+        RPCParam::create<csi::v0::CONTROLLER_UNPUBLISH_VOLUME>(),
+        RPCParam::create<csi::v0::VALIDATE_VOLUME_CAPABILITIES>(),
+        RPCParam::create<csi::v0::LIST_VOLUMES>(),
+        RPCParam::create<csi::v0::GET_CAPACITY>(),
+        RPCParam::create<csi::v0::CONTROLLER_GET_CAPABILITIES>()),
     RPCParam::Printer());
+
 
 INSTANTIATE_TEST_CASE_P(
     Node,
     CSIClientTest,
     Values(
-        RPC_PARAM(Client::NodePublishVolume),
-        RPC_PARAM(Client::NodeUnpublishVolume),
-        RPC_PARAM(Client::GetNodeID),
-        RPC_PARAM(Client::NodeProbe),
-        RPC_PARAM(Client::NodeGetCapabilities)),
+        RPCParam::create<csi::v0::NODE_STAGE_VOLUME>(),
+        RPCParam::create<csi::v0::NODE_UNSTAGE_VOLUME>(),
+        RPCParam::create<csi::v0::NODE_PUBLISH_VOLUME>(),
+        RPCParam::create<csi::v0::NODE_UNPUBLISH_VOLUME>(),
+        RPCParam::create<csi::v0::NODE_GET_ID>(),
+        RPCParam::create<csi::v0::NODE_GET_CAPABILITIES>()),
     RPCParam::Printer());
 
 
 // This test verifies that the all methods of CSI clients work.
 TEST_P(CSIClientTest, Call)
 {
-  Future<Nothing> call = GetParam().call(GetPluginAddress(), runtime);
-  AWAIT_EXPECT_READY(call);
+  AWAIT_EXPECT_READY(
+      GetParam().call(csi::v0::Client(connection.get(), runtime)));
 }
 
 } // namespace tests {

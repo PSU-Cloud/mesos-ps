@@ -124,11 +124,11 @@ mesos::internal::master::Flags::Flags()
   add(&Flags::agent_reregister_timeout,
       "agent_reregister_timeout",
       flags::DeprecatedName("slave_reregister_timeout"),
-      "The timeout within which an agent is expected to re-register.\n"
-      "Agents re-register when they become disconnected from the master\n"
+      "The timeout within which an agent is expected to reregister.\n"
+      "Agents reregister when they become disconnected from the master\n"
       "or when a new master is elected as the leader. Agents that do not\n"
-      "re-register within the timeout will be marked unreachable in the\n"
-      "registry; if/when the agent re-registers with the master, any\n"
+      "reregister within the timeout will be marked unreachable in the\n"
+      "registry; if/when the agent reregisters with the master, any\n"
       "non-partition-aware tasks running on the agent will be terminated.\n"
       "NOTE: This value has to be at least " +
         stringify(MIN_AGENT_REREGISTER_TIMEOUT) + ".",
@@ -176,15 +176,17 @@ mesos::internal::master::Flags::Flags()
       "machines are accepted. Path can be of the form\n"
       "`file:///path/to/file` or `/path/to/file`.\n");
 
-  add(&Flags::user_sorter,
-      "user_sorter",
-      "Policy to use for allocating resources between users. May be one of:\n"
-      "  dominant_resource_fairness (drf)",
+  add(&Flags::role_sorter,
+      "role_sorter",
+      flags::DeprecatedName("user_sorter"),
+      "Policy to use for allocating resources between roles when\n"
+      "allocating up to quota guarantees as well as when allocating\n"
+      "up to quota limits. May be one of: [drf, random]",
       "drf");
 
   add(&Flags::framework_sorter,
       "framework_sorter",
-      "Policy to use for allocating resources between a given user's\n"
+      "Policy to use for allocating resources between a given role's\n"
       "frameworks. Options are the same as for `--user_sorter`.",
       "drf");
 
@@ -474,6 +476,19 @@ mesos::internal::master::Flags::Flags()
       "  https://issues.apache.org/jira/browse/MESOS-7576",
       true);
 
+  add(&Flags::min_allocatable_resources,
+      "min_allocatable_resources",
+      "One or more sets of resources that define the minimum allocatable\n"
+      "resources for the allocator. The allocator will only offer resources\n"
+      "that contain at least one of the specified sets. The resources in\n"
+      "each set should be delimited by semicolons, and the sets should be\n"
+      "delimited by the pipe character.\n"
+      "(Example: `disk:1|cpu:1;mem:32` configures the allocator to only offer\n"
+      "resources if they contain a disk resource of at least 1 megabyte, or\n"
+      "if they contain both 1 cpu and 32 megabytes of memory.)\n",
+      "cpus:" + stringify(MIN_CPUS) +
+        "|mem:" + stringify((double)MIN_MEM.bytes() / Bytes::MEGABYTES));
+
   add(&Flags::hooks,
       "hooks",
       "A comma-separated list of hook modules to be\n"
@@ -484,7 +499,7 @@ mesos::internal::master::Flags::Flags()
       flags::DeprecatedName("slave_ping_timeout"),
       "The timeout within which an agent is expected to respond to a\n"
       "ping from the master. Agents that do not respond within\n"
-      "max_agent_ping_timeouts ping retries will be asked to shutdown.\n"
+      "max_agent_ping_timeouts ping retries will be marked unreachable.\n"
       "NOTE: The total ping timeout (`agent_ping_timeout` multiplied by\n"
       "`max_agent_ping_timeouts`) should be greater than the ZooKeeper\n"
       "session timeout to prevent useless re-registration attempts.\n",
@@ -503,7 +518,7 @@ mesos::internal::master::Flags::Flags()
       flags::DeprecatedName("max_slave_ping_timeouts"),
       "The number of times an agent can fail to respond to a\n"
       "ping from the master. Agents that do not respond within\n"
-      "`max_agent_ping_timeouts` ping retries will be asked to shutdown.\n",
+      "`max_agent_ping_timeouts` ping retries will be marked unreachable.\n",
       DEFAULT_MAX_AGENT_PING_TIMEOUTS,
       [](size_t value) -> Option<Error> {
         if (value < 1) {
@@ -627,6 +642,17 @@ mesos::internal::master::Flags::Flags()
       "However, this port (along with `advertise_ip`) may be used to\n"
       "access this master.");
 
+  // TODO(bevers): Switch the default to `true` after gathering some
+  // real-world experience.
+  add(&Flags::memory_profiling,
+      "memory_profiling",
+      "This setting controls whether the memory profiling functionality of\n"
+      "libprocess should be exposed when jemalloc is detected.\n"
+      "NOTE: Even if set to true, memory profiling will not work unless\n"
+      "jemalloc is loaded into the address space of the binary, either by\n"
+      "linking against it at compile-time or using `LD_PRELOAD`.",
+      false);
+
   add(&Flags::zk,
       "zk",
       "ZooKeeper URL (used for leader election amongst masters).\n"
@@ -641,6 +667,11 @@ mesos::internal::master::Flags::Flags()
       "Optional IP discovery binary: if set, it is expected to emit\n"
       "the IP address which the master will try to bind to.\n"
       "Cannot be used in conjunction with `--ip`.");
+
+  add(&Flags::require_agent_domain,
+      "require_agent_domain",
+      "If true, only agents with a configured domain can register.\n",
+      false);
 
   add(&Flags::domain,
       "domain",

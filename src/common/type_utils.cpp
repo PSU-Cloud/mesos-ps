@@ -16,6 +16,8 @@
 
 #include <ostream>
 
+#include <google/protobuf/util/message_differencer.h>
+
 #include <mesos/attributes.hpp>
 #include <mesos/mesos.hpp>
 #include <mesos/resources.hpp>
@@ -439,9 +441,19 @@ bool operator==(
 }
 
 
-bool operator==(
-    const OfferOperationStatus& left,
-    const OfferOperationStatus& right)
+bool operator==(const Offer::Operation& left, const Offer::Operation& right)
+{
+  return google::protobuf::util::MessageDifferencer::Equals(left, right);
+}
+
+
+bool operator==(const Operation& left, const Operation& right)
+{
+  return google::protobuf::util::MessageDifferencer::Equals(left, right);
+}
+
+
+bool operator==(const OperationStatus& left, const OperationStatus& right)
 {
   if (left.has_operation_id() != right.has_operation_id()) {
     return false;
@@ -468,11 +480,11 @@ bool operator==(
     return false;
   }
 
-  if (left.has_status_uuid() != right.has_status_uuid()) {
+  if (left.has_uuid() != right.has_uuid()) {
     return false;
   }
 
-  if (left.has_status_uuid() && left.status_uuid() != right.status_uuid()) {
+  if (left.has_uuid() && left.uuid() != right.uuid()) {
     return false;
   }
 
@@ -480,9 +492,19 @@ bool operator==(
 }
 
 
-bool operator!=(
-    const OfferOperationStatus& left,
-    const OfferOperationStatus& right)
+bool operator!=(const Offer::Operation& left, const Offer::Operation& right)
+{
+  return !(left == right);
+}
+
+
+bool operator!=(const Operation& left, const Operation& right)
+{
+  return !(left == right);
+}
+
+
+bool operator!=(const OperationStatus& left, const OperationStatus& right)
 {
   return !(left == right);
 }
@@ -713,15 +735,15 @@ ostream& operator<<(ostream& stream, const OfferID& offerId)
 }
 
 
-ostream& operator<<(ostream& stream, const OfferOperationID& offerOperationId)
+ostream& operator<<(ostream& stream, const OperationID& operationId)
 {
-  return stream << offerOperationId.value();
+  return stream << operationId.value();
 }
 
 
-ostream& operator<<(ostream& stream, const OfferOperationState& state)
+ostream& operator<<(ostream& stream, const OperationState& state)
 {
-  return stream << OfferOperationState_Name(state);
+  return stream << OperationState_Name(state);
 }
 
 

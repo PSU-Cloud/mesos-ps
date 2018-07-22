@@ -172,7 +172,8 @@ int main(int argc, char** argv)
   }
 
   if (load.isError()) {
-    cerr << flags.usage(load.error()) << endl;
+    cerr << load.error() << "\n\n"
+         << "See `mesos-master --help` for a list of supported flags." << endl;
     return EXIT_FAILURE;
   }
 
@@ -194,8 +195,8 @@ int main(int argc, char** argv)
   }
 
   if (flags.ip_discovery_command.isSome() && flags.ip.isSome()) {
-    EXIT(EXIT_FAILURE) << flags.usage(
-        "Only one of `--ip` or `--ip_discovery_command` should be specified");
+    EXIT(EXIT_FAILURE)
+      << "Only one of `--ip` or `--ip_discovery_command` should be specified";
   }
 
   if (flags.ip_discovery_command.isSome()) {
@@ -223,17 +224,19 @@ int main(int argc, char** argv)
   if (flags.zk.isNone()) {
     if (flags.master_contender.isSome() ^ flags.master_detector.isSome()) {
       EXIT(EXIT_FAILURE)
-        << flags.usage("Both --master_contender and --master_detector should "
-                       "be specified or omitted.");
+        << "Both --master_contender and --master_detector should "
+           "be specified or omitted.";
     }
   } else {
     if (flags.master_contender.isSome() || flags.master_detector.isSome()) {
       EXIT(EXIT_FAILURE)
-        << flags.usage("Only one of --zk or the "
-                       "--master_contender/--master_detector "
-                       "pair should be specified.");
+        << "Only one of --zk or the "
+           "--master_contender/--master_detector "
+           "pair should be specified.";
     }
   }
+
+  os::setenv("LIBPROCESS_MEMORY_PROFILING", stringify(flags.memory_profiling));
 
   // Log build information.
   LOG(INFO) << "Build: " << build::DATE << " by " << build::USER;
@@ -283,7 +286,7 @@ int main(int argc, char** argv)
   // Initialize modules.
   if (flags.modules.isSome() && flags.modulesDir.isSome()) {
     EXIT(EXIT_FAILURE) <<
-      flags.usage("Only one of --modules or --modules_dir should be specified");
+      "Only one of --modules or --modules_dir should be specified";
   }
 
   if (flags.modulesDir.isSome()) {
@@ -326,17 +329,19 @@ int main(int argc, char** argv)
   }
 
   // Create an instance of allocator.
-  const string allocatorName = flags.allocator;
-  Try<Allocator*> allocator = Allocator::create(allocatorName);
+  Try<Allocator*> allocator = Allocator::create(
+      flags.allocator,
+      flags.role_sorter,
+      flags.framework_sorter);
 
   if (allocator.isError()) {
     EXIT(EXIT_FAILURE)
-      << "Failed to create '" << allocatorName
-      << "' allocator: " << allocator.error();
+      << "Failed to create allocator '" << flags.allocator << "'"
+      << ": " << allocator.error();
   }
 
   CHECK_NOTNULL(allocator.get());
-  LOG(INFO) << "Using '" << allocatorName << "' allocator";
+  LOG(INFO) << "Using '" << flags.allocator << "' allocator";
 
   Storage* storage = nullptr;
 #ifndef __WINDOWS__
@@ -370,7 +375,7 @@ int main(int argc, char** argv)
           << " registry when using ZooKeeper";
       }
 
-      Try<zookeeper::URL> url = zookeeper::URL::parse(flags.zk.get());
+      Try<zookeeper::URL> url = zookeeper::URL::parse(flags.zk->value);
       if (url.isError()) {
         EXIT(EXIT_FAILURE) << "Error parsing ZooKeeper URL: " << url.error();
       }
@@ -378,10 +383,10 @@ int main(int argc, char** argv)
       log = new Log(
           flags.quorum.get(),
           path::join(flags.work_dir.get(), "replicated_log"),
-          url.get().servers,
+          url->servers,
           flags.zk_session_timeout,
-          path::join(url.get().path, "log_replicas"),
-          url.get().authentication,
+          path::join(url->path, "log_replicas"),
+          url->authentication,
           flags.log_auto_initialize,
           "registrar/");
     } else {
@@ -411,7 +416,9 @@ int main(int argc, char** argv)
   MasterDetector* detector;
 
   Try<MasterContender*> contender_ = MasterContender::create(
-      flags.zk, flags.master_contender, flags.zk_session_timeout);
+      flags.zk.isSome() ? flags.zk->value : Option<string>::none(),
+      flags.master_contender,
+      flags.zk_session_timeout);
 
   if (contender_.isError()) {
     EXIT(EXIT_FAILURE)
@@ -421,7 +428,9 @@ int main(int argc, char** argv)
   contender = contender_.get();
 
   Try<MasterDetector*> detector_ = MasterDetector::create(
-      flags.zk, flags.master_detector, flags.zk_session_timeout);
+      flags.zk.isSome() ? flags.zk->value : Option<string>::none(),
+      flags.master_detector,
+      flags.zk_session_timeout);
 
   if (detector_.isError()) {
     EXIT(EXIT_FAILURE)

@@ -210,7 +210,7 @@ AM_CONDITIONAL([OPTIMIZE], [test x"$enable_optimize" = "xyes"])
 
 debug_flags="-g1"
 if test "x$enable_debug" = "xyes"; then
-  debug_flags="-g"
+  debug_flags="-g -fno-omit-frame-pointer"
 elif test "x$enable_optimize" = "xyes"; then
   debug_flags=""
 fi
@@ -280,11 +280,8 @@ libapr-1 is required for stout tests to build.
 ])])
 
 
-# We use "-isystem" instead of "-I" to add Boost to the include search
-# path. This disables compiler warnings inside Boost headers since we
-# can't easily fix them. See MESOS-3799.
 if test -n "`echo $with_boost`"; then
-  CPPFLAGS="$CPPFLAGS -isystem ${with_boost}/include"
+  CPPFLAGS="$CPPFLAGS -I${with_boost}/include"
 fi
 
 # Check if user has asked us to use a preinstalled Boost, or if they

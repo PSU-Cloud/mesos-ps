@@ -30,8 +30,11 @@
 
 #include <gtest/gtest.h>
 
+#include <checks/checker_process.hpp>
+
 #include "docker/docker.hpp"
 
+#include <process/defer.hpp>
 #include <process/gmock.hpp>
 #include <process/gtest.hpp>
 #include <process/owned.hpp>
@@ -39,17 +42,20 @@
 #include <stout/check.hpp>
 #include <stout/error.hpp>
 #include <stout/exit.hpp>
+#include <stout/lambda.hpp>
 #include <stout/none.hpp>
 #include <stout/option.hpp>
 #include <stout/os.hpp>
 #include <stout/path.hpp>
 #include <stout/result.hpp>
+#include <stout/stringify.hpp>
 #include <stout/strings.hpp>
 
 #include <stout/os/exists.hpp>
 #include <stout/os/pstree.hpp>
 #include <stout/os/shell.hpp>
 #include <stout/os/temp.hpp>
+#include <stout/os/which.hpp>
 
 #ifdef __linux__
 #include "linux/cgroups.hpp"
@@ -76,6 +82,8 @@ using std::set;
 using std::string;
 using std::vector;
 
+using process::Failure;
+using process::Future;
 using process::Owned;
 
 using stout::internal::tests::TestFilter;
@@ -92,7 +100,7 @@ Environment* environment;
 class BenchmarkFilter : public TestFilter
 {
 public:
-  bool disable(const ::testing::TestInfo* test) const
+  bool disable(const ::testing::TestInfo* test) const override
   {
     return matches(test, "BENCHMARK_") && !flags.benchmark;
   }
@@ -140,7 +148,7 @@ public:
 #endif // __linux__
   }
 
-  bool disable(const ::testing::TestInfo* test) const
+  bool disable(const ::testing::TestInfo* test) const override
   {
     return matches(test, "CFS_") && cfsError.isSome();
   }
@@ -183,7 +191,7 @@ public:
 #endif // __linux__
   }
 
-  bool disable(const ::testing::TestInfo* test) const
+  bool disable(const ::testing::TestInfo* test) const override
   {
     if (matches(test, "CGROUPS_") || matches(test, "Cgroups")) {
 #ifdef __linux__
@@ -215,7 +223,18 @@ class CurlFilter : public TestFilter
 public:
   CurlFilter()
   {
-    curlError = os::system("which curl") != 0;
+#ifndef __WINDOWS__
+    curlError = os::which("curl").isNone();
+#else
+    // NOTE: We cannot use `os::which` here because it specifically checks the
+    // `PATH` for `curl`, but on Windows, we rely on `curl` being placed by the
+    // build next to the other executables (e.g. `mesos-agent` and
+    // `mesos-tests`). When placed like this, `::CreateProcess` is guaranteed to
+    // find it, regardless of `PATH` (and likewise `os::which`). Because it is
+    // built and placed as a build dependency of `mesos-agent`, it will always
+    // be available for testing.
+    curlError = false;
+#endif // __WINDOWS__
     if (curlError) {
       std::cerr
         << "-------------------------------------------------------------\n"
@@ -225,7 +244,7 @@ public:
     }
   }
 
-  bool disable(const ::testing::TestInfo* test) const
+  bool disable(const ::testing::TestInfo* test) const override
   {
     return matches(test, "CURL_") && curlError;
   }
@@ -240,8 +259,8 @@ class NvidiaGpuFilter : public TestFilter
 public:
   NvidiaGpuFilter()
   {
-    exists = os::system("which nvidia-smi") == 0;
-    if (!exists) {
+    nvidiaGpuError = os::which("nvidia-smi").isNone();
+    if (nvidiaGpuError) {
       std::cerr
         << "-------------------------------------------------------------\n"
         << "No 'nvidia-smi' command found so no Nvidia GPU tests will run\n"
@@ -250,13 +269,13 @@ public:
     }
   }
 
-  bool disable(const ::testing::TestInfo* test) const
+  bool disable(const ::testing::TestInfo* test) const override
   {
-    return matches(test, "NVIDIA_GPU_") && !exists;
+    return matches(test, "NVIDIA_GPU_") && nvidiaGpuError;
   }
 
 private:
-  bool exists;
+  bool nvidiaGpuError;
 };
 
 
@@ -278,6 +297,18 @@ public:
     } else {
       dockerError = docker.error();
     }
+
+#ifdef __WINDOWS__
+    // On Windows, the ability to enter another container's namespace was
+    // enabled on newer Windows builds (>=1709). So, check if we can do
+    // this to run the docker health check tests.
+    LOG(WARNING) << "Testing shared container network namespaces on Windows. "
+                 << "This might take up to 30 seconds...";
+
+    if (dockerError.isNone() && dockerUserNetworkError.isNone()) {
+      dockerNamespaceError = runNetNamespaceCheck(docker.get());
+    }
+#endif // __WINDOWS__
 #else
     dockerError = Error("Docker tests are not supported on this platform");
 #endif // __linux__ || __WINDOWS__
@@ -299,21 +330,118 @@ public:
         << "-------------------------------------------------------------"
         << std::endl;
     }
+
+    if (dockerNamespaceError.isSome()) {
+      std::cerr
+        << "-------------------------------------------------------------\n"
+        << "We cannot run any Docker network health checks tests because:\n"
+        << dockerNamespaceError->message << "\n"
+        << "-------------------------------------------------------------"
+        << std::endl;
+    }
   }
 
-  bool disable(const ::testing::TestInfo* test) const
+  bool disable(const ::testing::TestInfo* test) const override
   {
     if (dockerError.isSome()) {
       return matches(test, "DOCKER_");
     }
 
-    return matches(test, "DOCKER_USERNETWORK_") &&
-      dockerUserNetworkError.isSome();
+    if (dockerUserNetworkError.isSome()) {
+      return matches(test, "DOCKER_USERNETWORK_");
+    }
+
+    return matches(test, "DOCKER_") &&
+      matches(test, "NETNAMESPACE_") &&
+      dockerNamespaceError.isSome();
   }
 
 private:
+#ifdef __WINDOWS__
+  Future<Nothing> launchContainer(
+      const Owned<Docker>& docker,
+      const string& containerName,
+      const string& networkName,
+      const string& imageName)
+  {
+    Docker::RunOptions opts;
+    opts.privileged = false;
+    opts.name = containerName;
+    opts.network = networkName;
+    opts.additionalOptions = {"-d", "--rm"};
+    opts.image = imageName;
+    opts.arguments = {"ping", "-n", "60", "127.0.0.1"};
+
+    // Launches the container in detached mode, which means that docker
+    // run should return as soon as the container successfully launched.
+    return docker->run(opts, process::Subprocess::PATH(os::DEV_NULL))
+      .then([=](const Option<int>& status) -> Future<Nothing> {
+        if (!status.isSome()) {
+          return Failure(
+              "Container " + containerName + " failed with unknown exit code");
+        }
+
+        if (status.get() != 0) {
+          return Failure(
+              "Container " + containerName + " returned exit code " +
+              stringify(status.get()));
+        }
+
+        return Nothing();
+      });
+  }
+
+  Option<Error> runNetNamespaceCheck(const Owned<Docker>& docker)
+  {
+    const string image =
+      string(mesos::internal::checks::DOCKER_HEALTH_CHECK_IMAGE);
+
+    // Use `os::system` here because `docker->inspect()` only works on
+    // containers even though `docker inspect` cli command works on images.
+    const Option<int> res = os::system(strings::join(
+        " ",
+        docker->getPath(),
+        "-H",
+        docker->getSocket(),
+        "inspect",
+        image,
+        "> NUL"));
+
+    if (res != 0) {
+      return Error("Cannot find " + image);
+    }
+
+    // Launch two containers. One with regular network settings and the
+    // other with "--network=container:<ID>" to enter the first container's
+    // namespace.
+    const string container1 = id::UUID::random().toString();
+    const string container2 = id::UUID::random().toString();
+
+    Future<Nothing> containers =
+      launchContainer(docker, container1, "nat", image)
+        .then(process::defer([=]() {
+          return launchContainer(
+              docker, container2, "container:" + container1, image)
+            .then(lambda::bind(&Docker::rm, docker, container2, true))
+            .onAny(lambda::bind(&Docker::rm, docker, container1, true));
+      }));
+
+    // A minute should be enough for both containers to lauch and delete.
+    containers.await(Minutes(1));
+
+    if (containers.isFailed()) {
+      return Error("Failed to launch containers: " + containers.failure());
+    } else if (!containers.isReady()) {
+      return Error("Container launch timed out");
+    }
+
+    return None();
+  }
+#endif // __WINDOWS__
+
   Option<Error> dockerError;
   Option<Error> dockerUserNetworkError;
+  Option<Error> dockerNamespaceError;
 };
 
 
@@ -373,14 +501,14 @@ public:
       std::cerr
         << "-------------------------------------------------------------\n"
         << "We cannot run any overlay backend tests because:\n"
-        << dtypeError.get().message << "\n"
+        << dtypeError->message << "\n"
         << "-------------------------------------------------------------\n";
       return;
     }
 #endif
   }
 
-  bool disable(const ::testing::TestInfo* test) const
+  bool disable(const ::testing::TestInfo* test) const override
   {
     return dtypeError.isSome() && matches(test, "DTYPE_");
   }
@@ -396,6 +524,7 @@ public:
   InternetFilter()
   {
     error = os::system("ping -c 1 -W 1 google.com") != 0;
+    // TODO(andschwa): Make ping command cross-platform.
     if (error) {
       std::cerr
         << "-------------------------------------------------------------\n"
@@ -405,7 +534,7 @@ public:
     }
   }
 
-  bool disable(const ::testing::TestInfo* test) const
+  bool disable(const ::testing::TestInfo* test) const override
   {
     return matches(test, "INTERNET_") && error;
   }
@@ -420,7 +549,7 @@ class LogrotateFilter : public TestFilter
 public:
   LogrotateFilter()
   {
-    logrotateError = os::system("which logrotate") != 0;
+    logrotateError = os::which("logrotate").isNone();
     if (logrotateError) {
       std::cerr
         << "-------------------------------------------------------------\n"
@@ -431,7 +560,7 @@ public:
     }
   }
 
-  bool disable(const ::testing::TestInfo* test) const
+  bool disable(const ::testing::TestInfo* test) const override
   {
     return matches(test, "LOGROTATE_") && logrotateError;
   }
@@ -446,7 +575,7 @@ class NetcatFilter : public TestFilter
 public:
   NetcatFilter()
   {
-    netcatError = os::system("which nc") != 0;
+    netcatError = os::which("nc").isNone();
     if (netcatError) {
       std::cerr
         << "-------------------------------------------------------------\n"
@@ -456,7 +585,7 @@ public:
     }
   }
 
-  bool disable(const ::testing::TestInfo* test) const
+  bool disable(const ::testing::TestInfo* test) const override
   {
     return matches(test, "NC_") && netcatError;
   }
@@ -512,7 +641,7 @@ public:
 #endif
   }
 
-  bool disable(const ::testing::TestInfo* test) const
+  bool disable(const ::testing::TestInfo* test) const override
   {
     return matches(test, "NET_CLS_") && netClsError;
   }
@@ -541,7 +670,7 @@ public:
 #endif
   }
 
-  bool disable(const ::testing::TestInfo* test) const
+  bool disable(const ::testing::TestInfo* test) const override
   {
     if (matches(test, "PortMappingIsolatorTest") ||
         matches(test, "PortMappingMesosTest")) {
@@ -595,7 +724,7 @@ class AufsFilter : public SupportedFilesystemTestFilter
 public:
   AufsFilter() : SupportedFilesystemTestFilter("aufs") {}
 
-  bool disable(const ::testing::TestInfo* test) const
+  bool disable(const ::testing::TestInfo* test) const override
   {
     return fsSupportError.isSome() && matches(test, "AUFS_");
   }
@@ -607,7 +736,7 @@ class OverlayFSFilter : public SupportedFilesystemTestFilter
 public:
   OverlayFSFilter() : SupportedFilesystemTestFilter("overlayfs") {}
 
-  bool disable(const ::testing::TestInfo* test) const
+  bool disable(const ::testing::TestInfo* test) const override
   {
     return fsSupportError.isSome() && matches(test, "OVERLAYFS_");
   }
@@ -619,7 +748,7 @@ class XfsFilter : public SupportedFilesystemTestFilter
 public:
   XfsFilter() : SupportedFilesystemTestFilter("xfs") {}
 
-  bool disable(const ::testing::TestInfo* test) const
+  bool disable(const ::testing::TestInfo* test) const override
   {
     return fsSupportError.isSome() && matches(test, "XFS_");
   }
@@ -662,7 +791,7 @@ public:
     }
   }
 
-  bool disable(const ::testing::TestInfo* test) const
+  bool disable(const ::testing::TestInfo* test) const override
   {
     // Disable all tests that try to sample 'cpu-cycles' events using 'perf'.
     return (matches(test, "ROOT_CGROUPS_PERF_PerfTest") ||
@@ -695,7 +824,7 @@ public:
 #endif // __linux__
   }
 
-  bool disable(const ::testing::TestInfo* test) const
+  bool disable(const ::testing::TestInfo* test) const override
   {
     return matches(test, "PERF_") && perfError;
   }
@@ -708,7 +837,7 @@ private:
 class RootFilter : public TestFilter
 {
 public:
-  bool disable(const ::testing::TestInfo* test) const
+  bool disable(const ::testing::TestInfo* test) const override
   {
 #ifdef __WINDOWS__
     // On Windows, tests are expected to be run as Administrator.
@@ -731,12 +860,49 @@ public:
 };
 
 
+class UnprivilegedUserFilter : public TestFilter
+{
+public:
+  UnprivilegedUserFilter()
+  {
+#ifdef __WINDOWS__
+    unprivilegedUserFound = false;
+#else
+    Option<string> user = os::getenv("SUDO_USER");
+    if (user.isNone() || user.get() == "root") {
+      unprivilegedUserFound = false;
+    } else {
+      unprivilegedUserFound = true;
+    }
+
+    if (!unprivilegedUserFound) {
+      std::cerr
+        << "-------------------------------------------------------------\n"
+        << "No usable unprivileged user found from the 'SUDO_USER'\n"
+        << "environment variable. So tests that rely on an unprivileged\n"
+        << "user will not run\n"
+        << "-------------------------------------------------------------"
+        << std::endl;
+    }
+#endif
+  }
+
+  bool disable(const ::testing::TestInfo* test) const override
+  {
+    return matches(test, "UNPRIVILEGED_USER_") && !unprivilegedUserFound;
+  }
+
+private:
+  bool unprivilegedUserFound;
+};
+
+
 class UnzipFilter : public TestFilter
 {
 public:
   UnzipFilter()
   {
-    unzipError = os::system("which unzip") != 0;
+    unzipError = os::which("unzip").isNone();
     if (unzipError) {
       std::cerr
         << "-------------------------------------------------------------\n"
@@ -746,7 +912,7 @@ public:
     }
   }
 
-  bool disable(const ::testing::TestInfo* test) const
+  bool disable(const ::testing::TestInfo* test) const override
   {
     return matches(test, "UNZIP_") && unzipError;
   }
@@ -776,6 +942,7 @@ Environment::Environment(const Flags& _flags)
             std::make_shared<PerfCPUCyclesFilter>(),
             std::make_shared<PerfFilter>(),
             std::make_shared<RootFilter>(),
+            std::make_shared<UnprivilegedUserFilter>(),
             std::make_shared<UnzipFilter>(),
             std::make_shared<XfsFilter>()}),
     flags(_flags)

@@ -156,7 +156,7 @@ public:
       reader(_reader),
       done(false) {}
 
-  virtual ~ReaderProcess() {}
+  ~ReaderProcess() override {}
 
   process::Future<Result<T>> read()
   {
@@ -167,7 +167,7 @@ public:
     }
 
     if (error.isSome()) {
-      return process::Failure(error.get().message);
+      return process::Failure(error->message);
     }
 
     if (done) {
@@ -181,12 +181,12 @@ public:
   }
 
 protected:
-  virtual void initialize() override
+  void initialize() override
   {
     consume();
   }
 
-  virtual void finalize() override
+  void finalize() override
   {
     // Fail any remaining waiters.
     fail("Reader is terminating");
@@ -230,7 +230,7 @@ private:
     }
 
     // Have we reached EOF?
-    if (read.get().empty()) {
+    if (read->empty()) {
       complete();
       return;
     }

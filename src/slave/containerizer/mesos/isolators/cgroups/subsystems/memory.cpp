@@ -43,7 +43,6 @@ using process::Future;
 using process::Owned;
 using process::PID;
 
-using std::list;
 using std::ostringstream;
 using std::string;
 using std::vector;
@@ -58,7 +57,7 @@ static const vector<Level> levels()
 }
 
 
-Try<Owned<Subsystem>> MemorySubsystem::create(
+Try<Owned<SubsystemProcess>> MemorySubsystemProcess::create(
     const Flags& flags,
     const string& hierarchy)
 {
@@ -104,18 +103,18 @@ Try<Owned<Subsystem>> MemorySubsystem::create(
     }
   }
 
-  return Owned<Subsystem>(new MemorySubsystem(flags, hierarchy));
+  return Owned<SubsystemProcess>(new MemorySubsystemProcess(flags, hierarchy));
 }
 
 
-MemorySubsystem::MemorySubsystem(
+MemorySubsystemProcess::MemorySubsystemProcess(
     const Flags& _flags,
     const string& _hierarchy)
   : ProcessBase(process::ID::generate("cgroups-memory-subsystem")),
-    Subsystem(_flags, _hierarchy) {}
+    SubsystemProcess(_flags, _hierarchy) {}
 
 
-Future<Nothing> MemorySubsystem::recover(
+Future<Nothing> MemorySubsystemProcess::recover(
     const ContainerID& containerId,
     const string& cgroup)
 {
@@ -132,7 +131,7 @@ Future<Nothing> MemorySubsystem::recover(
 }
 
 
-Future<Nothing> MemorySubsystem::prepare(
+Future<Nothing> MemorySubsystemProcess::prepare(
     const ContainerID& containerId,
     const string& cgroup)
 {
@@ -149,7 +148,7 @@ Future<Nothing> MemorySubsystem::prepare(
 }
 
 
-Future<ContainerLimitation> MemorySubsystem::watch(
+Future<ContainerLimitation> MemorySubsystemProcess::watch(
     const ContainerID& containerId,
     const string& cgroup)
 {
@@ -163,7 +162,7 @@ Future<ContainerLimitation> MemorySubsystem::watch(
 }
 
 
-Future<Nothing> MemorySubsystem::update(
+Future<Nothing> MemorySubsystemProcess::update(
     const ContainerID& containerId,
     const string& cgroup,
     const Resources& resources)
@@ -300,7 +299,7 @@ Future<Nothing> MemorySubsystem::update(
 }
 
 
-Future<ResourceStatistics> MemorySubsystem::usage(
+Future<ResourceStatistics> MemorySubsystemProcess::usage(
     const ContainerID& containerId,
     const string& cgroup)
 {
@@ -323,7 +322,7 @@ Future<ResourceStatistics> MemorySubsystem::usage(
     return Failure("Failed to parse 'memory.usage_in_bytes': " + usage.error());
   }
 
-  result.set_mem_total_bytes(usage.get().bytes());
+  result.set_mem_total_bytes(usage->bytes());
 
   if (flags.cgroups_limit_swap) {
     Try<Bytes> usage = cgroups::memory::memsw_usage_in_bytes(hierarchy, cgroup);
@@ -333,7 +332,7 @@ Future<ResourceStatistics> MemorySubsystem::usage(
         "Failed to parse 'memory.memsw.usage_in_bytes': " + usage.error());
     }
 
-    result.set_mem_total_memsw_bytes(usage.get().bytes());
+    result.set_mem_total_memsw_bytes(usage->bytes());
   }
 
   // TODO(bmahler): Add namespacing to cgroups to enforce the expected
@@ -347,7 +346,7 @@ Future<ResourceStatistics> MemorySubsystem::usage(
     return Failure("Failed to read 'memory.stat': " + stat.error());
   }
 
-  Option<uint64_t> total_cache = stat.get().get("total_cache");
+  Option<uint64_t> total_cache = stat->get("total_cache");
   if (total_cache.isSome()) {
     // TODO(chzhcn): mem_file_bytes is deprecated in 0.23.0 and will
     // be removed in 0.24.0.
@@ -355,7 +354,7 @@ Future<ResourceStatistics> MemorySubsystem::usage(
     result.set_mem_cache_bytes(total_cache.get());
   }
 
-  Option<uint64_t> total_rss = stat.get().get("total_rss");
+  Option<uint64_t> total_rss = stat->get("total_rss");
   if (total_rss.isSome()) {
     // TODO(chzhcn): mem_anon_bytes is deprecated in 0.23.0 and will
     // be removed in 0.24.0.
@@ -363,24 +362,24 @@ Future<ResourceStatistics> MemorySubsystem::usage(
     result.set_mem_rss_bytes(total_rss.get());
   }
 
-  Option<uint64_t> total_mapped_file = stat.get().get("total_mapped_file");
+  Option<uint64_t> total_mapped_file = stat->get("total_mapped_file");
   if (total_mapped_file.isSome()) {
     result.set_mem_mapped_file_bytes(total_mapped_file.get());
   }
 
-  Option<uint64_t> total_swap = stat.get().get("total_swap");
+  Option<uint64_t> total_swap = stat->get("total_swap");
   if (total_swap.isSome()) {
     result.set_mem_swap_bytes(total_swap.get());
   }
 
-  Option<uint64_t> total_unevictable = stat.get().get("total_unevictable");
+  Option<uint64_t> total_unevictable = stat->get("total_unevictable");
   if (total_unevictable.isSome()) {
     result.set_mem_unevictable_bytes(total_unevictable.get());
   }
 
   // Get pressure counter readings.
-  list<Level> levels;
-  list<Future<uint64_t>> values;
+  vector<Level> levels;
+  vector<Future<uint64_t>> values;
   foreachpair (Level level,
                const Owned<Counter>& counter,
                info->pressureCounters) {
@@ -389,8 +388,8 @@ Future<ResourceStatistics> MemorySubsystem::usage(
   }
 
   return await(values)
-    .then(defer(PID<MemorySubsystem>(this),
-                &MemorySubsystem::_usage,
+    .then(defer(PID<MemorySubsystemProcess>(this),
+                &MemorySubsystemProcess::_usage,
                 containerId,
                 result,
                 levels,
@@ -398,11 +397,11 @@ Future<ResourceStatistics> MemorySubsystem::usage(
 }
 
 
-Future<ResourceStatistics> MemorySubsystem::_usage(
+Future<ResourceStatistics> MemorySubsystemProcess::_usage(
     const ContainerID& containerId,
     ResourceStatistics result,
-    const list<Level>& levels,
-    const list<Future<uint64_t>>& values)
+    const vector<Level>& levels,
+    const vector<Future<uint64_t>>& values)
 {
   if (!infos.contains(containerId)) {
     return Failure(
@@ -410,7 +409,7 @@ Future<ResourceStatistics> MemorySubsystem::_usage(
         ": Unknown container");
   }
 
-  list<Level>::const_iterator iterator = levels.begin();
+  vector<Level>::const_iterator iterator = levels.begin();
   foreach (const Future<uint64_t>& value, values) {
     if (value.isReady()) {
       switch (*iterator) {
@@ -437,7 +436,7 @@ Future<ResourceStatistics> MemorySubsystem::_usage(
 }
 
 
-Future<Nothing> MemorySubsystem::cleanup(
+Future<Nothing> MemorySubsystemProcess::cleanup(
     const ContainerID& containerId,
     const string& cgroup)
 {
@@ -458,7 +457,7 @@ Future<Nothing> MemorySubsystem::cleanup(
 }
 
 
-void MemorySubsystem::oomListen(
+void MemorySubsystemProcess::oomListen(
     const ContainerID& containerId,
     const string& cgroup)
 {
@@ -480,15 +479,15 @@ void MemorySubsystem::oomListen(
             << containerId;
 
   info->oomNotifier.onReady(
-      defer(PID<MemorySubsystem>(this),
-            &MemorySubsystem::oomWaited,
+      defer(PID<MemorySubsystemProcess>(this),
+            &MemorySubsystemProcess::oomWaited,
             containerId,
             cgroup,
             lambda::_1));
 }
 
 
-void MemorySubsystem::oomWaited(
+void MemorySubsystemProcess::oomWaited(
     const ContainerID& containerId,
     const string& cgroup,
     const Future<Nothing>& future)
@@ -560,7 +559,8 @@ void MemorySubsystem::oomWaited(
   // we should save the resources passed in and report it here.
   Resources mem = Resources::parse(
       "mem",
-      stringify(usage.isSome() ? usage.get().megabytes() : 0),
+      stringify(usage.isSome()
+        ? (double) usage->bytes() / Bytes::MEGABYTES : 0),
       "*").get();
 
   infos[containerId]->limitation.set(
@@ -571,7 +571,7 @@ void MemorySubsystem::oomWaited(
 }
 
 
-void MemorySubsystem::pressureListen(
+void MemorySubsystemProcess::pressureListen(
     const ContainerID& containerId,
     const string& cgroup)
 {

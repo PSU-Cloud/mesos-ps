@@ -14,6 +14,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <sys/stat.h>
 #include <sys/wait.h>
 
 #include <map>
@@ -39,6 +40,8 @@
 
 #include "linux/cgroups.hpp"
 #include "linux/ns.hpp"
+
+#include "slave/containerizer/composing.hpp"
 
 #include "slave/containerizer/mesos/launch.hpp"
 #include "slave/containerizer/mesos/linux_launcher.hpp"
@@ -230,14 +233,13 @@ TEST_F(NestedMesosContainerizerTest, ROOT_CGROUPS_LaunchNested)
   ASSERT_TRUE(wait.get()->has_status());
   EXPECT_WEXITSTATUS_EQ(42, wait.get()->status());
 
-  wait = containerizer->wait(containerId);
+  Future<Option<ContainerTermination>> termination =
+    containerizer->destroy(containerId);
 
-  containerizer->destroy(containerId);
-
-  AWAIT_READY(wait);
-  ASSERT_SOME(wait.get());
-  ASSERT_TRUE(wait.get()->has_status());
-  EXPECT_WTERMSIG_EQ(SIGKILL, wait.get()->status());
+  AWAIT_READY(termination);
+  ASSERT_SOME(termination.get());
+  ASSERT_TRUE(termination.get()->has_status());
+  EXPECT_WTERMSIG_EQ(SIGKILL, termination.get()->status());
 }
 
 
@@ -413,14 +415,13 @@ TEST_F(NestedMesosContainerizerTest,
   }
 
   // Destroy the containerizer with all associated containers.
-  Future<Option<ContainerTermination>> wait = containerizer->wait(containerId);
+  Future<Option<ContainerTermination>> termination =
+    containerizer->destroy(containerId);
 
-  containerizer->destroy(containerId);
-
-  AWAIT_READY(wait);
-  ASSERT_SOME(wait.get());
-  ASSERT_TRUE(wait.get()->has_status());
-  EXPECT_WTERMSIG_EQ(SIGKILL, wait.get()->status());
+  AWAIT_READY(termination);
+  ASSERT_SOME(termination.get());
+  ASSERT_TRUE(termination.get()->has_status());
+  EXPECT_WTERMSIG_EQ(SIGKILL, termination.get()->status());
 }
 
 
@@ -452,23 +453,11 @@ TEST_F(NestedMesosContainerizerTest,
   ContainerID containerId;
   containerId.set_value(id::UUID::random().toString());
 
-  // Use a pipe to pass parent's MESOS_SANDBOX value to a child container.
-  Try<std::array<int_fd, 2>> pipes_ = os::pipe();
-  ASSERT_SOME(pipes_);
+  string pipe = path::join(sandbox.get(), "pipe");
+  ASSERT_EQ(0, ::mkfifo(pipe.c_str(), 0700));
 
-  const std::array<int_fd, 2>& pipes = pipes_.get();
-
-  // NOTE: We use a non-shell command here to use 'bash -c' to execute
-  // the 'echo', which deals with the file descriptor, because of a bug
-  // in ubuntu dash. Multi-digit file descriptor is not supported in
-  // ubuntu dash, which executes the shell command.
-  CommandInfo command;
-  command.set_shell(false);
-  command.set_value("/bin/bash");
-  command.add_arguments("bash");
-  command.add_arguments("-c");
-  command.add_arguments(
-      "echo $MESOS_SANDBOX >&" + stringify(pipes[1]) + ";" + "sleep 1000");
+  CommandInfo command =
+    createCommandInfo("echo ${MESOS_SANDBOX} > " + pipe + " ; sleep 1000");
 
   ExecutorInfo executor = createExecutorInfo("executor", command, "cpus:1");
 
@@ -486,30 +475,16 @@ TEST_F(NestedMesosContainerizerTest,
 
   AWAIT_ASSERT_EQ(Containerizer::LaunchResult::SUCCESS, launch);
 
-  // Wait for the parent container to start running its task
-  // before launching a debug container inside it.
-  AWAIT_READY(process::io::poll(pipes[0], process::io::READ));
-  close(pipes[1]);
-
-  // Launch a nested debug container that compares MESOS_SANDBOX
+  // Launch a nested debug container that compares `MESOS_SANDBOX`
   // it sees with the one its parent sees.
   {
     ContainerID nestedContainerId;
     nestedContainerId.mutable_parent()->CopyFrom(containerId);
     nestedContainerId.set_value(id::UUID::random().toString());
 
-    // NOTE: We use a non-shell command here to use 'bash -c' to execute
-    // the 'read', which deals with the file descriptor, because of a bug
-    // in ubuntu dash. Multi-digit file descriptor is not supported in
-    // ubuntu dash, which executes the shell command.
-    CommandInfo nestedCommand;
-    nestedCommand.set_shell(false);
-    nestedCommand.set_value("/bin/bash");
-    nestedCommand.add_arguments("bash");
-    nestedCommand.add_arguments("-c");
-    nestedCommand.add_arguments(
-        "read PARENT_SANDBOX <&" + stringify(pipes[0]) + ";"
-        "[ ${PARENT_SANDBOX} == ${MESOS_SANDBOX} ] && exit 0 || exit 1;");
+    CommandInfo nestedCommand = createCommandInfo(
+        "read PARENT_SANDBOX < " + pipe + ";"
+        "[ ${PARENT_SANDBOX} = ${MESOS_SANDBOX} ] && exit 0 || exit 1;");
 
     Future<Containerizer::LaunchResult> launchNested = containerizer->launch(
         nestedContainerId,
@@ -529,19 +504,16 @@ TEST_F(NestedMesosContainerizerTest,
     ASSERT_SOME(waitNested.get());
     ASSERT_TRUE(waitNested.get()->has_status());
     EXPECT_WEXITSTATUS_EQ(0, waitNested.get()->status());
-
-    close(pipes[0]);
   }
 
   // Destroy the containerizer with all associated containers.
-  Future<Option<ContainerTermination>> wait = containerizer->wait(containerId);
+  Future<Option<ContainerTermination>> termination =
+    containerizer->destroy(containerId);
 
-  containerizer->destroy(containerId);
-
-  AWAIT_READY(wait);
-  ASSERT_SOME(wait.get());
-  ASSERT_TRUE(wait.get()->has_status());
-  EXPECT_WTERMSIG_EQ(SIGKILL, wait.get()->status());
+  AWAIT_READY(termination);
+  ASSERT_SOME(termination.get());
+  ASSERT_TRUE(termination.get()->has_status());
+  EXPECT_WTERMSIG_EQ(SIGKILL, termination.get()->status());
 }
 
 
@@ -574,27 +546,15 @@ TEST_F(NestedMesosContainerizerTest,
   containerId.set_value(id::UUID::random().toString());
 
   // Use a pipe to synchronize with the top-level container.
-  Try<std::array<int_fd, 2>> pipes_ = os::pipe();
-  ASSERT_SOME(pipes_);
-
-  const std::array<int_fd, 2>& pipes = pipes_.get();
+  string pipe = path::join(sandbox.get(), "pipe");
+  ASSERT_EQ(0, ::mkfifo(pipe.c_str(), 0700));
 
   const string filename = "nested_inherits_work_dir";
 
-  // NOTE: We use a non-shell command here to use 'bash -c' to execute
-  // the 'echo', which deals with the file descriptor, because of a bug
-  // in ubuntu dash. Multi-digit file descriptor is not supported in
-  // ubuntu dash, which executes the shell command.
-  CommandInfo command;
-  command.set_shell(false);
-  command.set_value("/bin/bash");
-  command.add_arguments("bash");
-  command.add_arguments("-c");
-  command.add_arguments(
-      "touch " + filename + ";echo running >&" +
-      stringify(pipes[1]) + ";sleep 1000");
-
-  ExecutorInfo executor = createExecutorInfo("executor", command, "cpus:1");
+  ExecutorInfo executor = createExecutorInfo(
+      "executor",
+      "touch " + filename + "; echo running > " + pipe + "; sleep 1000",
+      "cpus:1");
 
   Try<string> directory = environment->mkdtemp();
   ASSERT_SOME(directory);
@@ -617,9 +577,9 @@ TEST_F(NestedMesosContainerizerTest,
 
   // Wait for the parent container to start running its task
   // before launching a debug container inside it.
-  AWAIT_READY(process::io::poll(pipes[0], process::io::READ));
-  close(pipes[1]);
-  close(pipes[0]);
+  Result<string> read = os::read(pipe);
+  ASSERT_SOME(read);
+  ASSERT_EQ("running\n", read.get());
 
   Future<ContainerStatus> status = containerizer->status(containerId);
   AWAIT_READY(status);
@@ -704,14 +664,13 @@ TEST_F(NestedMesosContainerizerTest,
   }
 
   // Destroy the containerizer with all associated containers.
-  Future<Option<ContainerTermination>> wait = containerizer->wait(containerId);
+  Future<Option<ContainerTermination>> termination =
+    containerizer->destroy(containerId);
 
-  containerizer->destroy(containerId);
-
-  AWAIT_READY(wait);
-  ASSERT_SOME(wait.get());
-  ASSERT_TRUE(wait.get()->has_status());
-  EXPECT_WTERMSIG_EQ(SIGKILL, wait.get()->status());
+  AWAIT_READY(termination);
+  ASSERT_SOME(termination.get());
+  ASSERT_TRUE(termination.get()->has_status());
+  EXPECT_WTERMSIG_EQ(SIGKILL, termination.get()->status());
 }
 
 
@@ -819,14 +778,13 @@ TEST_F(NestedMesosContainerizerTest,
   ASSERT_TRUE(wait.get()->has_status());
   EXPECT_WEXITSTATUS_EQ(0, wait.get()->status());
 
-  wait = containerizer->wait(containerId);
+  Future<Option<ContainerTermination>> termination =
+    containerizer->destroy(containerId);
 
-  containerizer->destroy(containerId);
-
-  AWAIT_READY(wait);
-  ASSERT_SOME(wait.get());
-  ASSERT_TRUE(wait.get()->has_status());
-  EXPECT_WTERMSIG_EQ(SIGKILL, wait.get()->status());
+  AWAIT_READY(termination);
+  ASSERT_SOME(termination.get());
+  ASSERT_TRUE(termination.get()->has_status());
+  EXPECT_WTERMSIG_EQ(SIGKILL, termination.get()->status());
 }
 
 
@@ -961,14 +919,13 @@ TEST_F(NestedMesosContainerizerTest,
   EXPECT_NE(stringify(parentPidNamespace.get()),
             stringify(pidNamespace2.get()));
 
-  wait = containerizer->wait(containerId);
+  Future<Option<ContainerTermination>> termination =
+    containerizer->destroy(containerId);
 
-  containerizer->destroy(containerId);
-
-  AWAIT_READY(wait);
-  ASSERT_SOME(wait.get());
-  ASSERT_TRUE(wait.get()->has_status());
-  EXPECT_WTERMSIG_EQ(SIGKILL, wait.get()->status());
+  AWAIT_READY(termination);
+  ASSERT_SOME(termination.get());
+  ASSERT_TRUE(termination.get()->has_status());
+  EXPECT_WTERMSIG_EQ(SIGKILL, termination.get()->status());
 }
 
 
@@ -1019,19 +976,17 @@ TEST_F(NestedMesosContainerizerTest,
   ASSERT_EQ(1u, offers->size());
 
   // Use a pipe to synchronize with the top-level container.
-  Try<std::array<int_fd, 2>> pipes_ = os::pipe();
-  ASSERT_SOME(pipes_);
+  string pipe = path::join(sandbox.get(), "pipe");
+  ASSERT_EQ(0, ::mkfifo(pipe.c_str(), 0700));
 
-  const std::array<int_fd, 2>& pipes = pipes_.get();
-
-  // Launch a command task within the `alpine` docker image and
-  // synchronize its launch with the launch of a debug container below.
+  // Launch a command task within the `alpine` docker image.
   TaskInfo task = createTask(
       offers->front().slave_id(),
       offers->front().resources(),
-      "echo running >&" + stringify(pipes[1]) + ";" + "sleep 1000");
+      "echo running > /tmp/pipe; sleep 1000");
 
-  task.mutable_container()->CopyFrom(createContainerInfo("alpine"));
+  task.mutable_container()->CopyFrom(createContainerInfo(
+      "alpine", {createVolumeHostPath("/tmp", sandbox.get(), Volume::RW)}));
 
   Future<TaskStatus> statusStarting;
   Future<TaskStatus> statusRunning;
@@ -1048,12 +1003,11 @@ TEST_F(NestedMesosContainerizerTest,
   AWAIT_READY_FOR(statusRunning, Seconds(120));
   ASSERT_EQ(TASK_RUNNING, statusRunning->state());
 
-  close(pipes[1]);
-
   // Wait for the parent container to start running its task
   // before launching a debug container inside it.
-  AWAIT_READY(process::io::poll(pipes[0], process::io::READ));
-  close(pipes[0]);
+  Result<string> read = os::read(pipe);
+  ASSERT_SOME(read);
+  ASSERT_EQ("running\n", read.get());
 
   ASSERT_TRUE(statusRunning->has_slave_id());
   ASSERT_TRUE(statusRunning->has_container_status());
@@ -1204,14 +1158,13 @@ TEST_F(NestedMesosContainerizerTest,
   ASSERT_TRUE(wait.get()->has_status());
   EXPECT_WTERMSIG_EQ(SIGKILL, wait.get()->status());
 
-  wait = containerizer->wait(containerId);
+  Future<Option<ContainerTermination>> termination =
+    containerizer->destroy(containerId);
 
-  containerizer->destroy(containerId);
-
-  AWAIT_READY(wait);
-  ASSERT_SOME(wait.get());
-  ASSERT_TRUE(wait.get()->has_status());
-  EXPECT_WTERMSIG_EQ(SIGKILL, wait.get()->status());
+  AWAIT_READY(termination);
+  ASSERT_SOME(termination.get());
+  ASSERT_TRUE(termination.get()->has_status());
+  EXPECT_WTERMSIG_EQ(SIGKILL, termination.get()->status());
 }
 
 
@@ -1267,28 +1220,25 @@ TEST_F(NestedMesosContainerizerTest, ROOT_CGROUPS_DestroyNested)
 
   AWAIT_ASSERT_EQ(Containerizer::LaunchResult::SUCCESS, launch);
 
-  Future<Option<ContainerTermination>> nestedWait = containerizer->wait(
-      nestedContainerId);
+  Future<Option<ContainerTermination>> nestedTermination =
+    containerizer->destroy(nestedContainerId);
 
-  containerizer->destroy(nestedContainerId);
-
-  AWAIT_READY(nestedWait);
-  ASSERT_SOME(nestedWait.get());
+  AWAIT_READY(nestedTermination);
+  ASSERT_SOME(nestedTermination.get());
 
   // We expect a wait status of SIGKILL on the nested container.
   // Since the kernel will destroy these via a SIGKILL, we expect
   // a SIGKILL here.
-  ASSERT_TRUE(nestedWait.get()->has_status());
-  EXPECT_WTERMSIG_EQ(SIGKILL, nestedWait.get()->status());
+  ASSERT_TRUE(nestedTermination.get()->has_status());
+  EXPECT_WTERMSIG_EQ(SIGKILL, nestedTermination.get()->status());
 
-  Future<Option<ContainerTermination>> wait = containerizer->wait(containerId);
+  Future<Option<ContainerTermination>> termination =
+    containerizer->destroy(containerId);
 
-  containerizer->destroy(containerId);
-
-  AWAIT_READY(wait);
-  ASSERT_SOME(wait.get());
-  ASSERT_TRUE(wait.get()->has_status());
-  EXPECT_WTERMSIG_EQ(SIGKILL, wait.get()->status());
+  AWAIT_READY(termination);
+  ASSERT_SOME(termination.get());
+  ASSERT_TRUE(termination.get()->has_status());
+  EXPECT_WTERMSIG_EQ(SIGKILL, termination.get()->status());
 }
 
 
@@ -1344,26 +1294,25 @@ TEST_F(NestedMesosContainerizerTest, ROOT_CGROUPS_DestroyParent)
 
   AWAIT_ASSERT_EQ(Containerizer::LaunchResult::SUCCESS, launch);
 
-  Future<Option<ContainerTermination>> wait = containerizer->wait(containerId);
+  Future<Option<ContainerTermination>> nestedTermination =
+    containerizer->wait(nestedContainerId);
 
-  Future<Option<ContainerTermination>> nestedWait = containerizer->wait(
-      nestedContainerId);
+  Future<Option<ContainerTermination>> termination =
+    containerizer->destroy(containerId);
 
-  containerizer->destroy(containerId);
-
-  AWAIT_READY(nestedWait);
-  ASSERT_SOME(nestedWait.get());
+  AWAIT_READY(nestedTermination);
+  ASSERT_SOME(nestedTermination.get());
 
   // We expect a wait status of SIGKILL on the nested container.
   // Since the kernel will destroy these via a SIGKILL, we expect
   // a SIGKILL here.
-  ASSERT_TRUE(nestedWait.get()->has_status());
-  EXPECT_WTERMSIG_EQ(SIGKILL, nestedWait.get()->status());
+  ASSERT_TRUE(nestedTermination.get()->has_status());
+  EXPECT_WTERMSIG_EQ(SIGKILL, nestedTermination.get()->status());
 
-  AWAIT_READY(wait);
-  ASSERT_SOME(wait.get());
-  ASSERT_TRUE(wait.get()->has_status());
-  EXPECT_WTERMSIG_EQ(SIGKILL, wait.get()->status());
+  AWAIT_READY(termination);
+  ASSERT_SOME(termination.get());
+  ASSERT_TRUE(termination.get()->has_status());
+  EXPECT_WTERMSIG_EQ(SIGKILL, termination.get()->status());
 }
 
 
@@ -1392,23 +1341,14 @@ TEST_F(NestedMesosContainerizerTest, ROOT_CGROUPS_ParentExit)
   ContainerID containerId;
   containerId.set_value(id::UUID::random().toString());
 
-  Try<std::array<int_fd, 2>> pipes_ = os::pipe();
-  ASSERT_SOME(pipes_);
+  string pipe = path::join(sandbox.get(), "pipe");
+  ASSERT_EQ(0, ::mkfifo(pipe.c_str(), 0700));
 
-  const std::array<int_fd, 2>& pipes = pipes_.get();
-
-  // NOTE: We use a non-shell command here to use 'bash -c' to execute
-  // the 'read', which deals with the file descriptor, because of a bug
-  // in ubuntu dash. Multi-digit file descriptor is not supported in
-  // ubuntu dash, which executes the shell command.
-  CommandInfo command;
-  command.set_shell(false);
-  command.set_value("/bin/bash");
-  command.add_arguments("bash");
-  command.add_arguments("-c");
-  command.add_arguments("read key <&" + stringify(pipes[0]));
-
-  ExecutorInfo executor = createExecutorInfo("executor", command, "cpus:1");
+  // We launch a blocking `read` after which we return with a non-success code.
+  ExecutorInfo executor = createExecutorInfo(
+      "executor",
+      createCommandInfo("read < " + pipe + " && exit 1"),
+      "cpus:1");
 
   Try<string> directory = environment->mkdtemp();
   ASSERT_SOME(directory);
@@ -1418,8 +1358,6 @@ TEST_F(NestedMesosContainerizerTest, ROOT_CGROUPS_ParentExit)
       createContainerConfig(None(), executor, directory.get()),
       map<string, string>(),
       None());
-
-  close(pipes[0]); // We're never going to read.
 
   AWAIT_ASSERT_EQ(Containerizer::LaunchResult::SUCCESS, launch);
 
@@ -1441,7 +1379,8 @@ TEST_F(NestedMesosContainerizerTest, ROOT_CGROUPS_ParentExit)
   Future<Option<ContainerTermination>> nestedWait = containerizer->wait(
       nestedContainerId);
 
-  close(pipes[1]); // Force the 'read key' to exit!
+  // Write to the fifo to unblock the `read` in the parent container.
+  os::write(pipe, "");
 
   AWAIT_READY(wait);
   ASSERT_SOME(wait.get());
@@ -1486,25 +1425,14 @@ TEST_F(NestedMesosContainerizerTest, ROOT_CGROUPS_ParentSigterm)
   ContainerID containerId;
   containerId.set_value(id::UUID::random().toString());
 
-  // Use a pipe to synchronize with the top-level container.
-  Try<std::array<int_fd, 2>> pipes_ = os::pipe();
-  ASSERT_SOME(pipes_);
+  // Use a fifo to synchronize with the top-level container.
+  string pipe = path::join(sandbox.get(), "pipe");
+  ASSERT_EQ(0, ::mkfifo(pipe.c_str(), 0700));
 
-  const std::array<int_fd, 2>& pipes = pipes_.get();
-
-  // NOTE: We use a non-shell command here to use 'bash -c' to execute
-  // the 'echo', which deals with the file descriptor, because of a bug
-  // in ubuntu dash. Multi-digit file descriptor is not supported in
-  // ubuntu dash, which executes the shell command.
-  CommandInfo command;
-  command.set_shell(false);
-  command.set_value("/bin/bash");
-  command.add_arguments("bash");
-  command.add_arguments("-c");
-  command.add_arguments(
-      "echo running >&" + stringify(pipes[1]) + ";" + "sleep 1000");
-
-  ExecutorInfo executor = createExecutorInfo("executor", command, "cpus:1");
+  ExecutorInfo executor = createExecutorInfo(
+      "executor",
+      createCommandInfo("echo running > " + pipe + "; sleep 1000"),
+      "cpus:1");
 
   Try<string> directory = environment->mkdtemp();
   ASSERT_SOME(directory);
@@ -1516,8 +1444,6 @@ TEST_F(NestedMesosContainerizerTest, ROOT_CGROUPS_ParentSigterm)
       None());
 
   AWAIT_ASSERT_EQ(Containerizer::LaunchResult::SUCCESS, launch);
-
-  close(pipes[1]);
 
   // Now launch nested container.
   ContainerID nestedContainerId;
@@ -1543,10 +1469,11 @@ TEST_F(NestedMesosContainerizerTest, ROOT_CGROUPS_ParentSigterm)
 
   // Wait for the parent container to start running its executor
   // process before sending it a signal.
-  AWAIT_READY(process::io::poll(pipes[0], process::io::READ));
-  close(pipes[0]);
+  Result<string> read = os::read(pipe);
+  ASSERT_SOME(read);
+  ASSERT_EQ("running\n", read.get());
 
-  ASSERT_EQ(0u, os::kill(status->executor_pid(), SIGTERM));
+  ASSERT_EQ(0, os::kill(status->executor_pid(), SIGTERM));
 
   AWAIT_READY(wait);
   ASSERT_SOME(wait.get());
@@ -1674,17 +1601,125 @@ TEST_F(NestedMesosContainerizerTest, ROOT_CGROUPS_RecoverNested)
   status = containerizer->status(containerId);
   AWAIT_READY(status);
   ASSERT_TRUE(status->has_executor_pid());
-  EXPECT_EQ(pid, status->executor_pid());
+  EXPECT_EQ(pid, static_cast<pid_t>(status->executor_pid()));
 
   status = containerizer->status(nestedContainerId);
   AWAIT_READY(status);
   ASSERT_TRUE(status->has_executor_pid());
-  EXPECT_EQ(nestedPid, status->executor_pid());
+  EXPECT_EQ(nestedPid, static_cast<pid_t>(status->executor_pid()));
 
+  Future<Option<ContainerTermination>> nestedTermination =
+    containerizer->destroy(nestedContainerId);
+
+  AWAIT_READY(nestedTermination);
+  ASSERT_SOME(nestedTermination.get());
+
+  // We expect a wait status of SIGKILL on the nested container.
+  // Since the kernel will destroy these via a SIGKILL, we expect
+  // a SIGKILL here.
+  ASSERT_TRUE(nestedTermination.get()->has_status());
+  EXPECT_WTERMSIG_EQ(SIGKILL, nestedTermination.get()->status());
+
+  Future<Option<ContainerTermination>> termination =
+    containerizer->destroy(containerId);
+
+  AWAIT_READY(termination);
+  ASSERT_SOME(termination.get());
+  ASSERT_TRUE(termination.get()->has_status());
+  EXPECT_WTERMSIG_EQ(SIGKILL, termination.get()->status());
+}
+
+
+// This test verifies that the agent could recover if the agent
+// metadata is empty but container runtime dir is not cleaned
+// up. This is a regression test for MESOS-8416.
+TEST_F(NestedMesosContainerizerTest,
+       ROOT_CGROUPS_RecoverNestedWithoutSlaveState)
+{
+  slave::Flags flags = CreateSlaveFlags();
+  flags.launcher = "linux";
+  flags.isolation = "cgroups/cpu,filesystem/linux,namespaces/pid";
+
+  Fetcher fetcher(flags);
+
+  Try<MesosContainerizer*> create = MesosContainerizer::create(
+      flags,
+      false,
+      &fetcher);
+
+  ASSERT_SOME(create);
+
+  Owned<MesosContainerizer> containerizer(create.get());
+
+  SlaveState state;
+  state.id = SlaveID();
+
+  AWAIT_READY(containerizer->recover(state));
+
+  ContainerID containerId;
+  containerId.set_value(id::UUID::random().toString());
+
+  ExecutorInfo executor = createExecutorInfo(
+      "executor",
+      "sleep 1000",
+      "cpus:1");
+
+  Try<string> directory = environment->mkdtemp();
+  ASSERT_SOME(directory);
+
+  Future<Containerizer::LaunchResult> launch = containerizer->launch(
+      containerId,
+      createContainerConfig(None(), executor, directory.get()),
+      map<string, string>(),
+      slave::paths::getForkedPidPath(
+          slave::paths::getMetaRootDir(flags.work_dir),
+          state.id,
+          executor.framework_id(),
+          executor.executor_id(),
+          containerId));
+
+  AWAIT_ASSERT_EQ(Containerizer::LaunchResult::SUCCESS, launch);
+
+  Future<ContainerStatus> status = containerizer->status(containerId);
+  AWAIT_READY(status);
+  ASSERT_TRUE(status->has_executor_pid());
+
+  // Now launch nested container.
+  ContainerID nestedContainerId;
+  nestedContainerId.mutable_parent()->CopyFrom(containerId);
+  nestedContainerId.set_value(id::UUID::random().toString());
+
+  launch = containerizer->launch(
+      nestedContainerId,
+      createContainerConfig(createCommandInfo("sleep 1000")),
+      map<string, string>(),
+      None());
+
+  AWAIT_ASSERT_EQ(Containerizer::LaunchResult::SUCCESS, launch);
+
+  status = containerizer->status(nestedContainerId);
+  AWAIT_READY(status);
+  ASSERT_TRUE(status->has_executor_pid());
+
+  // Force a delete on the containerizer before we create the new one.
+  containerizer.reset();
+
+  create = MesosContainerizer::create(
+      flags,
+      false,
+      &fetcher);
+
+  ASSERT_SOME(create);
+
+  containerizer.reset(create.get());
+
+  // Pass an empty slave state to simulate that the agent metadata
+  // is removed.
+  AWAIT_READY(containerizer->recover(state));
+
+  Future<Option<ContainerTermination>> wait = containerizer->wait(containerId);
   Future<Option<ContainerTermination>> nestedWait = containerizer->wait(
       nestedContainerId);
-
-  containerizer->destroy(nestedContainerId);
 
   AWAIT_READY(nestedWait);
   ASSERT_SOME(nestedWait.get());
@@ -1694,10 +1729,6 @@ TEST_F(NestedMesosContainerizerTest, ROOT_CGROUPS_RecoverNested)
   // a SIGKILL here.
   ASSERT_TRUE(nestedWait.get()->has_status());
   EXPECT_WTERMSIG_EQ(SIGKILL, nestedWait.get()->status());
-
-  Future<Option<ContainerTermination>> wait = containerizer->wait(containerId);
-
-  containerizer->destroy(containerId);
 
   AWAIT_READY(wait);
   ASSERT_SOME(wait.get());
@@ -1823,35 +1854,32 @@ TEST_F(NestedMesosContainerizerTest, ROOT_CGROUPS_RecoverNestedWithoutConfig)
   status = containerizer->status(containerId);
   AWAIT_READY(status);
   ASSERT_TRUE(status->has_executor_pid());
-  EXPECT_EQ(pid, status->executor_pid());
+  EXPECT_EQ(pid, static_cast<pid_t>(status->executor_pid()));
 
   status = containerizer->status(nestedContainerId);
   AWAIT_READY(status);
   ASSERT_TRUE(status->has_executor_pid());
-  EXPECT_EQ(nestedPid, status->executor_pid());
+  EXPECT_EQ(nestedPid, static_cast<pid_t>(status->executor_pid()));
 
-  Future<Option<ContainerTermination>> nestedWait = containerizer->wait(
-      nestedContainerId);
+  Future<Option<ContainerTermination>> nestedTermination =
+    containerizer->destroy(nestedContainerId);
 
-  containerizer->destroy(nestedContainerId);
-
-  AWAIT_READY(nestedWait);
-  ASSERT_SOME(nestedWait.get());
+  AWAIT_READY(nestedTermination);
+  ASSERT_SOME(nestedTermination.get());
 
   // We expect a wait status of SIGKILL on the nested container.
   // Since the kernel will destroy these via a SIGKILL, we expect
   // a SIGKILL here.
-  ASSERT_TRUE(nestedWait.get()->has_status());
-  EXPECT_WTERMSIG_EQ(SIGKILL, nestedWait.get()->status());
+  ASSERT_TRUE(nestedTermination.get()->has_status());
+  EXPECT_WTERMSIG_EQ(SIGKILL, nestedTermination.get()->status());
 
-  Future<Option<ContainerTermination>> wait = containerizer->wait(containerId);
+  Future<Option<ContainerTermination>> termination =
+    containerizer->destroy(containerId);
 
-  containerizer->destroy(containerId);
-
-  AWAIT_READY(wait);
-  ASSERT_SOME(wait.get());
-  ASSERT_TRUE(wait.get()->has_status());
-  EXPECT_WTERMSIG_EQ(SIGKILL, wait.get()->status());
+  AWAIT_READY(termination);
+  ASSERT_SOME(termination.get());
+  ASSERT_TRUE(termination.get()->has_status());
+  EXPECT_WTERMSIG_EQ(SIGKILL, termination.get()->status());
 }
 
 
@@ -1890,15 +1918,20 @@ TEST_F(NestedMesosContainerizerTest, ROOT_CGROUPS_RecoverLauncherOrphans)
       buildPath(containerId, "mesos", JOIN));
 
   ASSERT_SOME(cgroups::create(freezerHierarchy.get(), cgroup, true));
+  ASSERT_SOME_TRUE(cgroups::exists(freezerHierarchy.get(), cgroup));
 
   SlaveState state;
   state.id = SlaveID();
 
   AWAIT_READY(containerizer->recover(state));
 
-  Future<Option<ContainerTermination>> wait = containerizer->wait(containerId);
-  AWAIT_READY(wait);
-  ASSERT_SOME(wait.get());
+  // We expect that containerizer recovery will detect orphan container and
+  // will destroy it, so we check here that the freezer cgroup is destroyed.
+  //
+  // NOTE: `wait()` can return `Some` or `None` due to a race condition between
+  // `recover()` and `______destroy()` for an orphan container.
+  AWAIT_READY(containerizer->wait(containerId));
+  ASSERT_SOME_FALSE(cgroups::exists(freezerHierarchy.get(), cgroup));
 
   Future<hashset<ContainerID>> containers = containerizer->containers();
   AWAIT_READY(containers);
@@ -2005,7 +2038,7 @@ TEST_F(NestedMesosContainerizerTest, ROOT_CGROUPS_RecoverNestedLauncherOrphans)
   status = containerizer->status(containerId);
   AWAIT_READY(status);
   ASSERT_TRUE(status->has_executor_pid());
-  EXPECT_EQ(pid, status->executor_pid());
+  EXPECT_EQ(pid, static_cast<pid_t>(status->executor_pid()));
 
   Future<Option<ContainerTermination>> wait = containerizer->wait(
       nestedContainerId);
@@ -2017,14 +2050,13 @@ TEST_F(NestedMesosContainerizerTest, ROOT_CGROUPS_RecoverNestedLauncherOrphans)
   AWAIT_READY(containers);
   ASSERT_FALSE(containers->contains(nestedContainerId));
 
-  wait = containerizer->wait(containerId);
+  Future<Option<ContainerTermination>> termination =
+    containerizer->destroy(containerId);
 
-  containerizer->destroy(containerId);
-
-  AWAIT_READY(wait);
-  ASSERT_SOME(wait.get());
-  ASSERT_TRUE(wait.get()->has_status());
-  EXPECT_WTERMSIG_EQ(SIGKILL, wait.get()->status());
+  AWAIT_READY(termination);
+  ASSERT_SOME(termination.get());
+  ASSERT_TRUE(termination.get()->has_status());
+  EXPECT_WTERMSIG_EQ(SIGKILL, termination.get()->status());
 }
 
 
@@ -2059,40 +2091,43 @@ TEST_F(NestedMesosContainerizerTest,
   ContainerID containerId;
   containerId.set_value(id::UUID::random().toString());
 
-  string cgroup = path::join(
+  string cgroupParent = path::join(
       flags.cgroups_root,
       buildPath(containerId, "mesos", JOIN));
 
-  ASSERT_SOME(cgroups::create(freezerHierarchy.get(), cgroup, true));
+  ASSERT_SOME(cgroups::create(freezerHierarchy.get(), cgroupParent, true));
+  ASSERT_SOME_TRUE(cgroups::exists(freezerHierarchy.get(), cgroupParent));
 
   ContainerID nestedContainerId;
   nestedContainerId.mutable_parent()->CopyFrom(containerId);
   nestedContainerId.set_value(id::UUID::random().toString());
 
-  cgroup = path::join(
+  string cgroupNested = path::join(
       flags.cgroups_root,
       buildPath(nestedContainerId, "mesos", JOIN));
 
-  ASSERT_SOME(cgroups::create(freezerHierarchy.get(), cgroup, true));
+  ASSERT_SOME(cgroups::create(freezerHierarchy.get(), cgroupNested, true));
+  ASSERT_SOME_TRUE(cgroups::exists(freezerHierarchy.get(), cgroupNested));
 
   SlaveState state;
   state.id = SlaveID();
 
   AWAIT_READY(containerizer->recover(state));
 
-  Future<Option<ContainerTermination>> wait = containerizer->wait(
-      nestedContainerId);
-
-  AWAIT_READY(wait);
-  ASSERT_SOME(wait.get());
+  // We expect that containerizer recovery will detect orphan containers and
+  // will destroy them, so we check here that the freezer cgroups are destroyed.
+  //
+  // NOTE: `wait()` can return `Some` or `None` due to a race condition between
+  // `recover()` and `______destroy()` for an orphan container.
+  AWAIT_READY(containerizer->wait(nestedContainerId));
+  ASSERT_SOME_FALSE(cgroups::exists(freezerHierarchy.get(), cgroupNested));
 
   Future<hashset<ContainerID>> containers = containerizer->containers();
   AWAIT_READY(containers);
   ASSERT_FALSE(containers->contains(nestedContainerId));
 
-  wait = containerizer->wait(containerId);
-  AWAIT_READY(wait);
-  ASSERT_SOME(wait.get());
+  AWAIT_READY(containerizer->wait(containerId));
+  ASSERT_SOME_FALSE(cgroups::exists(freezerHierarchy.get(), cgroupParent));
 
   containers = containerizer->containers();
   AWAIT_READY(containers);
@@ -2210,7 +2245,7 @@ TEST_F(NestedMesosContainerizerTest,
   status = containerizer->status(containerId);
   AWAIT_READY(status);
   ASSERT_TRUE(status->has_executor_pid());
-  EXPECT_EQ(pid, status->executor_pid());
+  EXPECT_EQ(pid, static_cast<pid_t>(status->executor_pid()));
 
   Future<Option<ContainerTermination>> nestedWait1 = containerizer->wait(
       nestedContainerId1);
@@ -2229,14 +2264,13 @@ TEST_F(NestedMesosContainerizerTest,
   ASSERT_FALSE(containers->contains(nestedContainerId1));
   ASSERT_FALSE(containers->contains(nestedContainerId2));
 
-  Future<Option<ContainerTermination>> wait = containerizer->wait(containerId);
+  Future<Option<ContainerTermination>> termination =
+    containerizer->destroy(containerId);
 
-  containerizer->destroy(containerId);
-
-  AWAIT_READY(wait);
-  ASSERT_SOME(wait.get());
-  ASSERT_TRUE(wait.get()->has_status());
-  EXPECT_WTERMSIG_EQ(SIGKILL, wait.get()->status());
+  AWAIT_READY(termination);
+  ASSERT_SOME(termination.get());
+  ASSERT_TRUE(termination.get()->has_status());
+  EXPECT_WTERMSIG_EQ(SIGKILL, termination.get()->status());
 }
 
 
@@ -2359,12 +2393,12 @@ TEST_F(NestedMesosContainerizerTest,
   status = containerizer->status(containerId);
   AWAIT_READY(status);
   ASSERT_TRUE(status->has_executor_pid());
-  EXPECT_EQ(pid, status->executor_pid());
+  EXPECT_EQ(pid, static_cast<pid_t>(status->executor_pid()));
 
   status = containerizer->status(nestedContainerId1);
   AWAIT_READY(status);
   ASSERT_TRUE(status->has_executor_pid());
-  EXPECT_EQ(nestedPid1, status->executor_pid());
+  EXPECT_EQ(nestedPid1, static_cast<pid_t>(status->executor_pid()));
 
   Future<Option<ContainerTermination>> wait = containerizer->wait(
       nestedContainerId2);
@@ -2376,27 +2410,24 @@ TEST_F(NestedMesosContainerizerTest,
   AWAIT_READY(containers);
   ASSERT_FALSE(containers->contains(nestedContainerId2));
 
-  wait = containerizer->wait(nestedContainerId1);
+  Future<Option<ContainerTermination>> termination =
+    containerizer->destroy(nestedContainerId1);
 
-  containerizer->destroy(nestedContainerId1);
-
-  AWAIT_READY(wait);
-  ASSERT_SOME(wait.get());
+  AWAIT_READY(termination);
+  ASSERT_SOME(termination.get());
 
   // We expect a wait status of SIGKILL on the nested container.
   // Since the kernel will destroy these via a SIGKILL, we expect
   // a SIGKILL here.
-  ASSERT_TRUE(wait.get()->has_status());
-  EXPECT_WTERMSIG_EQ(SIGKILL, wait.get()->status());
+  ASSERT_TRUE(termination.get()->has_status());
+  EXPECT_WTERMSIG_EQ(SIGKILL, termination.get()->status());
 
-  wait = containerizer->wait(containerId);
+  termination = containerizer->destroy(containerId);
 
-  containerizer->destroy(containerId);
-
-  AWAIT_READY(wait);
-  ASSERT_SOME(wait.get());
-  ASSERT_TRUE(wait.get()->has_status());
-  EXPECT_WTERMSIG_EQ(SIGKILL, wait.get()->status());
+  AWAIT_READY(termination);
+  ASSERT_SOME(termination.get());
+  ASSERT_TRUE(termination.get()->has_status());
+  EXPECT_WTERMSIG_EQ(SIGKILL, termination.get()->status());
 }
 
 
@@ -2431,53 +2462,53 @@ TEST_F(NestedMesosContainerizerTest,
   ContainerID containerId;
   containerId.set_value(id::UUID::random().toString());
 
-  string cgroup = path::join(
+  string cgroupParent = path::join(
       flags.cgroups_root,
       buildPath(containerId, "mesos", JOIN));
 
-  ASSERT_SOME(cgroups::create(freezerHierarchy.get(), cgroup, true));
+  ASSERT_SOME(cgroups::create(freezerHierarchy.get(), cgroupParent, true));
+  ASSERT_SOME_TRUE(cgroups::exists(freezerHierarchy.get(), cgroupParent));
 
   ContainerID nestedContainerId1;
   nestedContainerId1.mutable_parent()->CopyFrom(containerId);
   nestedContainerId1.set_value(id::UUID::random().toString());
 
-  cgroup = path::join(
+  string cgroupNested1 = path::join(
       flags.cgroups_root,
       buildPath(nestedContainerId1, "mesos", JOIN));
 
-  ASSERT_SOME(cgroups::create(freezerHierarchy.get(), cgroup, true));
+  ASSERT_SOME(cgroups::create(freezerHierarchy.get(), cgroupNested1, true));
+  ASSERT_SOME_TRUE(cgroups::exists(freezerHierarchy.get(), cgroupNested1));
 
   ContainerID nestedContainerId2;
   nestedContainerId2.mutable_parent()->CopyFrom(containerId);
   nestedContainerId2.set_value(id::UUID::random().toString());
 
-  cgroup = path::join(
+  string cgroupNested2 = path::join(
       flags.cgroups_root,
       buildPath(nestedContainerId2, "mesos", JOIN));
 
-  ASSERT_SOME(cgroups::create(freezerHierarchy.get(), cgroup, true));
+  ASSERT_SOME(cgroups::create(freezerHierarchy.get(), cgroupNested2, true));
+  ASSERT_SOME_TRUE(cgroups::exists(freezerHierarchy.get(), cgroupNested2));
 
   SlaveState state;
   state.id = SlaveID();
 
   AWAIT_READY(containerizer->recover(state));
 
-  Future<Option<ContainerTermination>> nestedWait1 = containerizer->wait(
-      nestedContainerId1);
+  // We expect that containerizer recovery will detect orphan containers and
+  // will destroy them, so we check here that the freezer cgroups are destroyed.
+  //
+  // NOTE: `wait()` can return `Some` or `None` due to a race condition between
+  // `recover()` and `______destroy()` for an orphan container.
+  AWAIT_READY(containerizer->wait(nestedContainerId1));
+  ASSERT_SOME_FALSE(cgroups::exists(freezerHierarchy.get(), cgroupNested1));
 
-  Future<Option<ContainerTermination>> nestedWait2 = containerizer->wait(
-      nestedContainerId2);
+  AWAIT_READY(containerizer->wait(nestedContainerId2));
+  ASSERT_SOME_FALSE(cgroups::exists(freezerHierarchy.get(), cgroupNested2));
 
-  Future<Option<ContainerTermination>> wait = containerizer->wait(containerId);
-
-  AWAIT_READY(nestedWait1);
-  ASSERT_SOME(nestedWait1.get());
-
-  AWAIT_READY(nestedWait2);
-  ASSERT_SOME(nestedWait2.get());
-
-  AWAIT_READY(wait);
-  ASSERT_SOME(wait.get());
+  AWAIT_READY(containerizer->wait(containerId));
+  ASSERT_SOME_FALSE(cgroups::exists(freezerHierarchy.get(), cgroupParent));
 
   Future<hashset<ContainerID>> containers = containerizer->containers();
   AWAIT_READY(containers);
@@ -2485,6 +2516,198 @@ TEST_F(NestedMesosContainerizerTest,
   ASSERT_FALSE(containers->contains(nestedContainerId2));
   ASSERT_FALSE(containers->contains(containerId));
 }
+
+
+// This test verifies that termination status of a nested container is
+// available until its parent is terminated.
+TEST_F(NestedMesosContainerizerTest, ROOT_CGROUPS_WaitAfterDestroy)
+{
+  slave::Flags flags = CreateSlaveFlags();
+  flags.launcher = "linux";
+  flags.isolation = "cgroups/cpu,filesystem/linux,namespaces/pid";
+
+  Fetcher fetcher(flags);
+
+  Try<MesosContainerizer*> create = MesosContainerizer::create(
+      flags,
+      true,
+      &fetcher);
+
+  ASSERT_SOME(create);
+
+  Owned<MesosContainerizer> containerizer(create.get());
+
+  SlaveID slaveId = SlaveID();
+
+  // Launch a top-level container.
+  ContainerID containerId;
+  containerId.set_value(id::UUID::random().toString());
+
+  Try<string> directory = environment->mkdtemp();
+  ASSERT_SOME(directory);
+
+  Future<Containerizer::LaunchResult> launch = containerizer->launch(
+    containerId,
+    createContainerConfig(
+        None(),
+        createExecutorInfo("executor", "sleep 1000", "cpus:1"),
+        directory.get()),
+    map<string, string>(),
+    None());
+
+  AWAIT_ASSERT_EQ(Containerizer::LaunchResult::SUCCESS, launch);
+
+  // Launch a nested container.
+  ContainerID nestedContainerId;
+  nestedContainerId.mutable_parent()->CopyFrom(containerId);
+  nestedContainerId.set_value(id::UUID::random().toString());
+
+  launch = containerizer->launch(
+      nestedContainerId,
+      createContainerConfig(createCommandInfo("exit 42")),
+      map<string, string>(),
+      None());
+
+  AWAIT_ASSERT_EQ(Containerizer::LaunchResult::SUCCESS, launch);
+
+  // Wait once for a nested container completion, then wait again
+  // to make sure that its termination status is still available.
+  Future<Option<ContainerTermination>> nestedWait =
+    containerizer->wait(nestedContainerId);
+
+  AWAIT_READY(nestedWait);
+  ASSERT_SOME(nestedWait.get());
+  ASSERT_TRUE(nestedWait.get()->has_status());
+  EXPECT_WEXITSTATUS_EQ(42, nestedWait.get()->status());
+
+  nestedWait = containerizer->wait(nestedContainerId);
+
+  AWAIT_READY(nestedWait);
+  ASSERT_SOME(nestedWait.get());
+  ASSERT_TRUE(nestedWait.get()->has_status());
+  EXPECT_WEXITSTATUS_EQ(42, nestedWait.get()->status());
+
+  // Destroy the top-level container.
+  Future<Option<ContainerTermination>> termination =
+    containerizer->destroy(containerId);
+
+  AWAIT_READY(termination);
+  ASSERT_SOME(termination.get());
+  ASSERT_TRUE(termination.get()->has_status());
+  EXPECT_WTERMSIG_EQ(SIGKILL, termination.get()->status());
+
+  // Wait on nested container again.
+  nestedWait = containerizer->wait(nestedContainerId);
+
+  AWAIT_READY(nestedWait);
+  ASSERT_NONE(nestedWait.get());
+}
+
+
+// This test verifies that a container termination status for a terminated
+// nested container is available via `wait()` and `destroy()` methods for
+// both mesos and composing containerizers.
+TEST_F(NestedMesosContainerizerTest, ROOT_CGROUPS_TerminatedNestedStatus)
+{
+  slave::Flags flags = CreateSlaveFlags();
+  flags.launcher = "linux";
+  flags.isolation = "cgroups/cpu,filesystem/linux,namespaces/pid";
+
+  Fetcher fetcher(flags);
+
+  Try<MesosContainerizer*> create = MesosContainerizer::create(
+      flags,
+      true,
+      &fetcher);
+
+  ASSERT_SOME(create);
+
+  MesosContainerizer* mesosContainerizer(create.get());
+
+  Try<slave::ComposingContainerizer*> composing =
+    slave::ComposingContainerizer::create({mesosContainerizer});
+
+  ASSERT_SOME(composing);
+
+  Owned<Containerizer> containerizer(composing.get());
+
+  SlaveID slaveId = SlaveID();
+
+  // Launch a top-level container.
+  ContainerID containerId;
+  containerId.set_value(id::UUID::random().toString());
+
+  Try<string> directory = environment->mkdtemp();
+  ASSERT_SOME(directory);
+
+  Future<Containerizer::LaunchResult> launch = containerizer->launch(
+    containerId,
+    createContainerConfig(
+        None(),
+        createExecutorInfo("executor", "sleep 1000", "cpus:1"),
+        directory.get()),
+    map<string, string>(),
+    None());
+
+  AWAIT_ASSERT_EQ(Containerizer::LaunchResult::SUCCESS, launch);
+
+  // Launch a nested container.
+  ContainerID nestedContainerId;
+  nestedContainerId.mutable_parent()->CopyFrom(containerId);
+  nestedContainerId.set_value(id::UUID::random().toString());
+
+  launch = containerizer->launch(
+      nestedContainerId,
+      createContainerConfig(createCommandInfo("exit 42")),
+      map<string, string>(),
+      None());
+
+  AWAIT_ASSERT_EQ(Containerizer::LaunchResult::SUCCESS, launch);
+
+  // Verify that both `wait` and `destroy` methods of composing containerizer
+  // return the same container termination for a terminated nested container.
+  Future<Option<ContainerTermination>> nestedWait =
+    containerizer->wait(nestedContainerId);
+
+  AWAIT_READY(nestedWait);
+  ASSERT_SOME(nestedWait.get());
+  ASSERT_TRUE(nestedWait.get()->has_status());
+  EXPECT_WEXITSTATUS_EQ(42, nestedWait.get()->status());
+
+  Future<Option<ContainerTermination>> nestedTermination =
+    containerizer->destroy(nestedContainerId);
+
+  AWAIT_READY(nestedTermination);
+  ASSERT_SOME(nestedTermination.get());
+  ASSERT_TRUE(nestedTermination.get()->has_status());
+  EXPECT_WEXITSTATUS_EQ(42, nestedTermination.get()->status());
+
+  // Verify that both `wait` and `destroy` methods of mesos containerizer
+  // return the same container termination for a terminated nested container.
+  nestedWait = mesosContainerizer->wait(nestedContainerId);
+
+  AWAIT_READY(nestedWait);
+  ASSERT_SOME(nestedWait.get());
+  ASSERT_TRUE(nestedWait.get()->has_status());
+  EXPECT_WEXITSTATUS_EQ(42, nestedWait.get()->status());
+
+  nestedTermination = mesosContainerizer->destroy(nestedContainerId);
+
+  AWAIT_READY(nestedTermination);
+  ASSERT_SOME(nestedTermination.get());
+  ASSERT_TRUE(nestedTermination.get()->has_status());
+  EXPECT_WEXITSTATUS_EQ(42, nestedTermination.get()->status());
+
+  // Destroy the top-level container.
+  Future<Option<ContainerTermination>> termination =
+    containerizer->destroy(containerId);
+
+  AWAIT_READY(termination);
+  ASSERT_SOME(termination.get());
+  ASSERT_TRUE(termination.get()->has_status());
+  EXPECT_WTERMSIG_EQ(SIGKILL, termination.get()->status());
+}
+
 
 // This test verifies that agent environment variables are not leaked
 // to the nested container, and the environment variables specified in
@@ -2566,14 +2789,13 @@ TEST_F(NestedMesosContainerizerTest, ROOT_CGROUPS_AgentEnvironmentNotLeaked)
   ASSERT_TRUE(wait.get()->has_status());
   EXPECT_WEXITSTATUS_EQ(0, wait.get()->status());
 
-  wait = containerizer->wait(containerId);
+  Future<Option<ContainerTermination>> termination =
+    containerizer->destroy(containerId);
 
-  containerizer->destroy(containerId);
-
-  AWAIT_READY(wait);
-  ASSERT_SOME(wait.get());
-  ASSERT_TRUE(wait.get()->has_status());
-  EXPECT_WTERMSIG_EQ(SIGKILL, wait.get()->status());
+  AWAIT_READY(termination);
+  ASSERT_SOME(termination.get());
+  ASSERT_TRUE(termination.get()->has_status());
+  EXPECT_WTERMSIG_EQ(SIGKILL, termination.get()->status());
 }
 
 
@@ -2663,10 +2885,10 @@ TEST_F(NestedMesosContainerizerTest, ROOT_CGROUPS_Remove)
   AWAIT_READY(remove);
 
   // Finally destroy the parent container.
-  containerizer->destroy(containerId);
+  Future<Option<ContainerTermination>> termination =
+    containerizer->destroy(containerId);
 
-  wait = containerizer->wait(containerId);
-  AWAIT_READY(wait);
+  AWAIT_READY(termination);
 }
 
 
@@ -2740,10 +2962,10 @@ TEST_F(NestedMesosContainerizerTest,
   ASSERT_TRUE(os::exists(sandboxPath));
 
   // Now destroy the parent container.
-  containerizer->destroy(containerId);
+  Future<Option<ContainerTermination>> termination =
+    containerizer->destroy(containerId);
 
-  wait = containerizer->wait(containerId);
-  AWAIT_READY(wait);
+  AWAIT_READY(termination);
 
   // We expect `remove` to fail.
   Future<Nothing> remove = containerizer->remove(nestedContainerId);

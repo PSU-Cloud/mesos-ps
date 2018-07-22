@@ -63,7 +63,13 @@
 #include <stout/os/kill.hpp>
 #include <stout/os/killtree.hpp>
 
+#ifdef __WINDOWS__
+#include <stout/os/windows/jobobject.hpp>
+#endif // __WINDOWS__
+
 #include "checks/checker.hpp"
+#include "checks/checks_runtime.hpp"
+#include "checks/checks_types.hpp"
 #include "checks/health_checker.hpp"
 
 #include "common/http.hpp"
@@ -105,6 +111,8 @@ using mesos::Environment;
 using mesos::executor::Call;
 using mesos::executor::Event;
 
+using mesos::slave::ContainerLaunchInfo;
+
 using mesos::v1::executor::Mesos;
 using mesos::v1::executor::MesosBase;
 using mesos::v1::executor::V0ToV1Adapter;
@@ -125,6 +133,7 @@ public:
       const Option<Environment>& _taskEnvironment,
       const Option<CapabilityInfo>& _effectiveCapabilities,
       const Option<CapabilityInfo>& _boundingCapabilities,
+      const Option<ContainerLaunchInfo>& _taskLaunchInfo,
       const FrameworkID& _frameworkId,
       const ExecutorID& _executorId,
       const Duration& _shutdownGracePeriod)
@@ -134,8 +143,9 @@ public:
       launched(false),
       killed(false),
       killedByHealthCheck(false),
+      killedByMaxCompletionTimer(false),
       terminated(false),
-      pid(-1),
+      pid(None()),
       shutdownGracePeriod(_shutdownGracePeriod),
       frameworkInfo(None()),
       taskId(None()),
@@ -148,11 +158,12 @@ public:
       taskEnvironment(_taskEnvironment),
       effectiveCapabilities(_effectiveCapabilities),
       boundingCapabilities(_boundingCapabilities),
+      taskLaunchInfo(_taskLaunchInfo),
       frameworkId(_frameworkId),
       executorId(_executorId),
       lastTaskStatus(None()) {}
 
-  virtual ~CommandExecutor() = default;
+  ~CommandExecutor() override = default;
 
   void connected()
   {
@@ -253,7 +264,7 @@ public:
   }
 
 protected:
-  virtual void initialize()
+  void initialize() override
   {
     Option<string> value = os::getenv("MESOS_HTTP_COMMAND_EXECUTOR");
 
@@ -399,12 +410,13 @@ protected:
       const Option<string>& sandboxDirectory,
       const Option<string>& workingDirectory,
       const Option<CapabilityInfo>& effectiveCapabilities,
-      const Option<CapabilityInfo>& boundingCapabilities)
+      const Option<CapabilityInfo>& boundingCapabilities,
+      const Option<ContainerLaunchInfo>& taskLaunchInfo)
   {
     // Prepare the flags to pass to the launch process.
     slave::MesosContainerizerLaunch::Flags launchFlags;
 
-    ::mesos::slave::ContainerLaunchInfo launchInfo;
+    ContainerLaunchInfo launchInfo;
     launchInfo.mutable_command()->CopyFrom(command);
 
 #ifndef __WINDOWS__
@@ -466,6 +478,15 @@ protected:
           boundingCapabilities.get());
     }
 
+    if (taskLaunchInfo.isSome()) {
+      launchInfo.mutable_mounts()->CopyFrom(taskLaunchInfo->mounts());
+      launchInfo.mutable_pre_exec_commands()->CopyFrom(
+          taskLaunchInfo->pre_exec_commands());
+
+      launchInfo.mutable_clone_namespaces()->CopyFrom(
+          taskLaunchInfo->clone_namespaces());
+    }
+
     launchFlags.launch_info = JSON::protobuf(launchInfo);
 
     // TODO(tillt): Consider using a flag allowing / disallowing the
@@ -485,6 +506,11 @@ protected:
     vector<process::Subprocess::ParentHook> parentHooks;
 #ifdef __WINDOWS__
     parentHooks.emplace_back(Subprocess::ParentHook::CREATE_JOB());
+    // Setting the "kill on close" job object limit ties the lifetime of the
+    // task to that of the executor. This ensures that if the executor exits,
+    // its task exits too.
+    parentHooks.emplace_back(Subprocess::ParentHook(
+        [](pid_t pid) { return os::set_job_kill_on_close_limit(pid); }));
 #endif // __WINDOWS__
 
     Try<Subprocess> s = subprocess(
@@ -635,6 +661,21 @@ protected:
       launchEnvironment.add_variables()->CopyFrom(variable);
     }
 
+    // Setup timer for max_completion_time.
+    if (task.max_completion_time().nanoseconds() > 0) {
+      Duration duration = Nanoseconds(task.max_completion_time().nanoseconds());
+
+      LOG(INFO) << "Task " << taskId.get() << " has a max completion time of "
+                << duration;
+
+      taskCompletionTimer = delay(
+          duration,
+          self(),
+          &Self::taskCompletionTimeout,
+          task.task_id(),
+          duration);
+    }
+
     LOG(INFO) << "Starting task " << taskId.get();
 
     pid = launchTaskSubprocess(
@@ -646,9 +687,10 @@ protected:
         sandboxDirectory,
         workingDirectory,
         effectiveCapabilities,
-        boundingCapabilities);
+        boundingCapabilities,
+        taskLaunchInfo);
 
-    LOG(INFO) << "Forked command at " << pid;
+    LOG(INFO) << "Forked command at " << pid.get();
 
     if (task.has_check()) {
       vector<string> namespaces;
@@ -663,14 +705,14 @@ protected:
         namespaces.push_back("mnt");
       }
 
+      const checks::runtime::Plain plainRuntime{namespaces, pid.get()};
       Try<Owned<checks::Checker>> _checker =
         checks::Checker::create(
             task.check(),
             launcherDir,
             defer(self(), &Self::taskCheckUpdated, taskId.get(), lambda::_1),
             taskId.get(),
-            pid,
-            namespaces);
+            plainRuntime);
 
       if (_checker.isError()) {
         // TODO(alexr): Consider ABORT and return a TASK_FAILED here.
@@ -693,14 +735,14 @@ protected:
         namespaces.push_back("mnt");
       }
 
+      const checks::runtime::Plain plainRuntime{namespaces, pid.get()};
       Try<Owned<checks::HealthChecker>> _healthChecker =
         checks::HealthChecker::create(
             task.health_check(),
             launcherDir,
             defer(self(), &Self::taskHealthUpdated, lambda::_1),
             taskId.get(),
-            pid,
-            namespaces);
+            plainRuntime);
 
       if (_healthChecker.isError()) {
         // TODO(gilbert): Consider ABORT and return a TASK_FAILED here.
@@ -712,8 +754,8 @@ protected:
     }
 
     // Monitor this process.
-    process::reap(pid)
-      .onAny(defer(self(), &Self::reaped, pid, lambda::_1));
+    process::reap(pid.get())
+      .onAny(defer(self(), &Self::reaped, pid.get(), lambda::_1));
 
     TaskStatus status = createTaskStatus(taskId.get(), TASK_RUNNING);
 
@@ -723,6 +765,12 @@ protected:
 
   void kill(const TaskID& _taskId, const Option<KillPolicy>& override = None())
   {
+    // Cancel the taskCompletionTimer if it is set and ongoing.
+    if (taskCompletionTimer.isSome()) {
+      Clock::cancel(taskCompletionTimer.get());
+      taskCompletionTimer = None();
+    }
+
     // Default grace period is set to 3s for backwards compatibility.
     //
     // TODO(alexr): Replace it with a more meaningful default, e.g.
@@ -765,6 +813,8 @@ protected:
     if (launched) {
       CHECK_SOME(taskId);
       kill(taskId.get(), gracePeriod);
+    } else {
+      terminate(self());
     }
   }
 
@@ -774,6 +824,12 @@ private:
     if (terminated) {
       return;
     }
+
+    // Terminate if a kill task request is received before the task is launched.
+    // This can happen, for example, if `RunTaskMessage` has not been delivered.
+    // See MESOS-8297.
+    CHECK(launched) << "Terminating because kill task message has been"
+                    << " received before the task has been launched";
 
     // If the task is being killed but has not terminated yet and
     // we receive another kill request. Check if we need to adjust
@@ -788,11 +844,6 @@ private:
       // order to avoid possible confusion when a subsequent kill overrides
       // the previous one and gives the task _more_ time to clean up. Other
       // systems, e.g., docker, do not allow this.
-      //
-      // The escalation grace period can be only decreased. We intentionally
-      // do not support increasing the total grace period for the terminating
-      // task, because we do not want users to "slow down" a kill that is in
-      // progress. Also note that docker does not support this currently.
       //
       // Here are some examples to illustrate:
       //
@@ -832,10 +883,13 @@ private:
       CHECK_SOME(taskId);
       CHECK(taskId.get() == _taskId);
 
-      if (protobuf::frameworkHasCapability(
+      if (!killedByMaxCompletionTimer &&
+          protobuf::frameworkHasCapability(
               frameworkInfo.get(),
               FrameworkInfo::Capability::TASK_KILLING_STATE)) {
-        TaskStatus status = createTaskStatus(taskId.get(), TASK_KILLING);
+        TaskStatus status =
+          createTaskStatus(taskId.get(), TASK_KILLING);
+
         forward(status);
       }
 
@@ -850,20 +904,20 @@ private:
       }
 
       // Now perform signal escalation to begin killing the task.
-      CHECK_GT(pid, 0);
+      CHECK_SOME(pid);
 
-      LOG(INFO) << "Sending SIGTERM to process tree at pid " << pid;
+      LOG(INFO) << "Sending SIGTERM to process tree at pid " << pid.get();
 
       Try<std::list<os::ProcessTree>> trees =
-        os::killtree(pid, SIGTERM, true, true);
+        os::killtree(pid.get(), SIGTERM, true, true);
 
       if (trees.isError()) {
-        LOG(ERROR) << "Failed to kill the process tree rooted at pid " << pid
-                   << ": " << trees.error();
+        LOG(ERROR) << "Failed to kill the process tree rooted at pid "
+                   << pid.get() << ": " << trees.error();
 
         // Send SIGTERM directly to process 'pid' as it may not have
         // received signal before os::killtree() failed.
-        os::kill(pid, SIGTERM);
+        os::kill(pid.get(), SIGTERM);
       } else {
         LOG(INFO) << "Sent SIGTERM to the following process trees:\n"
                   << stringify(trees.get());
@@ -880,7 +934,7 @@ private:
     }
   }
 
-  void reaped(pid_t pid, const Future<Option<int>>& status_)
+  void reaped(pid_t _pid, const Future<Option<int>>& status_)
   {
     terminated = true;
 
@@ -901,20 +955,30 @@ private:
       Clock::cancel(killGracePeriodTimer.get());
     }
 
+    if (taskCompletionTimer.isSome()) {
+      Clock::cancel(taskCompletionTimer.get());
+      taskCompletionTimer = None();
+    }
+
+    Option<TaskStatus::Reason> reason = None();
+
     if (!status_.isReady()) {
       taskState = TASK_FAILED;
       message =
         "Failed to get exit status for Command: " +
         (status_.isFailed() ? status_.failure() : "future discarded");
-    } else if (status_.get().isNone()) {
+    } else if (status_->isNone()) {
       taskState = TASK_FAILED;
       message = "Failed to get exit status for Command";
     } else {
-      int status = status_.get().get();
+      int status = status_->get();
       CHECK(WIFEXITED(status) || WIFSIGNALED(status))
         << "Unexpected wait status " << status;
 
-      if (killed) {
+      if (killedByMaxCompletionTimer) {
+        taskState = TASK_FAILED;
+        reason = TaskStatus::REASON_MAX_COMPLETION_TIME_REACHED;
+      } else if (killed) {
         // Send TASK_KILLED if the task was killed as a result of
         // kill() or shutdown().
         taskState = TASK_KILLED;
@@ -927,14 +991,14 @@ private:
       message = "Command " + WSTRINGIFY(status);
     }
 
-    LOG(INFO) << message << " (pid: " << pid << ")";
+    LOG(INFO) << message << " (pid: " << _pid << ")";
 
     CHECK_SOME(taskId);
 
     TaskStatus status = createTaskStatus(
         taskId.get(),
         taskState,
-        None(),
+        reason,
         message);
 
     // Indicate that a kill occurred due to a failing health check.
@@ -966,29 +1030,49 @@ private:
       return;
     }
 
-    LOG(INFO) << "Process " << pid << " did not terminate after " << timeout
-              << ", sending SIGKILL to process tree at " << pid;
+    CHECK_SOME(pid);
+
+    LOG(INFO) << "Process " << pid.get() << " did not terminate after "
+              << timeout << ", sending SIGKILL to process tree at "
+              << pid.get();
 
     // TODO(nnielsen): Sending SIGTERM in the first stage of the
     // shutdown may leave orphan processes hanging off init. This
     // scenario will be handled when PID namespace encapsulated
     // execution is in place.
     Try<std::list<os::ProcessTree>> trees =
-      os::killtree(pid, SIGKILL, true, true);
+      os::killtree(pid.get(), SIGKILL, true, true);
 
     if (trees.isError()) {
       LOG(ERROR) << "Failed to kill the process tree rooted at pid "
-                 << pid << ": " << trees.error();
+                 << pid.get() << ": " << trees.error();
 
       // Process 'pid' may not have received signal before
       // os::killtree() failed. To make sure process 'pid' is reaped
       // we send SIGKILL directly.
-      os::kill(pid, SIGKILL);
+      os::kill(pid.get(), SIGKILL);
     } else {
       LOG(INFO) << "Killed the following process trees:\n"
                 << stringify(trees.get());
     }
   }
+
+
+  void taskCompletionTimeout(const TaskID& taskId, const Duration& duration)
+  {
+    CHECK(!terminated);
+    CHECK(!killed);
+
+    LOG(INFO) << "Killing task " << taskId
+              << " which exceeded its maximum completion time of " << duration;
+
+    taskCompletionTimer = None();
+    killedByMaxCompletionTimer = true;
+
+    // Use a zero gracePeriod to kill the task.
+    kill(taskId, Duration::zero());
+  }
+
 
   // Use this helper to create a status update from scratch, i.e., without
   // previously attached extra information like `data` or `check_status`.
@@ -1113,12 +1197,14 @@ private:
   bool launched;
   bool killed;
   bool killedByHealthCheck;
+  bool killedByMaxCompletionTimer;
+
   bool terminated;
 
   Option<Time> killGracePeriodStart;
   Option<Timer> killGracePeriodTimer;
-
-  pid_t pid;
+  Option<Timer> taskCompletionTimer;
+  Option<pid_t> pid;
   Duration shutdownGracePeriod;
   Option<KillPolicy> killPolicy;
   Option<FrameworkInfo> frameworkInfo;
@@ -1132,6 +1218,7 @@ private:
   Option<Environment> taskEnvironment;
   Option<CapabilityInfo> effectiveCapabilities;
   Option<CapabilityInfo> boundingCapabilities;
+  Option<ContainerLaunchInfo> taskLaunchInfo;
   const FrameworkID frameworkId;
   const ExecutorID executorId;
   Owned<MesosBase> mesos;
@@ -1191,6 +1278,10 @@ public:
         "bounding_capabilities",
         "The bounding set of capabilities the command can use.");
 
+    add(&Flags::task_launch_info,
+        "task_launch_info",
+        "The launch info to run the task.");
+
     add(&Flags::launcher_dir,
         "launcher_dir",
         "Directory path of Mesos binaries.",
@@ -1208,6 +1299,7 @@ public:
   Option<Environment> task_environment;
   Option<mesos::CapabilityInfo> effective_capabilities;
   Option<mesos::CapabilityInfo> bounding_capabilities;
+  Option<JSON::Object> task_launch_info;
   string launcher_dir;
 };
 
@@ -1272,6 +1364,19 @@ int main(int argc, char** argv)
     shutdownGracePeriod = parse.get();
   }
 
+  Option<ContainerLaunchInfo> task_launch_info;
+  if (flags.task_launch_info.isSome()) {
+    Try<ContainerLaunchInfo> parse =
+      protobuf::parse<ContainerLaunchInfo>(flags.task_launch_info.get());
+
+    if (parse.isError()) {
+      EXIT(EXIT_FAILURE)
+        << "Failed to parse task launch info: " << parse.error();
+    }
+
+    task_launch_info = parse.get();
+  }
+
   process::initialize();
 
   Owned<mesos::internal::CommandExecutor> executor(
@@ -1285,6 +1390,7 @@ int main(int argc, char** argv)
           flags.task_environment,
           flags.effective_capabilities,
           flags.bounding_capabilities,
+          task_launch_info,
           frameworkId,
           executorId,
           shutdownGracePeriod));

@@ -73,6 +73,7 @@ constexpr char SOCKET_FILE[] = "socket";
 constexpr char FORCE_DESTROY_ON_RECOVERY_FILE[] = "force_destroy_on_recovery";
 constexpr char IO_SWITCHBOARD_DIRECTORY[] = "io_switchboard";
 constexpr char CONTAINER_DIRECTORY[] = "containers";
+constexpr char CONTAINER_DEVICES_DIRECTORY[] = "devices";
 constexpr char CONTAINER_LAUNCH_INFO_FILE[] = "launch_info";
 constexpr char STANDALONE_MARKER_FILE[] = "standalone.marker";
 
@@ -103,6 +104,13 @@ std::string buildPath(
 // for a container given the 'runtimeDir' that was
 // used as well as the container `containerId`.
 std::string getRuntimePath(
+    const std::string& runtimeDir,
+    const ContainerID& containerId);
+
+
+// Given a `runtimeDir`, construct a unique directory to store
+// per-container device nodes.
+std::string getContainerDevicesPath(
     const std::string& runtimeDir,
     const ContainerID& containerId);
 
@@ -140,6 +148,19 @@ Result<pid_t> getContainerIOSwitchboardPid(
 
 // The helper method to get the socket file path.
 std::string getContainerIOSwitchboardSocketPath(
+    const std::string& runtimeDir,
+    const ContainerID& containerId);
+
+
+// The helper method to get the io switchboard provisional socket path,
+// see comment in IOSwitchboardServer::create().
+std::string getContainerIOSwitchboardSocketProvisionalPath(
+    const std::string& socketPath);
+
+
+// The helper method to get the io switchboard provisional socket path,
+// see comment in IOSwitchboardServer::create().
+std::string getContainerIOSwitchboardSocketProvisionalPath(
     const std::string& runtimeDir,
     const ContainerID& containerId);
 

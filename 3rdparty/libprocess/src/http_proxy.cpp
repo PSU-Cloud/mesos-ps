@@ -150,45 +150,41 @@ bool HttpProxy::process(const Future<Response>& future, const Request& request)
     response.body.clear();
 
     const string& path = response.path;
-    int_fd fd = open(path.c_str(), O_RDONLY);
-    if (fd < 0) {
-      if (errno == ENOENT || errno == ENOTDIR) {
+    Try<int_fd> fd = os::open(path, O_RDONLY);
+    if (fd.isError()) {
+#ifdef __WINDOWS__
+      const int error = ::GetLastError();
+      if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) {
+#else
+      const int error = errno;
+      if (error == ENOENT || error == ENOTDIR) {
+#endif // __WINDOWS__
           VLOG(1) << "Returning '404 Not Found' for path '" << path << "'";
           socket_manager->send(NotFound(), request, socket);
       } else {
-        const string error = os::strerror(errno);
-        VLOG(1) << "Failed to send file at '" << path << "': " << error;
+        VLOG(1) << "Failed to send file at '" << path << "': " << fd.error();
         socket_manager->send(InternalServerError(), request, socket);
       }
     } else {
-      struct stat s; // Need 'struct' because of function named 'stat'.
-      // We don't bother introducing a `os::fstat` since this is only
-      // one of two places where we use `fstat` in the entire codebase
-      // as of writing this comment.
-#ifdef __WINDOWS__
-      if (::fstat(fd.crt(), &s) != 0) {
-#else
-      if (::fstat(fd, &s) != 0) {
-#endif
-        const string error = os::strerror(errno);
-        VLOG(1) << "Failed to send file at '" << path << "': " << error;
+      const Try<Bytes> size = os::stat::size(fd.get());
+      if (size.isError()) {
+        VLOG(1) << "Failed to send file at '" << path << "': " << size.error();
         socket_manager->send(InternalServerError(), request, socket);
-      } else if (S_ISDIR(s.st_mode)) {
+      } else if (os::stat::isdir(fd.get())) {
         VLOG(1) << "Returning '404 Not Found' for directory '" << path << "'";
         socket_manager->send(NotFound(), request, socket);
       } else {
         // While the user is expected to properly set a 'Content-Type'
         // header, we fill in (or overwrite) 'Content-Length' header.
-        stringstream out;
-        out << s.st_size;
-        response.headers["Content-Length"] = out.str();
+        response.headers["Content-Length"] = stringify(size->bytes());
 
-        if (s.st_size == 0) {
+        if (size.get() == 0) {
           socket_manager->send(response, request, socket);
           return true; // All done, can process next request.
         }
 
-        VLOG(1) << "Sending file at '" << path << "' with length " << s.st_size;
+        VLOG(1) << "Sending file at '" << path << "' with length "
+                << size.get();
 
         // TODO(benh): Consider a way to have the socket manager turn
         // on TCP_CORK for both sends and then turn it off.
@@ -199,7 +195,7 @@ bool HttpProxy::process(const Future<Response>& future, const Request& request)
 
         // Note the file descriptor gets closed by FileEncoder.
         socket_manager->send(
-            new FileEncoder(fd, s.st_size),
+            new FileEncoder(fd.get(), size->bytes()),
             request.keepAlive,
             socket);
       }
@@ -257,12 +253,12 @@ void HttpProxy::stream(
   if (chunk.isReady()) {
     std::ostringstream out;
 
-    if (chunk.get().empty()) {
+    if (chunk->empty()) {
       // Finished reading.
       out << "0\r\n" << "\r\n";
       finished = true;
     } else {
-      out << std::hex << chunk.get().size() << "\r\n";
+      out << std::hex << chunk->size() << "\r\n";
       out << chunk.get();
       out << "\r\n";
 

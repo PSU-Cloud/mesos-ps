@@ -17,7 +17,6 @@
 #ifndef __VOLUME_IMAGE_ISOLATOR_HPP__
 #define __VOLUME_IMAGE_ISOLATOR_HPP__
 
-#include <list>
 #include <string>
 #include <vector>
 
@@ -42,14 +41,14 @@ public:
       const Flags& flags,
       const process::Shared<Provisioner>& provisioner);
 
-  virtual ~VolumeImageIsolatorProcess();
+  ~VolumeImageIsolatorProcess() override;
 
-  virtual bool supportsNesting();
-  virtual bool supportsStandalone();
+  bool supportsNesting() override;
+  bool supportsStandalone() override;
 
-  virtual process::Future<Option<mesos::slave::ContainerLaunchInfo>> prepare(
+  process::Future<Option<mesos::slave::ContainerLaunchInfo>> prepare(
       const ContainerID& containerId,
-      const mesos::slave::ContainerConfig& containerConfig);
+      const mesos::slave::ContainerConfig& containerConfig) override;
 
 private:
   VolumeImageIsolatorProcess(
@@ -59,7 +58,7 @@ private:
   process::Future<Option<mesos::slave::ContainerLaunchInfo>> _prepare(
       const ContainerID& containerId,
       const std::vector<std::string>& targets,
-      const std::list<process::Future<ProvisionInfo>>& futures);
+      const std::vector<process::Future<ProvisionInfo>>& futures);
 
   const Flags flags;
   const process::Shared<Provisioner> provisioner;

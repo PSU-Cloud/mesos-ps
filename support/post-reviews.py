@@ -44,6 +44,7 @@ import imp
 import os
 import platform
 import re
+import subprocess
 import sys
 import urlparse
 
@@ -90,6 +91,11 @@ def main():
     """Main function, post commits added to this branch as review requests."""
     # TODO(benh): Make sure this is a git repository, apologize if not.
 
+    # TODO(ArmandGrillet): Remove this when we'll have switched to Python 3.
+    dir_path = os.path.dirname(os.path.realpath(__file__))
+    script_path = os.path.join(dir_path, 'check-python3.py')
+    subprocess.call('python ' + script_path, shell=True, cwd=dir_path)
+
     # Choose 'rbt' if available, otherwise choose 'post-review'.
     post_review = None
 
@@ -108,19 +114,20 @@ def main():
         print 'Please install RBTools before proceeding'
         sys.exit(1)
 
-    # Don't do anything if people have unstaged changes.
+    # Warn if people have unstaged changes.
     diff_stat = execute(['git', 'diff', '--shortstat']).strip()
 
     if diff_stat:
-        print 'Please commit or stash any changes before using post-reviews!'
-        sys.exit(1)
+        print >> sys.stderr, \
+            'WARNING: Worktree contains unstaged changes, continuing anyway.'
 
-    # Don't do anything if people have uncommitted changes.
+    # Warn if people have uncommitted changes.
     diff_stat = execute(['git', 'diff', '--shortstat', '--staged']).strip()
 
     if diff_stat:
-        print 'Please commit staged changes before using post-reviews!'
-        sys.exit(1)
+        print >> sys.stderr, \
+            'WARNING: Worktree contains staged but uncommitted changes, ' \
+            'continuing anyway.'
 
     # Grab a reference to the repo's git directory. Usually this is simply
     # .git in the repo's top level directory. However, when submodules are
@@ -183,9 +190,10 @@ def main():
     branch_ref = execute(['git', 'symbolic-ref', 'HEAD']).strip()
     branch = branch_ref.replace('refs/heads/', '', 1)
 
-    # do not work on master branch
-    if branch == "master":
-        print "We're expecting you to be working on another branch from master!"
+    # Do not work on the tracking branch.
+    if branch == tracking_branch:
+        print "We're expecting you to be working on another branch" \
+              " from {}!".format(tracking_branch)
         sys.exit(1)
 
     temporary_branch = '_post-reviews_' + branch
@@ -197,6 +205,19 @@ def main():
     # Always put us back on the original branch.
     atexit.register(lambda: execute(['git', 'checkout', branch]))
 
+    # Warn if the tracking branch is no direct ancestor of this review chain.
+    if execute([
+            'git', 'merge-base', '--is-ancestor', tracking_branch, branch_ref],
+            ignore_errors=True) is None:
+        print >> sys.stderr, \
+            "WARNING: Tracking branch '%s' is no direct ancestor of HEAD." \
+            " Did you forget to rebase?" % tracking_branch
+
+        try:
+            raw_input("Press enter to continue or 'Ctrl-C' to abort.\n")
+        except KeyboardInterrupt:
+            sys.exit(0)
+
     merge_base = execute(
         ['git', 'merge-base', tracking_branch, branch_ref]).strip()
 
@@ -207,6 +228,7 @@ def main():
         '--pretty=format:%Cred%H%Creset -%C'
         '(yellow)%d%Creset %s %Cgreen(%cr)%Creset',
         merge_base + '..HEAD'])
+
     print 'Running \'%s\' across all of ...' % " ".join(post_review)
     print output
 
@@ -228,7 +250,7 @@ def main():
         sha = line.split()[0]
         shas.append(sha)
 
-    previous = tracking_branch
+    previous = merge_base
     parent_review_request_id = None
     for i, sha in enumerate(shas):
         execute(['git', 'branch', '-D', temporary_branch], True)

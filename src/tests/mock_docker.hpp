@@ -17,7 +17,6 @@
 #ifndef __TESTS_MOCKDOCKER_HPP__
 #define __TESTS_MOCKDOCKER_HPP__
 
-#include <list>
 #include <map>
 #include <string>
 #include <vector>
@@ -56,7 +55,7 @@ public:
       const std::string& path,
       const std::string& socket,
       const Option<JSON::Object>& config = None());
-  virtual ~MockDocker();
+  ~MockDocker() override;
 
   MOCK_CONST_METHOD3(
       run,
@@ -67,7 +66,7 @@ public:
 
   MOCK_CONST_METHOD2(
       ps,
-      process::Future<std::list<Docker::Container>>(
+      process::Future<std::vector<Docker::Container>>(
           bool, const Option<std::string>&));
 
   MOCK_CONST_METHOD3(
@@ -101,7 +100,7 @@ public:
         _stderr);
   }
 
-  process::Future<std::list<Docker::Container>> _ps(
+  process::Future<std::vector<Docker::Container>> _ps(
       bool all,
       const Option<std::string>& prefix) const
   {
@@ -146,7 +145,7 @@ public:
   MockDockerContainerizer(
       const process::Owned<slave::DockerContainerizerProcess>& process);
 
-  virtual ~MockDockerContainerizer();
+  ~MockDockerContainerizer() override;
 
   void initialize()
   {
@@ -212,7 +211,7 @@ public:
       const process::Shared<Docker>& docker,
       const Option<NvidiaComponents>& nvidia = None());
 
-  virtual ~MockDockerContainerizerProcess();
+  ~MockDockerContainerizerProcess() override;
 
   MOCK_METHOD1(
       fetch,

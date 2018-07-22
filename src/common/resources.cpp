@@ -260,7 +260,7 @@ bool operator!=(const Resource::DiskInfo& left, const Resource::DiskInfo& right)
 }
 
 
-bool operator==(const Resource& left, const Resource& right)
+static bool compareResourceMetadata(const Resource& left, const Resource& right)
 {
   if (left.name() != right.name() || left.type() != right.type()) {
     return false;
@@ -312,6 +312,15 @@ bool operator==(const Resource& left, const Resource& right)
 
   // Check SharedInfo.
   if (left.has_shared() != right.has_shared()) {
+    return false;
+  }
+
+  return true;
+}
+
+
+bool operator==(const Resource& left, const Resource& right) {
+  if (!compareResourceMetadata(left, right)) {
     return false;
   }
 
@@ -717,16 +726,13 @@ Try<Resources> Resources::parse(
 
   Resources result;
 
-  // Validate the Resource objects and convert them
-  // to the "post-reservation-refinement" format.
+  // Validate the Resource objects.
   foreach (Resource resource, resources.get()) {
     // If invalid, propgate error instead of skipping the resource.
     Option<Error> error = Resources::validate(resource);
     if (error.isSome()) {
       return error.get();
     }
-
-    convertResourceFormat(&resource, POST_RESERVATION_REFINEMENT);
 
     result.add(resource);
   }
@@ -766,6 +772,8 @@ Try<vector<Resource>> Resources::fromJSON(
     if (!resource.has_role() && resource.reservations_size() == 0) {
       resource.set_role(defaultRole);
     }
+
+    upgradeResource(&resource);
 
     // We add the Resource object even if it is empty or invalid.
     result.push_back(resource);
@@ -815,6 +823,8 @@ Try<vector<Resource>> Resources::fromSimpleString(
       return Error(resource.error());
     }
 
+    upgradeResource(&(resource.get()));
+
     // We add the Resource object even if it is empty or invalid.
     resources.push_back(resource.get());
   }
@@ -853,8 +863,11 @@ Option<Error> Resources::validate(const Resource& resource)
       return Error("Invalid scalar resource");
     }
 
-    if (resource.scalar().value() < 0) {
-      return Error("Invalid scalar resource: value < 0");
+    // We do not allow negative scalar resource values or
+    // non-zero values which would be represented as zero.
+    if (resource.scalar().value() != 0 &&
+        resource.scalar() <= Value::Scalar()) {
+      return Error("Invalid scalar resource: value <= 0");
     }
   } else if (resource.type() == Value::RANGES) {
     if (resource.has_scalar() ||
@@ -920,8 +933,20 @@ Option<Error> Resources::validate(const Resource& resource)
           break;
         case Resource::DiskInfo::Source::BLOCK:
         case Resource::DiskInfo::Source::RAW:
-          // TODO(bbannier): Update with validation once the exact format of
-          // `BLOCK` and `RAW` messages have taken some form.
+          if (source.has_mount()) {
+            return Error(
+                "Mount should not be set for " +
+                Resource::DiskInfo::Source::Type_Name(source.type()) +
+                " disk source");
+          }
+
+          if (source.has_path()) {
+            return Error(
+                "Path should not be set for " +
+                Resource::DiskInfo::Source::Type_Name(source.type()) +
+                " disk source");
+          }
+
           break;
         case Resource::DiskInfo::Source::UNKNOWN:
           return Error(
@@ -1223,6 +1248,17 @@ bool Resources::isShared(const Resource& resource)
 }
 
 
+bool Resources::isScalarQuantity(const Resources& resources)
+{
+  // Instead of checking the absence of non-scalar-quantity fields,
+  // we do an equality check between the original resources object and
+  // its stripped counterpart.
+  //
+  // We remove the static reservation metadata here via `toUnreserved()`.
+  return resources == resources.createStrippedScalarQuantity().toUnreserved();
+}
+
+
 bool Resources::hasRefinedReservations(const Resource& resource)
 {
   CHECK(!resource.has_role()) << resource;
@@ -1246,6 +1282,29 @@ const string& Resources::reservationRole(const Resource& resource)
   CHECK_GT(resource.reservations_size(), 0);
   return resource.reservations().rbegin()->role();
 }
+
+
+bool Resources::shrink(Resource* resource, const Value::Scalar& target)
+{
+  if (resource->scalar() <= target) {
+    return true; // Already within target.
+  }
+
+  Resource copy = *resource;
+  copy.mutable_scalar()->CopyFrom(target);
+
+  // Some resources (e.g. MOUNT disk) are indivisible. We use
+  // a containement check to verify this. Specifically, if a
+  // contains a smaller version of itself, then it can safely
+  // be chopped into a smaller amount.
+  if (Resources(*resource).contains(copy)) {
+    resource->CopyFrom(copy);
+    return true;
+  }
+
+  return false;
+}
+
 
 /////////////////////////////////////////////////
 // Public member functions.
@@ -1581,23 +1640,12 @@ Resources Resources::createStrippedScalarQuantity() const
 
   foreach (const Resource& resource, resources) {
     if (resource.type() == Value::SCALAR) {
-      Resource scalar = resource;
-      scalar.clear_provider_id();
-      scalar.clear_allocation_info();
+      Resource scalar;
 
-      // We collapse the stack of reservations here to a single `STATIC`
-      // reservation in order to maintain existing behavior of ignoring
-      // the reservation type, and keeping the reservation role.
-      if (Resources::isReserved(scalar)) {
-        Resource::ReservationInfo collapsedReservation;
-        collapsedReservation.set_type(Resource::ReservationInfo::STATIC);
-        collapsedReservation.set_role(Resources::reservationRole(scalar));
-        scalar.clear_reservations();
-        scalar.add_reservations()->CopyFrom(collapsedReservation);
-      }
+      scalar.set_name(resource.name());
+      scalar.set_type(resource.type());
+      scalar.mutable_scalar()->CopyFrom(resource.scalar());
 
-      scalar.clear_disk();
-      scalar.clear_shared();
       stripped.add(scalar);
     }
   }
@@ -1828,6 +1876,17 @@ Option<Value::Ranges> Resources::ephemeral_ports() const
   }
 }
 
+
+Option<Resource> Resources::match(const Resource& resource) const
+{
+  foreach (const Resource_& resource_, resources) {
+    if (compareResourceMetadata(resource_.resource, resource)) {
+      return resource_.resource;
+    }
+  }
+
+  return None();
+}
 
 /////////////////////////////////////////////////
 // Private member functions.
@@ -2087,17 +2146,27 @@ ostream& operator<<(ostream& stream, const Resource::DiskInfo::Source& source)
 {
   switch (source.type()) {
     case Resource::DiskInfo::Source::MOUNT:
-      return stream << "MOUNT"
-                    << (source.mount().has_root() ? ":" + source.mount().root()
-                                                  : "");
+      return stream
+        << "MOUNT"
+        << ((source.has_id() || source.has_profile())
+              ? "(" + source.id() + "," + source.profile() + ")"
+              : (source.mount().has_root() ? ":" + source.mount().root() : ""));
     case Resource::DiskInfo::Source::PATH:
-      return stream << "PATH"
-                    << (source.path().has_root() ? ":" + source.path().root()
-                                                 : "");
+      return stream
+        << "PATH"
+        << ((source.has_id() || source.has_profile())
+              ? "(" + source.id() + "," + source.profile() + ")"
+              : (source.path().has_root() ? ":" + source.path().root() : ""));
     case Resource::DiskInfo::Source::BLOCK:
-      return stream << "BLOCK";
+      return stream
+        << "BLOCK"
+        << ((source.has_id() || source.has_profile())
+              ? "(" + source.id() + "," + source.profile() + ")" : "");
     case Resource::DiskInfo::Source::RAW:
-      return stream << "RAW";
+      return stream
+        << "RAW"
+        << ((source.has_id() || source.has_profile())
+              ? "(" + source.id() + "," + source.profile() + ")" : "");
     case Resource::DiskInfo::Source::UNKNOWN:
       return stream << "UNKNOWN";
   }

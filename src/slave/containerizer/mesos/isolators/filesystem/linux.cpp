@@ -16,9 +16,9 @@
 
 #include <sys/mount.h>
 
-#include <list>
 #include <sstream>
 #include <string>
+#include <vector>
 
 #include <glog/logging.h>
 
@@ -51,7 +51,6 @@
 
 using namespace process;
 
-using std::list;
 using std::ostringstream;
 using std::string;
 using std::vector;
@@ -76,6 +75,13 @@ Try<Isolator*> LinuxFilesystemIsolatorProcess::create(const Flags& flags)
 
   if (flags.launcher != "linux") {
     return Error("'filesystem/linux' isolator requires 'linux' launcher");
+  }
+
+
+  Try<bool> supported = ns::supported(CLONE_NEWNS);
+  if (supported.isError() || !supported.get()) {
+    return Error(
+        "The 'filesystem/linux' isolator requires mount namespace support");
   }
 
   // Make sure that slave's working directory is in a shared mount so
@@ -226,7 +232,7 @@ bool LinuxFilesystemIsolatorProcess::supportsStandalone()
 
 
 Future<Nothing> LinuxFilesystemIsolatorProcess::recover(
-    const list<ContainerState>& states,
+    const vector<ContainerState>& states,
     const hashset<ContainerID>& orphans)
 {
   foreach (const ContainerState& state, states) {
@@ -248,7 +254,7 @@ Future<Nothing> LinuxFilesystemIsolatorProcess::recover(
     return Failure("Failed to get mount table: " + table.error());
   }
 
-  list<Future<Nothing>> cleanups;
+  vector<Future<Nothing>> cleanups;
 
   foreach (const fs::MountInfoTable::Entry& entry, table->entries) {
     // Check for mounts inside an executor's run path. These are
@@ -499,7 +505,14 @@ Future<Nothing> LinuxFilesystemIsolatorProcess::update(
 
     bool isVolumeInUse = false;
 
-    foreachvalue (const Owned<Info>& info, infos) {
+    foreachpair (const ContainerID& _containerId,
+                 const Owned<Info>& info,
+                 infos) {
+      // Skip self.
+      if (_containerId == containerId) {
+        continue;
+      }
+
       if (info->resources.contains(resource)) {
         isVolumeInUse = true;
         break;
@@ -533,7 +546,7 @@ Future<Nothing> LinuxFilesystemIsolatorProcess::update(
       // target existed:
       // 1. This is possible because 'info->resources' will be reset
       //    when slave restarts and recovers. When the slave calls
-      //    'containerizer->update' after the executor re-registers,
+      //    'containerizer->update' after the executor reregisters,
       //    we'll try to re-mount all the already mounted volumes.
       // 2. There may be multiple references to the persistent
       //    volume's mount target. E.g., a host volume and a

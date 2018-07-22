@@ -14,6 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+include(CMakePushCheckState)
+
 # GENERAL OPTIONS.
 ##################
 option(VERBOSE
@@ -50,7 +52,7 @@ if (ENABLE_PRECOMPILED_HEADERS)
   set(COTIRE_VERBOSE ${VERBOSE})
 endif ()
 
-if (WIN32)
+if (CMAKE_GENERATOR MATCHES "Visual Studio")
   # In MSVC 1900, there are two bugs in the linker, one that causes linking
   # libmesos to occasionally take hours, and one that causes us to be able to
   # fail to open the `mesos-x.lib` file. These have been confirmed as bugs with
@@ -73,8 +75,40 @@ option(
   TRUE)
 
 option(
+  ENABLE_GRPC
+  "Build libprocess with gRPC support."
+  FALSE)
+
+option(
   ENABLE_LIBEVENT
   "Use libevent instead of libev as the core event loop implementation."
+  FALSE)
+
+if (ENABLE_LIBEVENT)
+  # TODO(tillt): Consider adding Ubuntu 17 to this check. See MESOS-7076.
+  if (NOT APPLE)
+    set(DEFAULT_UNBUNDLED_LIBEVENT FALSE)
+  else ()
+    set(DEFAULT_UNBUNDLED_LIBEVENT TRUE)
+  endif ()
+
+  option(
+    UNBUNDLED_LIBEVENT
+    "Build libprocess with an installed libevent version instead of the bundled."
+    ${DEFAULT_UNBUNDLED_LIBEVENT})
+
+  if (UNBUNDLED_LIBEVENT)
+    set(
+      LIBEVENT_ROOT_DIR
+      ""
+      CACHE STRING
+      "Specify the path to libevent, e.g. \"C:\\libevent-Win64\".")
+  endif()
+endif()
+
+option(
+  ENABLE_LIBWINIO
+  "Use Windows IOCP instead of libev as the core event loop implementation."
   FALSE)
 
 option(
@@ -97,7 +131,56 @@ option(
   "Build libprocess with LIFO fixed size semaphore."
   FALSE)
 
-option(ENABLE_JAVA
+option(
+  PYTHON
+  "Command for the Python interpreter, set to `python` if not given."
+  "python")
+
+option(
+  PYTHON_3
+  "Command for the Python 3 interpreter, set to the option PYTHON if not given."
+  "")
+
+option(
+  ENABLE_NEW_CLI
+  "Build the new CLI instead of the old one."
+  FALSE)
+
+if (ENABLE_NEW_CLI)
+  # We always want to have PYTHON_3 set as it will be used to build the CLI.
+  if (NOT PYTHON_3)
+    if (PYTHON)
+      # Set PYTHON_3 to PYTHON if PYTHON is set but not PYTHON_3.
+      set(PYTHON_3 ${PYTHON})
+    else ()
+      # Set PYTHON_3 to the one CMake finds if PYTHON is not set.
+      # PythonInterp sets PYTHON_EXECUTABLE by looking for an interpreter
+      # from newest to oldest,, we then use it to set PYTHON and PYTHON_3.
+      find_package(PythonInterp)
+      if (NOT PYTHONINTERP_FOUND)
+        message(FATAL_ERROR "You must have Python set up in order to continue.")
+      endif ()
+      set(PYTHON ${PYTHON_EXECUTABLE})
+      set(PYTHON_3 ${PYTHON})
+    endif ()
+  endif ()
+
+  execute_process(
+    COMMAND ${PYTHON_3} -c
+      "import sys; print('%d.%d' % (sys.version_info[0], sys.version_info[1]))"
+    OUTPUT_VARIABLE PYTHON_3_VERSION
+    OUTPUT_STRIP_TRAILING_WHITESPACE)
+
+  if (PYTHON_3_VERSION VERSION_LESS "3.6.0")
+    message(FATAL_ERROR
+    "You must be running python 3.6 or newer in order to continue.\n"
+    "You appear to be running Python ${PYTHON_3_VERSION}.\n"
+    "Set the CMake option 'PYTHON_3' to define which interpreter to use.")
+  endif ()
+endif ()
+
+option(
+  ENABLE_JAVA
   "Build Java components. Warning: this is SLOW."
   FALSE)
 
@@ -145,12 +228,21 @@ if (WIN32 AND REBUNDLED)
     "the Internet, even though the `REBUNDLED` flag was set.")
 endif ()
 
-if (WIN32 AND (NOT ENABLE_LIBEVENT))
+if (WIN32 AND (NOT ENABLE_LIBEVENT AND NOT ENABLE_LIBWINIO))
   message(
     FATAL_ERROR
     "Windows builds of Mesos currently do not support libev, the default event "
     "loop used by Mesos.  To opt into using libevent, pass "
-    "`-DENABLE_LIBEVENT=1` as an argument when you run CMake.")
+    "`-DENABLE_LIBEVENT=1` as an argument when you run CMake."
+    "To opt into using the native Windows IOCP implementation instead, "
+    "pass `-DENABLE_LIBWINIO=1` as an argument.")
+endif ()
+
+if (ENABLE_LIBWINIO AND (NOT WIN32))
+  message(
+    FATAL_ERROR
+    "Libwinio, which is the Windows IOCP event loop, only works on Windows. "
+    "Please use libev or libevent instead on non-Windows platforms.")
 endif ()
 
 if (ENABLE_SSL AND (NOT ENABLE_LIBEVENT))
@@ -162,6 +254,13 @@ endif ()
 
 # SYSTEM CHECKS.
 ################
+
+# Set the default standard to C++11 for all targets.
+set(CMAKE_CXX_STANDARD 11)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+# Do not use, for example, `-std=gnu++11`.
+set(CMAKE_CXX_EXTENSIONS OFF)
+
 # Check that we are targeting a 64-bit architecture.
 if (NOT (CMAKE_SIZEOF_VOID_P EQUAL 8))
   message(
@@ -176,12 +275,6 @@ if (NOT (CMAKE_SIZEOF_VOID_P EQUAL 8))
     "    `cmake -DCMAKE_OSX_ARCHITECTURES=x86_64`.\n")
 endif ()
 
-# Make sure C++ 11 features we need are supported.
-# This is split into two cases: Windows and "other platforms".
-#   * For "other platforms", we simply check if the C++11 flags work
-#   * For Windows, C++11 is enabled by default on MSVC 1900.
-#     We just check the MSVC version.
-CHECK_CXX_COMPILER_FLAG("-std=c++11" COMPILER_SUPPORTS_CXX11)
 if (WIN32)
   # Versions of Visual Studio older than 2017 do not support all core features
   # of C++14, which prevents Mesos from moving past C++11. This adds a
@@ -190,7 +283,7 @@ if (WIN32)
   if (NOT CMAKE_GENERATOR MATCHES ${PREFERRED_GENERATOR})
     message(
       WARNING
-      "Mesos is deprecating support for ${CMAKE_GENERATOR}. "
+      "Mesos does not officially support ${CMAKE_GENERATOR}. "
       "Please use ${PREFERRED_GENERATOR}.")
   endif ()
 
@@ -214,34 +307,59 @@ if (WIN32)
   endif ()
 endif ()
 
+# GLOBAL WARNINGS.
+##################
+if (CMAKE_CXX_COMPILER_ID MATCHES GNU
+    OR CMAKE_CXX_COMPILER_ID MATCHES Clang) # Also matches AppleClang.
+  # TODO(andschwa): Add `-Wextra`, `-Wpedantic`, `-Wconversion`.
+  add_compile_options(
+    -Wall
+    -Wsign-compare)
+elseif (CMAKE_CXX_COMPILER_ID MATCHES MSVC)
+  # TODO(andschwa): Switch to `/W4` and re-enable possible-loss-of-data warnings.
+  #
+  # The last two warnings are disabled (well, put into `/W4`) because
+  # there is no easy equivalent to enable them for GCC/Clang without
+  # also fixing all the warnings from `-Wconversion`.
+  add_compile_options(
+    # Like `-Wall`; `/W4` is more like `-Wall -Wextra`.
+    /W3
+    # Disable permissiveness.
+    /permissive-
+    # C4244 is a possible loss of data warning for integer conversions.
+    /w44244
+    # C4267 is a possible loss of data warning when converting from `size_t`.
+    /w44267)
+endif ()
+
+if (CMAKE_CXX_COMPILER_ID MATCHES Clang)
+  add_compile_options(-Wno-inconsistent-missing-override)
+endif ()
 
 # POSIX CONFIGURATION.
 ######################
 if (NOT WIN32)
-  if (NOT COMPILER_SUPPORTS_CXX11)
-    message(
-      FATAL_ERROR
-      "The compiler ${CMAKE_CXX_COMPILER} does not support the `-std=c++11` "
-      "flag. Please use a different C++ compiler.")
-  endif ()
-
-  string(APPEND CMAKE_CXX_FLAGS " -std=c++11")
-
   # Warn about use of format functions that can produce security issues.
-  string(APPEND CMAKE_CXX_FLAGS " -Wformat-security")
+  add_compile_options(-Wformat-security)
 
   # Protect many of the functions with stack guards. The exact flag
   # depends on compiler support.
   CHECK_CXX_COMPILER_FLAG(-fstack-protector-strong STRONG_STACK_PROTECTORS)
   CHECK_CXX_COMPILER_FLAG(-fstack-protector STACK_PROTECTORS)
   if (STRONG_STACK_PROTECTORS)
-    string(APPEND CMAKE_CXX_FLAGS " -fstack-protector-strong")
+    add_compile_options(-fstack-protector-strong)
   elseif (STACK_PROTECTORS)
-    string(APPEND CMAKE_CXX_FLAGS " -fstack-protector")
+    add_compile_options(-fstack-protector)
   else ()
     message(
       WARNING
       "The compiler ${CMAKE_CXX_COMPILER} cannot apply stack protectors.")
+  endif ()
+
+  # Do not omit frame pointers in debug builds to ease debugging and profiling.
+  if ((CMAKE_BUILD_TYPE MATCHES Debug) OR
+      (CMAKE_BUILD_TYPE MATCHES RelWithDebInfo))
+    add_compile_options(-fno-omit-frame-pointer)
   endif ()
 
   # Directory structure for some build artifacts.
@@ -255,36 +373,94 @@ if (NOT WIN32)
   set(LIB_INSTALL_DIR         ${EXEC_INSTALL_PREFIX}/libmesos)
 endif ()
 
+option(ENABLE_GC_UNUSED
+  "Enable garbage collection of unused program segments"
+  FALSE)
+
+if (ENABLE_GC_UNUSED)
+  CMAKE_PUSH_CHECK_STATE()
+
+  set(CMAKE_REQUIRED_FLAGS "-ffunction-sections -fdata-sections -Wl,--gc-sections")
+  CHECK_CXX_COMPILER_FLAG("" GC_FUNCTION_SECTIONS)
+  if (GC_FUNCTION_SECTIONS)
+    add_compile_options(-ffunction-sections -fdata-sections)
+    string(APPEND CMAKE_EXE_LINKER_FLAGS " -Wl,--gc-sections")
+    string(APPEND CMAKE_SHARED_LINKER_FLAGS " -Wl,--gc-sections")
+  else ()
+    message(
+      FATAL_ERROR
+      "The compiler ${CMAKE_CXX_COMPILER} does not support the necessary options to "
+      "enable garbage collection of unused sections.")
+  endif()
+
+  CMAKE_POP_CHECK_STATE()
+endif()
 
 # LINUX CONFIGURATION.
 ######################
 string(COMPARE EQUAL ${CMAKE_SYSTEM_NAME} "Linux" LINUX)
 
+if (LINUX)
+  # We currenty only support using the bundled jemalloc on linux.
+  # While building it and linking against is actually not a problem
+  # on other platforms, to make it actually *useful* we need some
+  # additional platform-specific code in the mesos binaries that re-routes
+  # all existing malloc/free calls through jemalloc.
+  # On linux, that is not necessary because the default malloc implementation
+  # explicitly supports replacement via symbol interposition.
+  option(
+    ENABLE_JEMALLOC_ALLOCATOR
+    "Use jemalloc as memory allocator for the master and agent binaries."
+    FALSE)
+endif ()
+
+# FREEBSD CONFIGURATION.
+######################
+string(COMPARE EQUAL ${CMAKE_SYSTEM_NAME} "FreeBSD" FREEBSD)
+
+# There is a problem linking with BFD linkers when using Clang on
+# FreeBSD (MESOS-8761). CMake uses the compiler to link, and the
+# compiler uses `/usr/bin/ld` by default. On FreeBSD the default
+# compiler is Clang but the default linker is GNU ld (BFD). Since LLD
+# is available in the base system, and GOLD is available from
+# `devel/binutils`, we look for a more modern linker and tell Clang to
+# use that instead.
+#
+# TODO(dforsyth): Understand why this is failing and add a check to
+# make sure we have a compatible linker (MESOS-8765), or wait until
+# FreeBSD makes lld the default linker.
+if (${CMAKE_SYSTEM_NAME} MATCHES FreeBSD
+    AND CMAKE_CXX_COMPILER_ID MATCHES Clang)
+
+  find_program(LD_PROGRAM
+    NAMES ld.lld ld.gold)
+
+  if (NOT LD_PROGRAM)
+    message(FATAL_ERROR
+      "Please set LD_PROGRAM to a working (non-BFD) linker (MESOS-8761) to \
+      build on FreeBSD.")
+  endif ()
+
+  foreach (type EXE SHARED STATIC MODULE)
+    string(APPEND CMAKE_${type}_LINKER_FLAGS " -fuse-ld=${LD_PROGRAM}")
+  endforeach ()
+endif ()
 
 # WINDOWS CONFIGURATION.
 ########################
 if (WIN32)
-  # Speed up incremental linking for the VS compiler/linker, for more info, see:
-  # https://blogs.msdn.microsoft.com/vcblog/2014/11/12/speeding-up-the-incremental-developer-build-scenario/
-  foreach (type EXE SHARED STATIC MODULE)
-    string(APPEND CMAKE_${type}_LINKER_FLAGS_DEBUG " /debug:fastlink")
-  endforeach ()
-
   # COFF/PE and friends are somewhat limited in the number of sections they
   # allow for an object file. We use this to avoid those problems.
-  string(APPEND CMAKE_CXX_FLAGS " /bigobj /vd2 /permissive-")
+  add_compile_options(/bigobj /vd2)
+
+  # Fix Warning C4530: C++ exception handler used, but unwind semantics are not
+  # enabled.
+  add_compile_options(/EHsc)
 
   # Build against the multi-threaded version of the C runtime library (CRT).
   if (BUILD_SHARED_LIBS)
     message(WARNING "Building with shared libraries is a work-in-progress.")
-
     set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS TRUE)
-
-    # Use dynamic CRT.
-    set(CRT " /MD")
-  else ()
-    # Use static CRT.
-    set(CRT " /MT")
   endif ()
 
   if (ENABLE_SSL)
@@ -293,21 +469,11 @@ if (WIN32)
     set(OPENSSL_MSVC_STATIC_RT TRUE)
   endif ()
 
-  # NOTE: We APPEND ${CRT} rather than REPLACE so it gets picked up by
-  # dependencies.
-  foreach (lang C CXX)
-    # Enable multi-threaded and UNICODE compilation.
-    # NOTE: We do not add CRT here because dependencies will use it incorrectly.
-    string(APPEND CMAKE_${lang}_FLAGS " /MP -DUNICODE -D_UNICODE")
+  # Enable multi-threaded compilation for `cl.exe`.
+  add_compile_options(/MP)
 
-    # Debug library for debug configuration.
-    string(APPEND CMAKE_${lang}_FLAGS_DEBUG "${CRT}d")
-
-    # All other configurations.
-    foreach (config RELEASE RELWITHDEBINFO MINSIZEREL)
-      string(APPEND CMAKE_${lang}_FLAGS_${config} ${CRT})
-    endforeach ()
-  endforeach ()
+  # Force use of Unicode C and C++ Windows APIs.
+  add_definitions(-DUNICODE -D_UNICODE)
 
   # Convenience flags to simplify Windows support in C++ source; used to
   # `#ifdef` out some platform-specific parts of Mesos.  We choose to define
@@ -353,6 +519,11 @@ add_definitions(
   -DLIBDIR="${LIB_INSTALL_DIR}"
   -DVERSION="${PACKAGE_VERSION}"
   -DPKGDATADIR="${DATA_INSTALL_PREFIX}")
+
+if (ENABLE_GRPC)
+  # TODO(chhsiao): Make this non-global.
+  add_definitions(-DENABLE_GRPC=1)
+endif ()
 
 if (ENABLE_SSL)
   # TODO(andschwa): Make this non-global.

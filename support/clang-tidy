@@ -23,9 +23,10 @@ google-*,\
 -google-runtime-references,\
 \
 mesos-*,\
--mesos-this-capture,\
 \
 misc-use-after-move,\
+\
+modernize-use-override,\
 \
 readability-redundant-string-cstr\
 "

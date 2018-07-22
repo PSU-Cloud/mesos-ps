@@ -40,40 +40,46 @@ class XfsDiskIsolatorProcess : public MesosIsolatorProcess
 public:
   static Try<mesos::slave::Isolator*> create(const Flags& flags);
 
-  virtual ~XfsDiskIsolatorProcess();
+  ~XfsDiskIsolatorProcess() override;
 
   process::PID<XfsDiskIsolatorProcess> self() const
   {
     return process::PID<XfsDiskIsolatorProcess>(this);
   }
 
-  virtual process::Future<Nothing> recover(
-      const std::list<mesos::slave::ContainerState>& states,
-      const hashset<ContainerID>& orphans);
+  process::Future<Nothing> recover(
+      const std::vector<mesos::slave::ContainerState>& states,
+      const hashset<ContainerID>& orphans) override;
 
-  virtual process::Future<Option<mesos::slave::ContainerLaunchInfo>> prepare(
+  process::Future<Option<mesos::slave::ContainerLaunchInfo>> prepare(
       const ContainerID& containerId,
-      const mesos::slave::ContainerConfig& containerConfig);
+      const mesos::slave::ContainerConfig& containerConfig) override;
 
-  virtual process::Future<Nothing> isolate(
+  process::Future<mesos::slave::ContainerLimitation> watch(
+      const ContainerID& containerId) override;
+
+  process::Future<Nothing> update(
       const ContainerID& containerId,
-      pid_t pid);
+      const Resources& resources) override;
 
-  virtual process::Future<Nothing> update(
-      const ContainerID& containerId,
-      const Resources& resources);
+  process::Future<ResourceStatistics> usage(
+      const ContainerID& containerId) override;
 
-  virtual process::Future<ResourceStatistics> usage(
-      const ContainerID& containerId);
+  process::Future<Nothing> cleanup(
+      const ContainerID& containerId) override;
 
-  virtual process::Future<Nothing> cleanup(
-      const ContainerID& containerId);
+protected:
+  void initialize() override;
 
 private:
   XfsDiskIsolatorProcess(
+      Duration watchInterval,
       xfs::QuotaPolicy quotaPolicy,
       const std::string& workDir,
       const IntervalSet<prid_t>& projectIds);
+
+  // Responsible for validating a container hasn't broken the soft limit.
+  void check();
 
   // Take the next project ID from the unallocated pool.
   Option<prid_t> nextProjectId();
@@ -89,8 +95,10 @@ private:
     const std::string directory;
     Bytes quota;
     const prid_t projectId;
+    process::Promise<mesos::slave::ContainerLimitation> limitation;
   };
 
+  const Duration watchInterval;
   xfs::QuotaPolicy quotaPolicy;
   const std::string workDir;
   const IntervalSet<prid_t> totalProjectIds;

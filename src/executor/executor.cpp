@@ -45,13 +45,12 @@
 
 #include "common/http.hpp"
 #include "common/recordio.hpp"
+#include "common/validation.hpp"
 
 #include "internal/devolve.hpp"
 
 #include "logging/flags.hpp"
 #include "logging/logging.hpp"
-
-#include "slave/validation.hpp"
 
 #include "version/version.hpp"
 
@@ -63,8 +62,6 @@ using std::queue;
 using std::string;
 
 using mesos::internal::recordio::Reader;
-
-using mesos::internal::slave::validation::executor::call::validate;
 
 using process::async;
 using process::Clock;
@@ -101,7 +98,7 @@ public:
       gracePeriod(_gracePeriod) {}
 
 protected:
-  virtual void initialize()
+  void initialize() override
   {
     VLOG(1) << "Scheduling shutdown of the executor in " << gracePeriod;
 
@@ -157,7 +154,8 @@ public:
       ContentType _contentType,
       const lambda::function<void(void)>& connected,
       const lambda::function<void(void)>& disconnected,
-      const lambda::function<void(const queue<Event>&)>& received)
+      const lambda::function<void(const queue<Event>&)>& received,
+      const std::map<std::string, std::string>& environment)
     : ProcessBase(generate("executor")),
       state(DISCONNECTED),
       contentType(_contentType),
@@ -168,7 +166,18 @@ public:
     // Load any logging flags from the environment.
     logging::Flags flags;
 
-    Try<flags::Warnings> load = flags.load("MESOS_");
+    // Filter out environment variables whose keys don't start with "MESOS_".
+    //
+    // TODO(alexr): This should be supported by `FlagsBase`, see MESOS-9001.
+    std::map<std::string, std::string> mesosEnvironment;
+
+    foreachpair (const string& key, const string& value, environment) {
+      if (strings::startsWith(key, "MESOS_")) {
+        mesosEnvironment.emplace(key, value);
+      }
+    }
+
+    Try<flags::Warnings> load = flags.load(mesosEnvironment, true);
 
     if (load.isError()) {
       EXIT(EXIT_FAILURE) << "Failed to load flags: " << load.error();
@@ -193,13 +202,15 @@ public:
 
     spawn(new VersionProcess(), true);
 
+    hashmap<string, string> env(mesosEnvironment);
+
     // Check if this is local (for example, for testing).
-    local = os::getenv("MESOS_LOCAL").isSome();
+    local = env.get("MESOS_LOCAL").isSome();
 
     Option<string> value;
 
     // Get agent PID from environment.
-    value = os::getenv("MESOS_SLAVE_PID");
+    value = env.get("MESOS_SLAVE_PID");
     if (value.isNone()) {
       EXIT(EXIT_FAILURE)
         << "Expecting 'MESOS_SLAVE_PID' to be set in the environment";
@@ -223,18 +234,22 @@ public:
         upid.id +
         "/api/v1/executor");
 
-    value = os::getenv("MESOS_EXECUTOR_AUTHENTICATION_TOKEN");
+    value = env.get("MESOS_EXECUTOR_AUTHENTICATION_TOKEN");
     if (value.isSome()) {
       authenticationToken = value.get();
     }
 
+    // Erase the auth token from the environment so that it is not visible to
+    // other processes in the same PID namespace.
+    os::eraseenv("MESOS_EXECUTOR_AUTHENTICATION_TOKEN");
+
     // Get checkpointing status from environment.
-    value = os::getenv("MESOS_CHECKPOINT");
+    value = env.get("MESOS_CHECKPOINT");
     checkpoint = value.isSome() && value.get() == "1";
 
     if (checkpoint) {
       // Get recovery timeout from environment.
-      value = os::getenv("MESOS_RECOVERY_TIMEOUT");
+      value = env.get("MESOS_RECOVERY_TIMEOUT");
       if (value.isSome()) {
         Try<Duration> _recoveryTimeout = Duration::parse(value.get());
 
@@ -249,7 +264,7 @@ public:
       }
 
       // Get maximum backoff factor from environment.
-      value = os::getenv("MESOS_SUBSCRIPTION_BACKOFF_MAX");
+      value = env.get("MESOS_SUBSCRIPTION_BACKOFF_MAX");
       if (value.isSome()) {
         Try<Duration> _maxBackoff = Duration::parse(value.get());
 
@@ -266,7 +281,7 @@ public:
     }
 
     // Get executor shutdown grace period from the environment.
-    value = os::getenv("MESOS_EXECUTOR_SHUTDOWN_GRACE_PERIOD");
+    value = env.get("MESOS_EXECUTOR_SHUTDOWN_GRACE_PERIOD");
     if (value.isSome()) {
       Try<Duration> _shutdownGracePeriod = Duration::parse(value.get());
 
@@ -284,7 +299,8 @@ public:
 
   void send(const Call& call)
   {
-    Option<Error> error = validate(devolve(call));
+    Option<Error> error =
+      common::validation::validateExecutorCall(devolve(call));
     if (error.isSome()) {
       drop(call, error->message);
       return;
@@ -338,13 +354,13 @@ public:
                          lambda::_1));
   }
 
-  ~MesosProcess()
+  ~MesosProcess() override
   {
     disconnect();
   }
 
 protected:
-  virtual void initialize()
+  void initialize() override
   {
     connect();
   }
@@ -706,7 +722,7 @@ protected:
       return;
     }
 
-    receive(event.get().get(), false);
+    receive(event->get(), false);
     read();
   }
 
@@ -829,7 +845,21 @@ Mesos::Mesos(
     const lambda::function<void(void)>& connected,
     const lambda::function<void(void)>& disconnected,
     const lambda::function<void(const queue<Event>&)>& received)
-  : process(new MesosProcess(contentType, connected, disconnected, received))
+  : process(new MesosProcess(
+      contentType, connected, disconnected, received, os::environment()))
+{
+  spawn(process.get());
+}
+
+
+Mesos::Mesos(
+    ContentType contentType,
+    const lambda::function<void(void)>& connected,
+    const lambda::function<void(void)>& disconnected,
+    const lambda::function<void(const queue<Event>&)>& received,
+    const std::map<std::string, std::string>& environment)
+  : process(new MesosProcess(
+      contentType, connected, disconnected, received, environment))
 {
   spawn(process.get());
 }

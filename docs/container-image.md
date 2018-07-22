@@ -304,10 +304,14 @@ using the following logic table:
     | Backend | Suggested on | Disabled on                              |
     +---------+--------------+------------------------------------------+
     | aufs    | ext4 xfs     | btrfs aufs eCryptfs                      |
-    | overlay | ext4 xfs     | btrfs aufs overlay overlay2 zfs eCryptfs |
+    | overlay | ext4 xfs*    | btrfs aufs overlay overlay2 zfs eCryptfs |
     | bind    |              | N/A(`--sandbox_directory' must exist)    |
     | copy    |              | N/A                                      |
     +---------+--------------+------------------------------------------+
+
+NOTE: `xfs` support on `overlay` is enabled only when `d_type=true`. Use
+`xfs_info` to verify that the `xfs` ftype option is set to 1. To format
+an xfs filesystem for `overlay`, use the flag `-n ftype=1` with `mkfs.xfs`.
 
 The provisioner backend can be specified through the agent flag
 `--image_provisioner_backend`. If not set, Mesos will select the best
@@ -390,6 +394,46 @@ and mount it under the sandbox directory. The executor can perform
 `pivot_root` or `chroot` itself to enter the container root
 filesystem.
 
+## Garbage Collect Unused Container Images
+
+Experimental support of garbage-collecting unused container images was added at
+Mesos 1.5. This can be either configured automatically via a new agent flag
+`--image_gc_config`, or manually invoked through agent's
+[v1 Operator HTTP API](operator-http-api.md#prune_images). This can be used
+to avoid unbounded disk space usage of image stores.
+
+This is implemented with a simple mark-and-sweep logic. When image GC happens,
+we check all layers and images referenced by active running containers and avoid
+removing them from the image store. As a pre-requisite, if there are active
+containers launched before Mesos 1.5.0, we cannot determine what images can be
+safely garbage collected, so agent will refuse to invoke image GC. To garbage
+collect container images, users are expected to drain all containers launched
+before Mesos 1.5.0.
+
+**NOTE**: currently, the image GC is only supported for docker store in Mesos
+Containerizer.
+
+### Automatic Image GC through Agent Flag
+
+To enable automatic image GC, use the new agent flag `--image_gc_config`:
+
+    --image_gc_config=file:///home/vagrant/image-gc-config.json
+
+or as a JSON object,
+
+    --image_gc_config="{ \
+      \"image_disk_headroom\": 0.1, \
+      \"image_disk_watch_interval\": { \
+        \"nano_seconds\": 3600 \
+        }, \
+      \"excluded_images\": \[ \] \
+    }"
+
+
+### Manual Image GC through HTTP API
+See `PRUNE_IMAGES` section in
+[v1 Operator HTTP API](operator-http-api.md#prune_images) for manual image GC
+through the agent HTTP API.
 
 ## References
 

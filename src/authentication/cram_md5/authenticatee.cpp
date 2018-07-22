@@ -72,10 +72,10 @@ public:
     CHECK(secret != nullptr) << "Failed to allocate memory for secret";
 
     memcpy(secret->data, data, length);
-    secret->len = length;
+    secret->len = static_cast<unsigned long>(length);
   }
 
-  virtual ~CRAMMD5AuthenticateeProcess()
+  ~CRAMMD5AuthenticateeProcess() override
   {
     if (connection != nullptr) {
       sasl_dispose(&connection);
@@ -83,7 +83,7 @@ public:
     free(secret);
   }
 
-  virtual void finalize()
+  void finalize() override
   {
     discarded(); // Fail the promise.
   }
@@ -177,7 +177,7 @@ public:
   }
 
 protected:
-  virtual void initialize()
+  void initialize() override
   {
     // Anticipate mechanisms and steps from the server.
     install<AuthenticationMechanismsMessage>(
@@ -265,7 +265,7 @@ protected:
     int result = sasl_client_step(
         connection,
         data.length() == 0 ? nullptr : data.data(),
-        data.length(),
+        static_cast<unsigned>(data.length()),
         &interact,
         &output,
         &length);
@@ -330,7 +330,7 @@ private:
     CHECK(SASL_CB_USER == id || SASL_CB_AUTHNAME == id);
     *result = static_cast<const char*>(context);
     if (length != nullptr) {
-      *length = strlen(*result);
+      *length = static_cast<unsigned>(strlen(*result));
     }
     return SASL_OK;
   }

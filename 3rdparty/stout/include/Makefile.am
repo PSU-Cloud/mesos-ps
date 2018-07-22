@@ -14,6 +14,7 @@
 nobase_include_HEADERS =			\
   stout/abort.hpp				\
   stout/adaptor.hpp				\
+  stout/archiver.hpp				\
   stout/assert.hpp				\
   stout/attributes.hpp				\
   stout/base64.hpp				\
@@ -45,6 +46,7 @@ nobase_include_HEADERS =			\
   stout/internal/windows/attributes.hpp		\
   stout/internal/windows/grp.hpp		\
   stout/internal/windows/longpath.hpp		\
+  stout/internal/windows/overlapped.hpp		\
   stout/internal/windows/pwd.hpp		\
   stout/internal/windows/reparsepoint.hpp	\
   stout/internal/windows/symlink.hpp		\
@@ -115,6 +117,7 @@ nobase_include_HEADERS =			\
   stout/os/touch.hpp				\
   stout/os/utime.hpp				\
   stout/os/wait.hpp				\
+  stout/os/which.hpp				\
   stout/os/write.hpp				\
   stout/os/xattr.hpp				\
   stout/os/posix/bootid.hpp			\
@@ -135,9 +138,11 @@ nobase_include_HEADERS =			\
   stout/os/posix/kill.hpp			\
   stout/os/posix/killtree.hpp			\
   stout/os/posix/ls.hpp				\
+  stout/os/posix/lseek.hpp			\
   stout/os/posix/mkdir.hpp			\
   stout/os/posix/mkdtemp.hpp			\
   stout/os/posix/mktemp.hpp			\
+  stout/os/posix/open.hpp			\
   stout/os/posix/pagesize.hpp			\
   stout/os/posix/pipe.hpp			\
   stout/os/posix/read.hpp			\
@@ -152,6 +157,7 @@ nobase_include_HEADERS =			\
   stout/os/posix/stat.hpp			\
   stout/os/posix/su.hpp				\
   stout/os/posix/temp.hpp			\
+  stout/os/posix/which.hpp			\
   stout/os/posix/write.hpp			\
   stout/os/posix/xattr.hpp			\
   stout/os/raw/argv.hpp				\
@@ -171,12 +177,15 @@ nobase_include_HEADERS =			\
   stout/os/windows/ftruncate.hpp		\
   stout/os/windows/getcwd.hpp			\
   stout/os/windows/getenv.hpp			\
+  stout/os/windows/jobobject.hpp		\
   stout/os/windows/kill.hpp			\
   stout/os/windows/killtree.hpp			\
   stout/os/windows/ls.hpp			\
+  stout/os/windows/lseek.hpp			\
   stout/os/windows/mkdir.hpp			\
   stout/os/windows/mktemp.hpp			\
   stout/os/windows/mkdtemp.hpp			\
+  stout/os/windows/open.hpp			\
   stout/os/windows/pagesize.hpp			\
   stout/os/windows/pipe.hpp			\
   stout/os/windows/read.hpp			\
@@ -186,11 +195,11 @@ nobase_include_HEADERS =			\
   stout/os/windows/rmdir.hpp			\
   stout/os/windows/sendfile.hpp			\
   stout/os/windows/shell.hpp			\
-  stout/os/windows/signals.hpp			\
   stout/os/windows/socket.hpp			\
   stout/os/windows/stat.hpp			\
   stout/os/windows/su.hpp			\
   stout/os/windows/temp.hpp			\
+  stout/os/windows/which.hpp			\
   stout/os/windows/write.hpp			\
   stout/os/windows/xattr.hpp			\
   stout/path.hpp				\

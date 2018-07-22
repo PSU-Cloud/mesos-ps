@@ -7,7 +7,7 @@ layout: documentation
 
 ## Required Flags
 
-<table class="table table-striped">
+<table class=".anchored table table-striped">
   <thead>
     <tr>
       <th width="30%">
@@ -18,7 +18,7 @@ layout: documentation
       </th>
     </tr>
   </thead>
-<tr>
+<tr id="master">
   <td>
     --master=VALUE
   </td>
@@ -30,7 +30,7 @@ May be one of:
   <code>file:///path/to/file</code> (where file contains one of the above)
   </td>
 </tr>
-<tr>
+<tr id="work_dir">
   <td>
     --work_dir=VALUE
   </td>
@@ -47,7 +47,7 @@ occurs. (Example: <code>/var/lib/mesos/agent</code>)
 
 ## Optional Flags
 
-<table class="table table-striped">
+<table class=".anchored table table-striped">
   <thead>
     <tr>
       <th width="30%">
@@ -58,7 +58,7 @@ occurs. (Example: <code>/var/lib/mesos/agent</code>)
       </th>
     </tr>
   </thead>
-<tr>
+<tr id="acls">
   <td>
     --acls=VALUE
   </td>
@@ -86,7 +86,7 @@ Example:
   </td>
 </tr>
 
-<tr>
+<tr id="agent_features">
   <td>
     --agent_features=VALUE
   </td>
@@ -107,7 +107,7 @@ Example:
   </td>
 </tr>
 
-<tr>
+<tr id="agent_subsystems">
   <td>
     --agent_subsystems=VALUE,
     <p/>
@@ -120,9 +120,9 @@ Present functionality is intended for resource monitoring and
 no cgroup limits are set, they are inherited from the root mesos
 cgroup.
   </td>
-
 </tr>
-<tr>
+
+<tr id="effective_capabilities">
   <td>
     --effective_capabilities=VALUE
   </td>
@@ -151,8 +151,7 @@ Example:
   </td>
 </tr>
 
-</tr>
-<tr>
+<tr id="bounding_capabilities">
   <td>
     --bounding_capabilities=VALUE
   </td>
@@ -170,7 +169,7 @@ This flag has the same syntax as <code>--effective_capabilities</code>.
   </td>
 </tr>
 
-<tr>
+<tr id="appc_simple_discovery_uri_prefix">
   <td>
     --appc_simple_discovery_uri_prefix=VALUE
   </td>
@@ -181,7 +180,8 @@ e.g., <code>http://</code>, <code>https://</code>,
 (default: http://)
   </td>
 </tr>
-<tr>
+
+<tr id="appc_store_dir">
   <td>
     --appc_store_dir=VALUE
   </td>
@@ -190,7 +190,8 @@ Directory the appc provisioner will store images in.
 (default: /tmp/mesos/store/appc)
   </td>
 </tr>
-<tr>
+
+<tr id="attributes">
   <td>
     --attributes=VALUE
   </td>
@@ -199,7 +200,8 @@ Attributes of the agent machine, in the form:
 <code>rack:2</code> or <code>rack:2;u:1</code>
   </td>
 </tr>
-<tr>
+
+<tr id="authenticate_http_executors">
   <td>
     --[no-]authenticate_http_executors
   </td>
@@ -210,7 +212,8 @@ flag is only available when Mesos is built with SSL support.
 (default: false)
   </td>
 </tr>
-<tr>
+
+<tr id="authenticatee">
   <td>
     --authenticatee=VALUE
   </td>
@@ -220,7 +223,8 @@ master. Use the default <code>crammd5</code>, or
 load an alternate authenticatee module using <code>--modules</code>. (default: crammd5)
   </td>
 </tr>
-<tr>
+
+<tr id="authentication_backoff_factor">
   <td>
     --authentication_backoff_factor=VALUE
   </td>
@@ -234,7 +238,8 @@ retry between <code>[0, b * 2^3]</code>, etc up to a maximum of 1mins
 (default: 1secs)
   </td>
 </tr>
-<tr>
+
+<tr id="authorizer">
   <td>
     --authorizer=VALUE
   </td>
@@ -249,7 +254,8 @@ other than the default <code>local</code>, the ACLs
 passed through the <code>--acls</code> flag will be ignored.
   </td>
 </tr>
-<tr>
+
+<tr id="cgroups_cpu_enable_pids_and_tids_count">
   <td>
     --[no]-cgroups_cpu_enable_pids_and_tids_count
   </td>
@@ -258,7 +264,8 @@ Cgroups feature flag to enable counting of processes and threads
 inside a container. (default: false)
   </td>
 </tr>
-<tr>
+
+<tr id="cgroups_enable_cfs">
   <td>
     --[no]-cgroups_enable_cfs
   </td>
@@ -267,7 +274,8 @@ Cgroups feature flag to enable hard limits on CPU resources
 via the CFS bandwidth limiting subfeature. (default: false)
   </td>
 </tr>
-<tr>
+
+<tr id="cgroups_hierarchy">
   <td>
     --cgroups_hierarchy=VALUE
   </td>
@@ -275,7 +283,8 @@ via the CFS bandwidth limiting subfeature. (default: false)
 The path to the cgroups hierarchy root. (default: /sys/fs/cgroup)
   </td>
 </tr>
-<tr>
+
+<tr id="cgroups_limit_swap">
   <td>
     --[no]-cgroups_limit_swap
   </td>
@@ -284,7 +293,8 @@ Cgroups feature flag to enable memory limits on both memory and
 swap instead of just memory. (default: false)
   </td>
 </tr>
-<tr>
+
+<tr id="cgroups_net_cls_primary_handle">
   <td>
     --cgroups_net_cls_primary_handle
   </td>
@@ -293,7 +303,8 @@ A non-zero, 16-bit handle of the form `0xAAAA`. This will be used as
 the primary handle for the net_cls cgroup.
   </td>
 </tr>
-<tr>
+
+<tr id="cgroups_net_cls_secondary_handles">
   <td>
     --cgroups_net_cls_secondary_handles
   </td>
@@ -303,7 +314,8 @@ handles that can be used with the primary handle. This will take
 effect only when the <code>--cgroups_net_cls_primary_handle</code> is set.
   </td>
 </tr>
-<tr>
+
+<tr id="allowed_devices">
   <td>
     --allowed_devices
   </td>
@@ -345,7 +357,8 @@ Example:
 </code></pre>
   </td>
 </tr>
-<tr>
+
+<tr id="cgroups_root">
   <td>
     --cgroups_root=VALUE
   </td>
@@ -353,7 +366,8 @@ Example:
 Name of the root cgroup. (default: mesos)
   </td>
 </tr>
-<tr>
+
+<tr id="check_agent_port_range_only">
   <td>
     --[no-]check_agent_port_range_only
   </td>
@@ -365,7 +379,8 @@ to only listen on ports for which they have been assigned resources.
 (default: false)
   </td>
 </tr>
-<tr>
+
+<tr id="container_disk_watch_interval">
   <td>
     --container_disk_watch_interval=VALUE
   </td>
@@ -374,7 +389,8 @@ The interval between disk quota checks for containers. This flag is
 used for the <code>disk/du</code> isolator. (default: 15secs)
   </td>
 </tr>
-<tr>
+
+<tr id="container_logger">
   <td>
     --container_logger=VALUE
   </td>
@@ -385,7 +401,8 @@ container logger writes to <code>stdout</code> and <code>stderr</code> files
 in the sandbox directory.
   </td>
 </tr>
-<tr>
+
+<tr id="container_ports_watch_interval">
   <td>
     --container_ports_watch_interval=VALUE
   </td>
@@ -395,7 +412,8 @@ containers listening on ports they don't have resources for.
   <td>
   </td>
 </tr>
-<tr>
+
+<tr id="containerizers">
   <td>
     --containerizers=VALUE
   </td>
@@ -408,7 +426,8 @@ are specified is the order they are tried.
 (default: mesos)
   </td>
 </tr>
-<tr>
+
+<tr id="credential">
   <td>
     --credential=VALUE
   </td>
@@ -423,7 +442,8 @@ Example:
 }</code></pre>
   </td>
 </tr>
-<tr>
+
+<tr id="default_container_dns">
   <td>
     --default_container_dns=VALUE
   </td>
@@ -469,7 +489,8 @@ Example:
 }</code></pre>
   </td>
 </tr>
-<tr>
+
+<tr id="default_container_info">
   <td>
     --default_container_info=VALUE
   </td>
@@ -493,7 +514,8 @@ Example:
 }</code></pre>
   </td>
 </tr>
-<tr>
+
+<tr id="default_role">
   <td>
     --default_role=VALUE
   </td>
@@ -505,7 +527,22 @@ automatically detected, will be assigned to
 this role. (default: *)
   </td>
 </tr>
-<tr>
+
+<tr id="disk_profile_adaptor">
+  <td>
+    --disk_profile_adaptor=VALUE
+  </td>
+  <td>
+The name of the disk profile adaptor module that storage resource
+providers should use for translating a 'disk profile' into inputs
+consumed by various Container Storage Interface (CSI) plugins.
+If this flag is not specified, the default behavior for storage
+resource providers is to only expose resources for pre-existing
+volumes and not publish RAW volumes.
+  </td>
+</tr>
+
+<tr id="disk_watch_interval">
   <td>
     --disk_watch_interval=VALUE
   </td>
@@ -516,7 +553,8 @@ This drives the garbage collection of archived
 information and sandboxes. (default: 1mins)
   </td>
 </tr>
-<tr>
+
+<tr id="docker">
   <td>
     --docker=VALUE
   </td>
@@ -526,7 +564,8 @@ containerizer.
 (default: docker)
   </td>
 </tr>
-<tr>
+
+<tr id="docker_config">
   <td>
     --docker_config=VALUE
   </td>
@@ -548,7 +587,8 @@ Example JSON (<code>$HOME/.docker/config.json</code>):
 </code></pre>
   </td>
 </tr>
-<tr>
+
+<tr id="docker_kill_orphans">
   <td>
     --[no-]docker_kill_orphans
   </td>
@@ -560,7 +600,8 @@ removing docker tasks launched by other agents.
 (default: true)
   </td>
 </tr>
-<tr>
+
+<tr id="docker_mesos_image">
   <td>
     --docker_mesos_image=VALUE
   </td>
@@ -572,30 +613,36 @@ docker containers in order to recover them when the agent restarts and
 recovers.
   </td>
 </tr>
-<tr>
+
+<tr id="docker_registry">
   <td>
     --docker_registry=VALUE
   </td>
   <td>
 The default url for Mesos containerizer to pull Docker images. It could
 either be a Docker registry server url (i.e: <code>https://registry.docker.io</code>),
-or a local path (i.e: <code>/tmp/docker/images</code>) in which Docker
-image archives (result of <code>docker save</code>) are stored. Note
-that this option won't change the default registry server for Docker
-containerizer. (default: https://registry-1.docker.io)
+or a source that Docker image archives (result of <code>docker save</code>) are
+stored. The Docker archive source could be specified either as a local
+path (i.e: <code>/tmp/docker/images</code>), or as an HDFS URI
+(i.e: <code>hdfs://localhost:8020/archives/</code>). Note that this option won't
+change the default registry server for Docker containerizer.
+(default: https://registry-1.docker.io)
   </td>
 </tr>
-<tr>
+
+<tr id="docker_remove_delay">
   <td>
     --docker_remove_delay=VALUE
   </td>
   <td>
-The amount of time to wait before removing docker containers
+The amount of time to wait before removing docker containers (i.e., `docker rm`)
+after Mesos regards the container as TERMINATED
 (e.g., <code>3days</code>, <code>2weeks</code>, etc).
-(default: 6hrs)
+This only applies for the Docker Containerizer. (default: 6hrs)
   </td>
 </tr>
-<tr>
+
+<tr id="docker_socket">
   <td>
     --docker_socket=VALUE
   </td>
@@ -609,7 +656,8 @@ used by the Docker image used to run the agent. (default:
 platforms).
   </td>
 </tr>
-<tr>
+
+<tr id="docker_stop_timeout">
   <td>
     --docker_stop_timeout=VALUE
   </td>
@@ -619,7 +667,8 @@ that container. This flag is deprecated; use task's kill policy instead.
 (default: 0ns)
   </td>
 </tr>
-<tr>
+
+<tr id="docker_store_dir">
   <td>
     --docker_store_dir=VALUE
   </td>
@@ -627,7 +676,8 @@ that container. This flag is deprecated; use task's kill policy instead.
 Directory the Docker provisioner will store images in (default: /tmp/mesos/store/docker)
   </td>
 </tr>
-<tr>
+
+<tr id="docker_volume_checkpoint_dir">
   <td>
     --docker_volume_checkpoint_dir=VALUE
   </td>
@@ -637,7 +687,8 @@ volumes that each container uses.
 (default: /var/run/mesos/isolators/docker/volume)
   </td>
 </tr>
-<tr>
+
+<tr id="enforce_container_disk_quota">
   <td>
     --[no-]enforce_container_disk_quota
   </td>
@@ -646,7 +697,18 @@ Whether to enable disk quota enforcement for containers. This flag
 is used by the <code>disk/du</code> and <code>disk/xfs</code> isolators. (default: false)
   </td>
 </tr>
-<tr>
+
+<tr id="enforce_container_ports">
+  <td>
+    --[no-]enforce_container_ports
+  </td>
+  <td>
+Whether to enable network port enforcement for containers. This flag
+is used by the <code>network/ports</code> isolator. (default: false)
+  </td>
+</tr>
+
+<tr id="executor_environment_variables">
   <td>
     --executor_environment_variables=VALUE
   </td>
@@ -661,7 +723,8 @@ Example:
 }</code></pre>
   </td>
 </tr>
-<tr>
+
+<tr id="executor_registration_timeout">
   <td>
     --executor_registration_timeout=VALUE
   </td>
@@ -671,18 +734,20 @@ to register with the agent before considering it hung and
 shutting it down (e.g., 60secs, 3mins, etc) (default: 1mins)
   </td>
 </tr>
-<tr>
+
+<tr id="executor_reregistration_timeout">
   <td>
     --executor_reregistration_timeout=VALUE
   </td>
   <td>
-The timeout within which an executor is expected to re-register after
+The timeout within which an executor is expected to reregister after
 the agent has restarted, before the agent considers it gone and shuts
-it down. Note that currently, the agent will not re-register with the
+it down. Note that currently, the agent will not reregister with the
 master until this timeout has elapsed (see MESOS-7539). (default: 2secs)
   </td>
 </tr>
-<tr>
+
+<tr id="executor_reregistration_retry_interval">
   <td>
     --executor_reregistration_retry_interval=VALUE
   </td>
@@ -707,7 +772,8 @@ This results in "old" executors correctly establishing a link
 when processing the second reconnect message. (default: no retries)
   </td>
 </tr>
-<tr>
+
+<tr id="max_completed_executors_per_framework">
   <td>
     --max_completed_executors_per_framework=VALUE
   </td>
@@ -716,7 +782,8 @@ Maximum number of completed executors per framework to store
 in memory. (default: 150)
   </td>
 </tr>
-<tr>
+
+<tr id="jwt_secret_key">
   <td>
     --jwt_secret_key=VALUE
   </td>
@@ -725,7 +792,8 @@ Path to a file containing the key used when generating JWT secrets.
 This flag is only available when Mesos is built with SSL support.
   </td>
 </tr>
-<tr>
+
+<tr id="executor_shutdown_grace_period">
   <td>
     --executor_shutdown_grace_period=VALUE
   </td>
@@ -739,7 +807,8 @@ terminations may occur.
 (default: 5secs)
   </td>
 </tr>
-<tr>
+
+<tr id="fetcher_cache_dir">
   <td>
     --fetcher_cache_dir=VALUE
   </td>
@@ -758,7 +827,8 @@ for several reasons:
 </ul>
   </td>
 </tr>
-<tr>
+
+<tr id="fetcher_cache_size">
   <td>
     --fetcher_cache_size=VALUE
   </td>
@@ -766,7 +836,21 @@ for several reasons:
 Size of the fetcher cache in Bytes. (default: 2GB)
   </td>
 </tr>
-<tr>
+
+<tr id="fetcher_stall_timeout">
+  <td>
+    --fetcher_stall_timeout=VALUE
+  </td>
+  <td>
+Amount of time for the fetcher to wait before considering a download
+being too slow and abort it when the download stalls (i.e., the speed
+keeps below one byte per second).
+<b>NOTE</b>: This feature only applies when downloading data from the net and
+does not apply to HDFS. (default: 1mins)
+  </td>
+</tr>
+
+<tr id="frameworks_home">
   <td>
     --frameworks_home=VALUE
   </td>
@@ -774,7 +858,8 @@ Size of the fetcher cache in Bytes. (default: 2GB)
 Directory path prepended to relative executor URIs (default: )
   </td>
 </tr>
-<tr>
+
+<tr id="gc_delay">
   <td>
     --gc_delay=VALUE
   </td>
@@ -785,9 +870,9 @@ Note that this delay may be shorter depending on
 the available disk usage. (default: 1weeks)
   </td>
 </tr>
-<tr>
+
+<tr id="gc_disk_headroom">
   <td>
-    <a name="gc_disk_headroom"></a>
     --gc_disk_headroom=VALUE
   </td>
   <td>
@@ -798,7 +883,8 @@ every <code>--disk_watch_interval</code> duration. <code>gc_disk_headroom</code>
 be a value between 0.0 and 1.0 (default: 0.1)
   </td>
 </tr>
-<tr>
+
+<tr id="hadoop_home">
   <td>
     --hadoop_home=VALUE
   </td>
@@ -806,10 +892,11 @@ be a value between 0.0 and 1.0 (default: 0.1)
 Path to find Hadoop installed (for
 fetching framework executors from HDFS)
 (no default, look for <code>HADOOP_HOME</code> in
-environment or find hadoop on <code>PATH</code>) (default: )
+environment or find hadoop on <code>PATH</code>)
   </td>
 </tr>
-<tr>
+
+<tr id="http_credentials">
   <td>
     --http_credentials=VALUE
   </td>
@@ -830,7 +917,8 @@ Example:
 </code></pre>
   </td>
 </tr>
-<tr>
+
+<tr id="http_command_executor">
   <td>
     --[no-]http_command_executor
   </td>
@@ -843,7 +931,8 @@ the driver based implementation would be used.
 production yet. (default: false)
   </td>
 </tr>
-<tr>
+
+<tr id="http_heartbeat_interval">
   <td>
     --http_heartbeat_interval=VALUE
   </td>
@@ -855,7 +944,8 @@ the agent HTTP API. Currently, this only applies to the
 (default: 30secs)
   </td>
 </tr>
-<tr>
+
+<tr id="image_providers">
   <td>
     --image_providers=VALUE
   </td>
@@ -864,7 +954,8 @@ Comma-separated list of supported image providers,
 e.g., <code>APPC,DOCKER</code>.
   </td>
 </tr>
-<tr>
+
+<tr id="image_provisioner_backend">
   <td>
     --image_provisioner_backend=VALUE
   </td>
@@ -873,7 +964,8 @@ Strategy for provisioning container rootfs from images, e.g., <code>aufs</code>,
 <code>bind</code>, <code>copy</code>, <code>overlay</code>.
   </td>
 </tr>
-<tr>
+
+<tr id="image_gc_config">
   <td>
     --image_gc_config=VALUE
   </td>
@@ -900,21 +992,56 @@ Example:
 }</code></pre>
   </td>
 </tr>
-<tr>
+
+<tr id="ip6">
+  <td>
+    --ip6=VALUE
+  </td>
+  <td>
+IPv6 address to listen on. This cannot be used in conjunction
+with <code>--ip6_discovery_command</code>.
+<p/>
+NOTE: Currently Mesos doesn't listen on IPv6 sockets and hence
+this IPv6 address is only used to advertise IPv6 addresses for
+containers running on the host network.
+  </td>
+</tr>
+
+<tr id="ip6_discovery_command">
+  <td>
+    --ip6_discovery_command=VALUE
+  </td>
+  <td>
+Optional IPv6 discovery binary: if set, it is expected to emit
+the IPv6 address on which Mesos will try to bind when IPv6 socket
+support is enabled in Mesos.
+<p/>
+NOTE: Currently Mesos doesn't listen on IPv6 sockets and hence
+this IPv6 address is only used to advertise IPv6 addresses for
+containers running on the host network.
+  </td>
+</tr>
+
+<tr id="isolation">
   <td>
     --isolation=VALUE
   </td>
   <td>
-Isolation mechanisms to use, e.g., <code>posix/cpu,posix/mem</code>, or
+Isolation mechanisms to use, e.g., <code>posix/cpu,posix/mem</code> (or
+<code>windows/cpu,windows/mem</code> if you are on Windows), or
 <code>cgroups/cpu,cgroups/mem</code>, or <code>network/port_mapping</code>
 (configure with flag: <code>--with-network-isolator</code> to enable),
 or <code>gpu/nvidia</code> for nvidia specific gpu isolation, or load an alternate
-isolator module using the <code>--modules</code> flag. Note that this
-flag is only relevant for the Mesos Containerizer.
-(default: posix/cpu,posix/mem)
+isolator module using the <code>--modules</code> flag. If <code>cgroups/all</code>
+is specified, any other cgroups related isolation options (e.g.,
+<code>cgroups/cpu</code>) will be ignored, and all the local enabled cgroups
+subsystems on the agent host will be automatically loaded by the cgroups isolator.
+Note that this flag is only relevant for the Mesos Containerizer. (default:
+windows/cpu,windows/mem on Windows; posix/cpu,posix/mem on other platforms)
   </td>
 </tr>
-<tr>
+
+<tr id="launcher">
   <td>
     --launcher=VALUE
   </td>
@@ -926,17 +1053,19 @@ network, pid, etc. If unspecified, the agent will choose the Linux
 launcher if it's running as root on Linux.
   </td>
 </tr>
-<tr>
+
+<tr id="launcher_dir">
   <td>
     --launcher_dir=VALUE
   </td>
   <td>
-Directory path of Mesos binaries. Mesos looks for the health-check,
+Directory path of Mesos binaries. Mesos looks for the
 fetcher, containerizer, and executor binary files under this
 directory. (default: /usr/local/libexec/mesos)
   </td>
 </tr>
-<tr>
+
+<tr id="master_detector">
   <td>
   --master_detector=VALUE
   </td>
@@ -946,7 +1075,8 @@ module specified through the <code>--modules</code> flag. Cannot be used in
 conjunction with <code>--master</code>.
   </td>
 </tr>
-<tr>
+
+<tr id="nvidia_gpu_devices">
   <td>
     --nvidia_gpu_devices=VALUE
   </td>
@@ -960,7 +1090,8 @@ listed will only be isolated if the <code>--isolation</code> flag contains the
 string <code>gpu/nvidia</code>.
   </td>
 </tr>
-<tr>
+
+<tr id="network_cni_plugins_dir">
   <td>
     --network_cni_plugins_dir=VALUE
   </td>
@@ -971,7 +1102,8 @@ the plugins to add/delete container from the CNI networks. It is the operator's
 responsibility to install the CNI plugin binaries in the specified directory.
   </td>
 </tr>
-<tr>
+
+<tr id="network_cni_config_dir">
   <td>
     --network_cni_config_dir=VALUE
   </td>
@@ -981,7 +1113,8 @@ containers launched in Mesos agent can connect to, the operator should install
 a network configuration file in JSON format in the specified directory.
   </td>
 </tr>
-<tr>
+
+<tr id="oversubscribed_resources_interval">
   <td>
     --oversubscribed_resources_interval=VALUE
   </td>
@@ -992,7 +1125,8 @@ and available. The interval between updates is controlled by this flag.
 (default: 15secs)
   </td>
 </tr>
-<tr>
+
+<tr id="perf_duration">
   <td>
     --perf_duration=VALUE
   </td>
@@ -1001,7 +1135,8 @@ Duration of a perf stat sample. The duration must be less
 than the <code>perf_interval</code>. (default: 10secs)
   </td>
 </tr>
-<tr>
+
+<tr id="perf_events">
   <td>
     --perf_events=VALUE
   </td>
@@ -1014,7 +1149,8 @@ when reported in the PerfStatistics protobuf, e.g., <code>cpu-cycles</code>
 becomes <code>cpu_cycles</code>; see the PerfStatistics protobuf for all names.
   </td>
 </tr>
-<tr>
+
+<tr id="perf_interval">
   <td>
     --perf_interval=VALUE
   </td>
@@ -1026,7 +1162,8 @@ demand. For this reason, <code>perf_interval</code> is independent of the
 resource monitoring interval. (default: 60secs)
   </td>
 </tr>
-<tr>
+
+<tr id="qos_controller">
   <td>
     --qos_controller=VALUE
   </td>
@@ -1034,7 +1171,8 @@ resource monitoring interval. (default: 60secs)
 The name of the QoS Controller to use for oversubscription.
   </td>
 </tr>
-<tr>
+
+<tr id="qos_correction_interval_min">
   <td>
     --qos_correction_interval_min=VALUE
   </td>
@@ -1045,7 +1183,27 @@ The smallest interval between these corrections is controlled by
 this flag. (default: 0secs)
   </td>
 </tr>
-<tr>
+
+<tr id="reconfiguration_policy">
+  <td>
+    --reconfiguration_policy=VALUE
+  </td>
+  <td>
+This flag controls which agent configuration changes are considered
+acceptable when recovering the previous agent state. Possible values:
+    equal:    The old and the new state must match exactly.
+    additive: The new state must be a superset of the old state:
+              it is permitted to add additional resources, attributes
+              and domains but not to remove or to modify existing ones.
+
+Note that this only affects the checking done on the agent itself,
+the master may still reject the agent if it detects a change that it
+considers unacceptable, which, e.g., currently happens when port or hostname
+are changed. (default: equal)
+  </td>
+</tr>
+
+<tr id="recover">
   <td>
     --recover=VALUE
   </td>
@@ -1058,7 +1216,8 @@ cleanup  : Kill any old live executors and exit.
            or executor upgrade!). (default: reconnect)
   </td>
 </tr>
-<tr>
+
+<tr id="recovery_timeout">
   <td>
     --recovery_timeout=VALUE
   </td>
@@ -1069,7 +1228,8 @@ waiting to reconnect to the agent will self-terminate.
 (default: 15mins)
   </td>
 </tr>
-<tr>
+
+<tr id="registration_backoff_factor">
   <td>
     --registration_backoff_factor=VALUE
   </td>
@@ -1082,7 +1242,8 @@ interval (e.g., 1st retry uses a random value between <code>[0, b * 2^1]</code>,
 etc) up to a maximum of 1mins (default: 1secs)
   </td>
 </tr>
-<tr>
+
+<tr id="resource_estimator">
   <td>
     --resource_estimator=VALUE
   </td>
@@ -1090,7 +1251,8 @@ etc) up to a maximum of 1mins (default: 1secs)
 The name of the resource estimator to use for oversubscription.
   </td>
 </tr>
-<tr>
+
+<tr id="resources">
   <td>
     --resources=VALUE
   </td>
@@ -1126,7 +1288,8 @@ Example JSON:
 ]</code></pre>
   </td>
 </tr>
-<tr>
+
+<tr id="resource_provider_config_dir">
   <td>
     --resource_provider_config_dir=VALUE
   </td>
@@ -1147,7 +1310,8 @@ Example config file in this directory:
 }</code></pre>
   </td>
 </tr>
-<tr>
+
+<tr id="revocable_cpu_low_priority">
   <td>
     --[no-]revocable_cpu_low_priority
   </td>
@@ -1157,7 +1321,8 @@ normal containers (non-revocable cpu). Currently only
 supported by the cgroups/cpu isolator. (default: true)
   </td>
 </tr>
-<tr>
+
+<tr id="runtime_dir">
   <td>
     --runtime_dir
   </td>
@@ -1168,7 +1333,8 @@ not across reboots). This directory will be cleared on reboot.
 (Example: <code>/var/run/mesos</code>)
   </td>
 </tr>
-<tr>
+
+<tr id="sandbox_directory">
   <td>
     --sandbox_directory=VALUE
   </td>
@@ -1178,7 +1344,8 @@ sandbox is mapped to.
 (default: /mnt/mesos/sandbox)
   </td>
 </tr>
-<tr>
+
+<tr id="disallow_sharing_agent_pid_namespace">
   <td>
     --[no-]disallow_sharing_agent_pid_namespace
   </td>
@@ -1192,7 +1359,8 @@ agent if the framework requests it. This flag will be ignored if the
 (default: false)
   </td>
 </tr>
-<tr>
+
+<tr id="strict">
   <td>
     --[no-]strict
   </td>
@@ -1205,7 +1373,8 @@ state as possible is recovered.
 (default: true)
   </td>
 </tr>
-<tr>
+
+<tr id="secret_resolver">
   <td>
     --secret_resolver=VALUE
   </td>
@@ -1217,7 +1386,7 @@ reference-based secrets.
   </td>
 </tr>
 
-<tr>
+<tr id="switch_user">
   <td>
     --[no-]switch_user
   </td>
@@ -1271,7 +1440,8 @@ The path to the systemd system run time directory.
       </th>
     </tr>
   </thead>
-<tr>
+
+<tr id="ephemeral_ports_per_container">
   <td>
     --ephemeral_ports_per_container=VALUE
   </td>
@@ -1281,7 +1451,8 @@ isolator. This number has to be a power of 2. This flag is used
 for the <code>network/port_mapping</code> isolator. (default: 1024)
   </td>
 </tr>
-<tr>
+
+<tr id="eth0_name">
   <td>
     --eth0_name=VALUE
   </td>
@@ -1292,7 +1463,8 @@ on the host default gateway. This flag is used for the
 <code>network/port_mapping</code> isolator.
   </td>
 </tr>
-<tr>
+
+<tr id="lo_name">
   <td>
     --lo_name=VALUE
   </td>
@@ -1302,7 +1474,8 @@ not specified, the network isolator will try to guess it. This
 flag is used for the <code>network/port_mapping</code> isolator.
   </td>
 </tr>
-<tr>
+
+<tr id="egress_rate_limit_per_container">
   <td>
     --egress_rate_limit_per_container=VALUE
   </td>
@@ -1314,7 +1487,8 @@ This flag uses the Bytes type (defined in stout) and is used for
 the <code>network/port_mapping</code> isolator.
   </td>
 </tr>
-<tr>
+
+<tr id="egress_unique_flow_per_container">
   <td>
     --[no-]egress_unique_flow_per_container
   </td>
@@ -1324,7 +1498,8 @@ egress traffic. This flag is used for the <code>network/port_mapping</code>
 isolator. (default: false)
   </td>
 </tr>
-<tr>
+
+<tr id="egress_flow_classifier_parent">
   <td>
     --egress_flow_classifier_parent=VALUE
   </td>
@@ -1334,7 +1509,8 @@ a flow classifier (fq_codel) qdisc on egress side. This flag specifies
 where to install it in the hierarchy. By default, we install it at root.
   </td>
 </tr>
-<tr>
+
+<tr id="network_enable_socket_statistics_summary">
   <td>
     --[no-]network_enable_socket_statistics_summary
   </td>
@@ -1344,7 +1520,8 @@ This flag is used for the <code>network/port_mapping</code> isolator.
 (default: false)
   </td>
 </tr>
-<tr>
+
+<tr id="network_enable_socket_statistics_details">
   <td>
     --[no-]network_enable_socket_statistics_details
   </td>
@@ -1354,7 +1531,8 @@ each container. This flag is used for the <code>network/port_mapping</code>
 isolator. (default: false)
   </td>
 </tr>
-<tr>
+
+<tr id="network_enable_snmp_statistics">
   <td>
     --[no-]network_enable_snmp_statistics
   </td>
@@ -1364,6 +1542,7 @@ each container. This flag is used for the 'network/port_mapping'
 isolator. (default: false)
   </td>
 </tr>
+
 </table>
 
 ## XFS Disk Isolator flags
@@ -1381,7 +1560,8 @@ isolator. (default: false)
       </th>
     </tr>
   </thead>
-<tr>
+
+<tr id="xfs_project_range">
   <td>
     --xfs_project_range=VALUE
   </td>
@@ -1391,4 +1571,5 @@ quotas for container sandbox directories. Valid project IDs range from
 1 to max(uint32). (default `[5000-10000]`)
 </td>
 </tr>
+
 </table>

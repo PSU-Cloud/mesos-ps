@@ -18,9 +18,9 @@
 Set of classes and helper functions for building unit tests for the Mesos CLI.
 """
 
+import io
 import os
 import shutil
-import StringIO
 import subprocess
 import sys
 import tempfile
@@ -49,7 +49,7 @@ class CLITestCase(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        print "\n{class_name}".format(class_name=cls.__name__)
+        print("\n{class_name}".format(class_name=cls.__name__))
 
     @staticmethod
     def default_mesos_build_dir():
@@ -87,11 +87,12 @@ class Executable(object):
     def __init__(self):
         self.name = ""
         self.executable = ""
+        self.shell = False
         self.flags = {}
         self.proc = None
 
     def __del__(self):
-        if hasattr(self, "proc"):
+        if hasattr(self, "proc") and self.proc is not None:
             self.kill()
 
     def launch(self):
@@ -102,12 +103,21 @@ class Executable(object):
             raise CLIException("{name} already launched"
                                .format(name=self.name.capitalize()))
 
+        if not os.path.exists(self.executable):
+            raise CLIException("{name} executable not found"
+                               .format(name=self.name.capitalize()))
+
         try:
             flags = ["--{key}={value}".format(key=key, value=value)
-                     for key, value in self.flags.iteritems()]
+                     for key, value in dict(self.flags).items()]
+
+            if self.shell:
+                cmd = ["/bin/sh", self.executable] + flags
+            else:
+                cmd = [self.executable] + flags
 
             proc = subprocess.Popen(
-                [self.executable] + flags,
+                cmd,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT)
@@ -131,6 +141,8 @@ class Executable(object):
             return
 
         try:
+            self.proc.stdin.close()
+            self.proc.stdout.close()
             self.proc.kill()
             self.proc.wait()
             self.proc = None
@@ -153,8 +165,6 @@ class Master(Executable):
             raise CLIException("Creating more than one master"
                                " is currently not possible")
 
-        Master.count += 1
-
         if flags is None:
             flags = {}
 
@@ -172,13 +182,29 @@ class Master(Executable):
             CLITestCase.MESOS_BUILD_DIR,
             "bin",
             "mesos-{name}.sh".format(name=self.name))
+        self.shell = True
 
     def __del__(self):
         super(Master, self).__del__()
 
-        if hasattr(self, "flags"):
+        if hasattr(self, "flags") and hasattr(self.flags, "work_dir"):
             shutil.rmtree(self.flags["work_dir"])
 
+    # pylint: disable=arguments-differ
+    def launch(self):
+        """
+        After starting the master, we need to make sure its
+        reference count is increased.
+        """
+        super(Master, self).launch()
+        Master.count += 1
+
+    def kill(self):
+        """
+        After killing the master, we need to make sure its
+        reference count is decreased.
+        """
+        super(Master, self).kill()
         Master.count -= 1
 
 
@@ -195,8 +221,6 @@ class Agent(Executable):
         if Agent.count > 0:
             raise CLIException("Creating more than one agent"
                                " is currently not possible")
-
-        Agent.count += 1
 
         if flags is None:
             flags = {}
@@ -224,23 +248,25 @@ class Agent(Executable):
             CLITestCase.MESOS_BUILD_DIR,
             "bin",
             "mesos-{name}.sh".format(name=self.name))
+        self.shell = True
 
     def __del__(self):
         super(Agent, self).__del__()
 
-        if hasattr(self, "flags"):
+        if hasattr(self, "flags") and hasattr(self.flags, "work_dir"):
             shutil.rmtree(self.flags["work_dir"])
+        if hasattr(self, "flags") and hasattr(self.flags, "runtime_dir"):
             shutil.rmtree(self.flags["runtime_dir"])
-
-        Agent.count -= 1
 
     # pylint: disable=arguments-differ
     def launch(self, timeout=TIMEOUT):
         """
-        After starting the agent, we need to make sure it has
+        After starting the agent, we first need to make sure its
+        reference count is increased and then check that it has
         successfully registered with the master before proceeding.
         """
         super(Agent, self).launch()
+        Agent.count += 1
 
         try:
             # pylint: disable=missing-docstring
@@ -252,7 +278,6 @@ class Agent(Executable):
             stdout = ""
             if self.proc.poll():
                 stdout = "\n{output}".format(output=self.proc.stdout.read())
-                self.proc = None
 
             raise CLIException("Could not get '/slaves' endpoint as JSON with"
                                " only 1 agent in it: {error}{stdout}"
@@ -266,19 +291,20 @@ class Agent(Executable):
         """
         super(Agent, self).kill()
 
-        if self.proc is None:
-            return
-
         try:
             # pylint: disable=missing-docstring
-            def no_slaves(data):
-                return len(data["slaves"]) == 0
+            def one_inactive_slave(data):
+                slaves = data["slaves"]
+                return len(slaves) == 1 and not slaves[0]["active"]
 
-            http.get_json(self.flags["master"], "slaves", no_slaves, timeout)
+            http.get_json(
+                self.flags["master"], "slaves", one_inactive_slave, timeout)
         except Exception as exception:
             raise CLIException("Could not get '/slaves' endpoint as"
                                " JSON with 0 agents in it: {error}"
                                .format(error=exception))
+
+        Agent.count -= 1
 
 
 class Task(Executable):
@@ -300,7 +326,6 @@ class Task(Executable):
                 port=TEST_MASTER_PORT)
         if "name" not in flags:
             flags["name"] = "task-{id}".format(id=Task.count)
-            Task.count += 1
         if "command" not in flags:
             raise CLIException("No command supplied when creating task")
 
@@ -353,6 +378,7 @@ class Task(Executable):
         has actually been added to the agent before proceeding.
         """
         super(Task, self).launch()
+        Task.count += 1
 
         try:
             # pylint: disable=missing-docstring
@@ -381,9 +407,6 @@ class Task(Executable):
         """
         super(Task, self).kill()
 
-        if self.proc is None:
-            return
-
         try:
             # pylint: disable=missing-docstring
             def container_does_not_exist(data):
@@ -397,6 +420,8 @@ class Task(Executable):
                                .format(name=self.flags["name"],
                                        error=exception))
 
+        Task.count -= 1
+
 
 def capture_output(command, argv, extra_args=None):
     """
@@ -406,7 +431,7 @@ def capture_output(command, argv, extra_args=None):
         extra_args = {}
 
     stdout = sys.stdout
-    sys.stdout = StringIO.StringIO()
+    sys.stdout = io.StringIO()
 
     try:
         command(argv, **extra_args)

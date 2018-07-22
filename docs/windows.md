@@ -7,14 +7,12 @@ layout: documentation
 
 Mesos 1.0.0 introduced experimental support for Windows.
 
-
 ## Building Mesos
-
 
 ### System Requirements
 
 1. Install the latest [Visual Studio 2017](https://www.visualstudio.com/downloads/):
-   The "Community" edition is sufficient (and free).
+   The "Community" edition is sufficient (and free of charge).
    During installation, choose the "Desktop development with C++" workload.
 
 2. Install [CMake 3.8.0](https://cmake.org/download/) or later.
@@ -23,17 +21,13 @@ Mesos 1.0.0 introduced experimental support for Windows.
 3. Install [GNU patch for Windows](http://gnuwin32.sourceforge.net/packages/patch.htm).
 
 4. If building from source, install [Git](https://git-scm.com/download/win).
-   During installation, keep the defaults to "Use Git from the Windows
-   Command Prompt", and "Checkout Windows-style, commit Unix-style
-   line endings" (i.e. `git config core.autocrlf true`).
 
 5. Make sure there are no spaces in your build directory.
    For example, `C:/Program Files (x86)/mesos` is an invalid build directory.
 
-6. If developing Mesos, install [Python 2](https://www.python.org/downloads/)
-   (not Python 3), in order to use our support scripts (e.g. to post and apply
-   patches, or lint source code).
-
+6. If developing Mesos, install [Python 3](https://www.python.org/downloads/)
+   (not Python 2), in order to use our `support/python3` scripts (e.g.
+   to post and apply patches, or lint source code).
 
 ### Build Instructions
 
@@ -46,7 +40,7 @@ Following are the instructions for Windows 10.
     # Configure using CMake for an out-of-tree build.
     mkdir build
     cd build
-    cmake .. -G "Visual Studio 15 2017 Win64" -T "host=x64" -DENABLE_LIBEVENT=1
+    cmake .. -G "Visual Studio 15 2017 Win64" -T "host=x64" -DENABLE_LIBWINIO=ON
 
     # Build Mesos.
     # To build just the Mesos agent, add `--target mesos-agent`.
@@ -57,12 +51,16 @@ Following are the instructions for Windows 10.
     # master, using eiher an IP address or zookeeper information.
     src\mesos-agent.exe --master=<master> --work_dir=<work folder> --launcher_dir=<repository>\build\src
 
+## Running Mesos
+
+If you deploy the executables to another machine, you must also
+install the [Microsoft Visual C++ Redistributable for Visual Studio 2017](https://aka.ms/vs/15/release/VC_redist.x64.exe).
 
 ## Known Limitations
 
 The current implementation is known to have the following limitations:
 
-* Only the agent should be run on Windows.  The Mesos master can be
+* Only the agent should be run on Windows. The Mesos master can be
   launched, but only for testing as the master does not support
   high-availability setups on Windows.
 
@@ -74,15 +72,36 @@ The current implementation is known to have the following limitations:
   It is likely that this will increase, due to evolving Windows container
   support and developer features which ease porting.
 
+* The ability to [create symlinks][] as a non-admin user requires
+  Developer Mode to be enabled. Otherwise the agent will need to be
+  run under an administrator.
+
 [server]: https://docs.microsoft.com/en-us/windows-server/get-started/get-started-with-1709
-
-
-## Status
-
-For more information regarding the status of Windows support in Mesos,
-please refer to the [JIRA epic](https://issues.apache.org/jira/browse/MESOS-3094).
+[create symlinks]: https://blogs.windows.com/buildingapps/2016/12/02/symlinks-windows-10/
 
 ## Build Configuration Examples
+
+### Building with Ninja
+
+Instead of using MSBuild, it is also possible to build Mesos on
+Windows using [Ninja](https://ninja-build.org/), which can result in
+significantly faster builds. To use Ninja, you need to download it and
+ensure `ninja.exe` is in your `PATH`.
+
+* Download the [Windows binary](https://github.com/ninja-build/ninja/releases).
+* Unzip it and place `ninja.exe` in your `PATH`.
+* Open an "x64 Native Tools Command Prompt for VS 2017" to set your
+  environment.
+* In that command prompt, type `powershell` to use a better shell.
+* Similar to above, configure CMake with
+  `cmake .. -G Ninja -DENABLE_LIBWINIO=ON`.
+* Now you can use `ninja` to build the various targets.
+* You may want to use `ninja -v` to make it verbose, as it's otherwise
+  very quiet.
+
+Note that with Ninja it is imperative to open the correct developer
+command prompt so that the 64-bit build tools are used, as Ninja does
+not otherwise know how to find them.
 
 ### Building with Java
 
@@ -145,6 +164,11 @@ As of this writing, OpenSSL 1.1.x is not yet supported, but 1.0.2M has been
 tested.
 
 Use `-DENABLE_SSL=ON` when running CMake to build with OpenSSL.
+
+> Warning: This currently requires the use of `-DENABLE_LIBEVENT=ON`
+> instead of `-DENABLE_LIBWINIO=ON`; however, the use of libevent on
+> Windows is not recommended, as it is buggy and will be unsupported
+> in the future.
 
 Note that it will link to OpenSSL dynamically, so if the built executables are
 deployed elsewhere, that machine also needs OpenSSL installed.

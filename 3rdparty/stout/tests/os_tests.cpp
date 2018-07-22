@@ -20,6 +20,8 @@
 #include <sys/types.h>
 #endif
 
+#include <algorithm>
+#include <chrono>
 #include <cstdlib> // For rand.
 #include <list>
 #include <map>
@@ -49,7 +51,9 @@
 #include <stout/os/kill.hpp>
 #include <stout/os/killtree.hpp>
 #include <stout/os/realpath.hpp>
+#include <stout/os/shell.hpp>
 #include <stout/os/stat.hpp>
+#include <stout/os/which.hpp>
 #include <stout/os/write.hpp>
 
 #if defined(__APPLE__) || defined(__FreeBSD__)
@@ -144,19 +148,25 @@ TEST_F(OsTest, Argv)
 
 TEST_F(OsTest, System)
 {
-  EXPECT_EQ(0, os::system("exit 0"));
-  EXPECT_EQ(0, os::system(SLEEP_COMMAND(0)));
-  EXPECT_NE(0, os::system("exit 1"));
-  EXPECT_NE(0, os::system("invalid.command"));
+  EXPECT_SOME_EQ(0, os::system("exit 0"));
+  EXPECT_SOME_EQ(0, os::system(SLEEP_COMMAND(0)));
+  EXPECT_SOME_NE(0, os::system("exit 1"));
+  EXPECT_SOME_NE(0, os::system("invalid.command"));
 
   // Note that ::system returns 0 for the following two cases as well.
-  EXPECT_EQ(0, os::system(""));
-  EXPECT_EQ(0, os::system(" "));
+  EXPECT_SOME_EQ(0, os::system(""));
+  EXPECT_SOME_EQ(0, os::system(" "));
 }
 
 
-// NOTE: Disabled because `os::cloexec` is not implemented on Windows.
-TEST_F_TEMP_DISABLED_ON_WINDOWS(OsTest, Cloexec)
+// NOTE: `os::cloexec` is a stub on Windows that returns `true`.
+#ifdef __WINDOWS__
+TEST_F(OsTest, Cloexec)
+{
+  ASSERT_SOME_TRUE(os::isCloexec(int_fd(INVALID_HANDLE_VALUE)));
+}
+#else
+TEST_F(OsTest, Cloexec)
 {
   Try<int_fd> fd = os::open(
       "cloexec",
@@ -184,10 +194,36 @@ TEST_F_TEMP_DISABLED_ON_WINDOWS(OsTest, Cloexec)
 
   close(fd.get());
 }
+#endif // __WINDOWS__
 
 
-// NOTE: Disabled because `os::nonblock` doesn't exist on Windows.
-#ifndef __WINDOWS__
+// NOTE: `os::isNonblock` is a stub on Windows that returns `true`.
+#ifdef __WINDOWS__
+TEST_F(OsTest, Nonblock)
+{
+  // `os::isNonblock` is a stub on Windows that returns `true`.
+  EXPECT_SOME_TRUE(os::isNonblock(int_fd(INVALID_HANDLE_VALUE)));
+
+  // `os::nonblock` is a no-op for handles.
+  EXPECT_SOME(os::nonblock(int_fd(INVALID_HANDLE_VALUE)));
+
+  // `os::nonblock` should fail for an invalid socket.
+  EXPECT_ERROR(os::nonblock(int_fd(INVALID_SOCKET)));
+
+  // NOTE: There is no way on Windows to check if the socket is in
+  // blocking or non-blocking mode, so `os::isNonblock` is a stub. A
+  // Windows socket always starts in blocking mode, and then can be
+  // set as non-blocking. All we can check here is that `os::nonblock`
+  // does not fail on a valid socket.
+  ASSERT_TRUE(net::wsa_initialize());
+  Try<int_fd> socket =
+    net::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP, WSA_FLAG_NO_HANDLE_INHERIT);
+  ASSERT_SOME(socket);
+  EXPECT_SOME(os::nonblock(socket.get()));
+  EXPECT_SOME(os::close(socket.get()));
+  ASSERT_TRUE(net::wsa_cleanup());
+}
+#else
 TEST_F(OsTest, Nonblock)
 {
   int pipes[2];
@@ -262,23 +298,24 @@ TEST_F(OsTest, BootId)
   Try<string> read = os::read("/proc/sys/kernel/random/boot_id");
   ASSERT_SOME(read);
   EXPECT_EQ(bootId.get(), strings::trim(read.get()));
-#elif defined(__APPLE__) || defined(__FreeBSD__)
-  // For OS X and FreeBSD systems, the boot id is the system boot time in
-  // seconds, so assert it can be numified and is a reasonable value.
+#elif defined(__APPLE__) || defined(__FreeBSD__) || defined(__WINDOWS__)
+  // For OS X, FreeBSD, and Windows systems, the boot id is the system
+  // boot time in seconds, so assert it can be numified and is a
+  // reasonable value.
   Try<uint64_t> numified = numify<uint64_t>(bootId.get());
   ASSERT_SOME(numified);
-
-  timeval time;
-  gettimeofday(&time, nullptr);
   EXPECT_GT(Seconds(numified.get()), Seconds(0));
-  EXPECT_LT(Seconds(numified.get()), Seconds(time.tv_sec));
-#endif
+
+  using namespace std::chrono;
+  EXPECT_LT(
+      Seconds(numified.get()),
+      Seconds(duration_cast<seconds>(system_clock::now().time_since_epoch())
+                .count()));
+#endif // APPLE / FreeBSD / WINDOWS
 }
 
 
-// TODO(hausdorff): Enable test on Windows after we fix. The test hangs. See
-// MESOS-3441.
-TEST_F_TEMP_DISABLED_ON_WINDOWS(OsTest, Sleep)
+TEST_F(OsTest, Sleep)
 {
   Duration duration = Milliseconds(10);
   Stopwatch stopwatch;
@@ -300,11 +337,11 @@ TEST_F(OsTest, Sysctl)
 
   Try<string> release = os::sysctl(CTL_KERN, KERN_OSRELEASE).string();
 
-  EXPECT_SOME_EQ(uname.get().release, release);
+  EXPECT_SOME_EQ(uname->release, release);
 
   Try<string> type = os::sysctl(CTL_KERN, KERN_OSTYPE).string();
 
-  EXPECT_SOME_EQ(uname.get().sysname, type);
+  EXPECT_SOME_EQ(uname->sysname, type);
 
   // Integer test.
   Try<int> maxproc = os::sysctl(CTL_KERN, KERN_MAXPROC).integer();
@@ -336,8 +373,8 @@ TEST_F(OsTest, Sysctl)
   timeval time;
   gettimeofday(&time, nullptr);
 
-  EXPECT_GT(Seconds(bootTime.get().tv_sec), Seconds(0));
-  EXPECT_LT(Seconds(bootTime.get().tv_sec), Seconds(time.tv_sec));
+  EXPECT_GT(Seconds(bootTime->tv_sec), Seconds(0));
+  EXPECT_LT(Seconds(bootTime->tv_sec), Seconds(time.tv_sec));
 }
 #endif // __APPLE__ || __FreeBSD__
 
@@ -357,18 +394,18 @@ TEST_F(OsTest, Children)
          Exec(SLEEP_COMMAND(10)))();
 
   ASSERT_SOME(tree);
-  ASSERT_EQ(1u, tree.get().children.size());
+  ASSERT_EQ(1u, tree->children.size());
 
-  pid_t child = tree.get().process.pid;
-  pid_t grandchild = tree.get().children.front().process.pid;
+  pid_t child = tree->process.pid;
+  pid_t grandchild = tree->children.front().process.pid;
 
   // Ensure the non-recursive children does not include the
   // grandchild.
   children = os::children(getpid(), false);
 
   ASSERT_SOME(children);
-  EXPECT_EQ(1u, children.get().size());
-  EXPECT_EQ(1u, children.get().count(child));
+  EXPECT_EQ(1u, children->size());
+  EXPECT_EQ(1u, children->count(child));
 
   children = os::children(getpid());
 
@@ -379,11 +416,11 @@ TEST_F(OsTest, Children)
   // might simply for exec the command above (i.e., 'sleep 10') while
   // others might fork/exec the command, keeping around a 'sh -c'
   // process as well.
-  EXPECT_LE(2u, children.get().size());
-  EXPECT_GE(4u, children.get().size());
+  EXPECT_LE(2u, children->size());
+  EXPECT_GE(4u, children->size());
 
-  EXPECT_EQ(1u, children.get().count(child));
-  EXPECT_EQ(1u, children.get().count(grandchild));
+  EXPECT_EQ(1u, children->count(child));
+  EXPECT_EQ(1u, children->count(grandchild));
 
   // Cleanup by killing the descendant processes.
   EXPECT_EQ(0, kill(grandchild, SIGKILL));
@@ -432,15 +469,15 @@ TEST_F(OsTest, Killtree)
   //   \--- greatGreatGrandchild sleep 10
 
   // Grab the pids from the instantiated process tree.
-  ASSERT_EQ(1u, tree.get().children.size());
-  ASSERT_EQ(1u, tree.get().children.front().children.size());
-  ASSERT_EQ(1u, tree.get().children.front().children.front().children.size());
+  ASSERT_EQ(1u, tree->children.size());
+  ASSERT_EQ(1u, tree->children.front().children.size());
+  ASSERT_EQ(1u, tree->children.front().children.front().children.size());
 
   pid_t child = tree.get();
-  pid_t grandchild = tree.get().children.front();
-  pid_t greatGrandchild = tree.get().children.front().children.front();
+  pid_t grandchild = tree->children.front();
+  pid_t greatGrandchild = tree->children.front().children.front();
   pid_t greatGreatGrandchild =
-    tree.get().children.front().children.front().children.front();
+    tree->children.front().children.front().children.front();
 
   // Now wait for the grandchild to exit splitting the process tree.
   Duration elapsed = Duration::zero();
@@ -449,13 +486,13 @@ TEST_F(OsTest, Killtree)
 
     ASSERT_FALSE(process.isError());
 
-    if (process.isNone() || process.get().zombie) {
+    if (process.isNone() || process->zombie) {
       break;
     }
 
     if (elapsed > Seconds(10)) {
-      FAIL() << "Granchild process '" << process.get().pid << "' "
-             << "(" << process.get().command << ") did not terminate";
+      FAIL() << "Granchild process '" << process->pid << "' "
+             << "(" << process->command << ") did not terminate";
     }
 
     os::sleep(Milliseconds(5));
@@ -469,7 +506,7 @@ TEST_F(OsTest, Killtree)
 
   ASSERT_SOME(trees);
 
-  EXPECT_EQ(2u, trees.get().size()) << stringify(trees.get());
+  EXPECT_EQ(2u, trees->size()) << stringify(trees.get());
 
   foreach (const ProcessTree& tree, trees.get()) {
     if (tree.process.pid == child) {
@@ -501,7 +538,7 @@ TEST_F(OsTest, Killtree)
     if (os::process(greatGreatGrandchild).isNone() &&
         os::process(greatGrandchild).isNone() &&
         os::process(grandchild).isNone() &&
-        _child.get().zombie) {
+        _child->zombie) {
       break;
     }
 
@@ -518,7 +555,7 @@ TEST_F(OsTest, Killtree)
   EXPECT_NONE(os::process(greatGrandchild));
   EXPECT_NONE(os::process(grandchild));
   EXPECT_SOME(os::process(child));
-  EXPECT_TRUE(os::process(child).get().zombie);
+  EXPECT_TRUE(os::process(child)->zombie);
 
   // We have to reap the child for running the tests in repetition.
   ASSERT_EQ(child, waitpid(child, nullptr, 0));
@@ -555,12 +592,12 @@ TEST_F(OsTest, KilltreeNoRoot)
   //   \-+- great grandchild sleep 100
 
   // Grab the pids from the instantiated process tree.
-  ASSERT_EQ(1u, tree.get().children.size());
-  ASSERT_EQ(1u, tree.get().children.front().children.size());
+  ASSERT_EQ(1u, tree->children.size());
+  ASSERT_EQ(1u, tree->children.front().children.size());
 
   pid_t child = tree.get();
-  pid_t grandchild = tree.get().children.front();
-  pid_t greatGrandchild = tree.get().children.front().children.front();
+  pid_t grandchild = tree->children.front();
+  pid_t greatGrandchild = tree->children.front().children.front();
 
   // Wait for the child to exit.
   Duration elapsed = Duration::zero();
@@ -568,7 +605,7 @@ TEST_F(OsTest, KilltreeNoRoot)
     Result<os::Process> process = os::process(child);
     ASSERT_FALSE(process.isError());
 
-    if (process.get().zombie) {
+    if (process->zombie) {
       break;
     }
 
@@ -582,7 +619,7 @@ TEST_F(OsTest, KilltreeNoRoot)
 
   // Ensure we reap our child now.
   EXPECT_SOME(os::process(child));
-  EXPECT_TRUE(os::process(child).get().zombie);
+  EXPECT_TRUE(os::process(child)->zombie);
   ASSERT_EQ(child, waitpid(child, nullptr, 0));
 
   // Check the grandchild and great grandchild are still running.
@@ -596,8 +633,8 @@ TEST_F(OsTest, KilltreeNoRoot)
   // meaning we can't just check that the parent pid == 1.
   Result<os::Process> _grandchild = os::process(grandchild);
   ASSERT_SOME(_grandchild);
-  ASSERT_NE(child, _grandchild.get().parent);
-  ASSERT_FALSE(_grandchild.get().zombie);
+  ASSERT_NE(child, _grandchild->parent);
+  ASSERT_FALSE(_grandchild->zombie);
 
   // Check to see if we're in a jail on FreeBSD in case we've been
   // reparented to pid 1
@@ -605,9 +642,9 @@ TEST_F(OsTest, KilltreeNoRoot)
   if (!isJailed()) {
 #endif
   // Check that grandchild's parent is also not a zombie.
-  Result<os::Process> currentParent = os::process(_grandchild.get().parent);
+  Result<os::Process> currentParent = os::process(_grandchild->parent);
   ASSERT_SOME(currentParent);
-  ASSERT_FALSE(currentParent.get().zombie);
+  ASSERT_FALSE(currentParent->zombie);
 #ifdef __FreeBSD__
   }
 #endif
@@ -619,7 +656,7 @@ TEST_F(OsTest, KilltreeNoRoot)
   Try<list<ProcessTree>> trees = os::killtree(child, SIGKILL, true, true);
 
   ASSERT_SOME(trees);
-  EXPECT_FALSE(trees.get().empty());
+  EXPECT_FALSE(trees->empty());
 
   // All processes should be reparented and reaped by init.
   elapsed = Duration::zero();
@@ -678,7 +715,7 @@ TEST_F(OsTest, ProcessExists)
     Result<os::Process> process = os::process(pid);
     ASSERT_SOME(process);
 
-    if (process.get().zombie) {
+    if (process->zombie) {
       break;
     }
 
@@ -741,7 +778,7 @@ TEST_F(OsTest, User)
     strings::split(strings::trim(gids_.get(), strings::ANY, "\n"), " ");
 
   ASSERT_SOME(tokens);
-  std::sort(tokens.get().begin(), tokens.get().end());
+  std::sort(tokens->begin(), tokens->end());
 
   Try<vector<gid_t>> gids = os::getgrouplist(user.get());
   EXPECT_SOME(gids);
@@ -887,12 +924,12 @@ TEST_F(OsTest, TrivialUser)
 }
 
 
-// TODO(hausdorff): Look into enabling this on Windows. Right now,
-// `LD_LIBRARY_PATH` doesn't exist on Windows, so `setPaths` doesn't work. See
-// MESOS-5940.
 // Test setting/resetting/appending to LD_LIBRARY_PATH environment
 // variable (DYLD_LIBRARY_PATH on OS X).
-TEST_F_TEMP_DISABLED_ON_WINDOWS(OsTest, Libraries)
+//
+// NOTE: This will never be enabled on Windows as there is no equivalent.
+#ifndef __WINDOWS__
+TEST_F(OsTest, Libraries)
 {
   const string path1 = "/tmp/path1";
   const string path2 = "/tmp/path1";
@@ -928,36 +965,79 @@ TEST_F_TEMP_DISABLED_ON_WINDOWS(OsTest, Libraries)
   os::libraries::setPaths(originalLibraryPath);
   EXPECT_EQ(os::libraries::paths(), originalLibraryPath);
 }
+#endif // __WINDOWS__
 
 
-// NOTE: `os::shell()` is explicitly disallowed on Windows.
-#ifndef __WINDOWS__
 TEST_F(OsTest, Shell)
 {
   Try<string> result = os::shell("echo %s", "hello world");
+#ifdef __WINDOWS__
+  EXPECT_SOME_EQ("hello world\r\n", result);
+#else
   EXPECT_SOME_EQ("hello world\n", result);
+#endif // __WINDOWS__
 
   result = os::shell("foobar");
   EXPECT_ERROR(result);
 
+#ifdef __WINDOWS__
+  // NOTE: This relies on the strange semantics of Windows' echo,
+  // where quotes are not removed. We are testing that a quoted
+  // argument with a space in it remains quoted by `os::shell`.
+  result = os::shell("echo \"foo bar\"");
+  EXPECT_SOME_EQ("\"foo bar\"\r\n", result);
+
+  // Because the arguments do not have whitespace in them,
+  // `CommandLineToArgv` removes the surrounding quotes before passing
+  // them to `echo`.
+  result = os::shell("echo \"foo\" \"bar\"");
+  EXPECT_SOME_EQ("foo bar\r\n", result);
+#endif // __WINDOWS__
+
   // The `|| true`` necessary so that os::shell() sees a success
   // exit code and returns stdout (which we have piped stderr to).
+#ifdef __WINDOWS__
+  result = os::shell("dir foobar889076 2>&1 || exit /b 0");
+  ASSERT_SOME(result);
+  EXPECT_TRUE(strings::contains(result.get(), "File Not Found"));
+#else
   result = os::shell("LC_ALL=C ls /tmp/foobar889076 2>&1 || true");
   ASSERT_SOME(result);
   EXPECT_TRUE(strings::contains(result.get(), "No such file or directory"));
+#endif // __WINDOWS__
+
+  // Testing a command that wrote a substantial amount of data.
+  const string output(2 * os::pagesize(), 'c');
+  const string outfile = path::join(sandbox.get(), "out.txt");
+  ASSERT_SOME(os::write(outfile, output));
+#ifdef __WINDOWS__
+  result = os::shell("type %s", outfile.c_str());
+#else
+  result = os::shell("cat %s", outfile.c_str());
+#endif // __WINDOWS__
+  EXPECT_SOME_EQ(output, result);
 
   // Testing a more ambitious command that mutates the filesystem.
-  const string path = "/tmp/os_tests.txt";
+  const string path = path::join(sandbox.get(), "os_tests.txt");
+#ifdef __WINDOWS__
+  result = os::shell("copy /y nul %s", path.c_str());
+  ASSERT_SOME(result);
+  EXPECT_EQ("1 file(s) copied.", strings::trim(result.get()));
+#else
   result = os::shell("touch %s", path.c_str());
   EXPECT_SOME_EQ("", result);
+#endif // __WINDOWS__
   EXPECT_TRUE(os::exists(path));
 
   // Let's clean up, and ensure this worked too.
+#ifdef __WINDOWS__
+  result = os::shell("del %s", path.c_str());
+#else
   result = os::shell("rm %s", path.c_str());
-  EXPECT_SOME_EQ("", result);
-  EXPECT_FALSE(os::exists("/tmp/os_tests.txt"));
-}
 #endif // __WINDOWS__
+  EXPECT_SOME_EQ("", result);
+  EXPECT_FALSE(os::exists(path));
+}
 
 
 // NOTE: Disabled on Windows because `mknod` does not exist.
@@ -1013,11 +1093,36 @@ TEST_F(OsTest, SYMLINK_Realpath)
   ASSERT_SOME(fs::symlink(testFile, testLink));
 
   // Validate the symlink.
+#ifdef __WINDOWS__
+  Try<int_fd> handle = os::open(testFile, O_RDONLY);
+  ASSERT_SOME(handle);
+  FILE_ID_INFO fileInfo;
+  BOOL result = ::GetFileInformationByHandleEx(
+    handle.get(), FileIdInfo, &fileInfo, sizeof(fileInfo));
+  ASSERT_SOME(os::close(handle.get()));
+  ASSERT_EQ(TRUE, result);
+
+  handle = os::open(testLink, O_RDONLY);
+  ASSERT_SOME(handle);
+  FILE_ID_INFO linkInfo;
+  result = ::GetFileInformationByHandleEx(
+    handle.get(), FileIdInfo, &linkInfo, sizeof(linkInfo));
+  ASSERT_SOME(os::close(handle.get()));
+  ASSERT_EQ(TRUE, result);
+
+  ASSERT_EQ(fileInfo.VolumeSerialNumber, linkInfo.VolumeSerialNumber);
+  ASSERT_TRUE(std::equal(
+    std::begin(fileInfo.FileId.Identifier),
+    std::end(fileInfo.FileId.Identifier),
+    std::begin(linkInfo.FileId.Identifier),
+    std::end(linkInfo.FileId.Identifier)));
+#else
   const Try<ino_t> fileInode = os::stat::inode(testFile);
   ASSERT_SOME(fileInode);
   const Try<ino_t> linkInode = os::stat::inode(testLink);
   ASSERT_SOME(linkInode);
   ASSERT_EQ(fileInode.get(), linkInode.get());
+#endif // __WINDOWS__
 
   // Verify that the symlink resolves correctly.
   Result<string> resolved = os::realpath(testLink);
@@ -1035,15 +1140,12 @@ TEST_F(OsTest, SYMLINK_Realpath)
 }
 
 
-// NOTE: Disabled on Windows because `which` doesn't exist.
-#ifndef __WINDOWS__
 TEST_F(OsTest, Which)
 {
   // TODO(jieyu): Test PATH search ordering and file execution bit.
-  Option<string> which = os::which("ls");
+  Option<string> which = os::which("ping");
   ASSERT_SOME(which);
 
   which = os::which("bar");
   EXPECT_NONE(which);
 }
-#endif // __WINDOWS__

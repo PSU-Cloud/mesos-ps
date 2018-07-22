@@ -16,8 +16,6 @@
 
 #include "master/master.hpp"
 
-#include <list>
-
 #include <mesos/roles.hpp>
 
 #include <mesos/authorizer/authorizer.hpp>
@@ -38,7 +36,6 @@ using google::protobuf::RepeatedPtrField;
 
 using mesos::authorization::createSubject;
 
-using std::list;
 using std::string;
 using std::vector;
 
@@ -120,7 +117,8 @@ Future<vector<WeightInfo>> Master::WeightsHandler::_getWeights(
 
   // Create a list of authorization actions for each role we may return.
   // TODO(alexr): Batch these actions once we have BatchRequest in authorizer.
-  list<Future<bool>> roleAuthorizations;
+  vector<Future<bool>> roleAuthorizations;
+  roleAuthorizations.reserve(weightInfos.size());
   foreach (const WeightInfo& info, weightInfos) {
     roleAuthorizations.push_back(authorizeGetWeight(principal, info));
   }
@@ -128,7 +126,7 @@ Future<vector<WeightInfo>> Master::WeightsHandler::_getWeights(
   return process::collect(roleAuthorizations)
     .then(defer(
         master->self(),
-        [=](const list<bool>& roleAuthorizationsCollected)
+        [=](const vector<bool>& roleAuthorizationsCollected)
           -> Future<vector<WeightInfo>> {
       return _filterWeights(weightInfos, roleAuthorizationsCollected);
   }));
@@ -137,7 +135,7 @@ Future<vector<WeightInfo>> Master::WeightsHandler::_getWeights(
 
 Future<vector<WeightInfo>> Master::WeightsHandler::_filterWeights(
     const vector<WeightInfo>& weightInfos,
-    const list<bool>& roleAuthorizations) const
+    const vector<bool>& roleAuthorizations) const
 {
   CHECK(weightInfos.size() == roleAuthorizations.size());
 
@@ -212,7 +210,7 @@ Future<http::Response> Master::WeightsHandler::_updateWeights(
     if (roleError.isSome()) {
       return BadRequest(
           "Failed to validate update weights request JSON: Invalid role '" +
-          role + "': " + roleError.get().message);
+          role + "': " + roleError->message);
     }
 
     // Check that the role is on the role whitelist, if it exists.
@@ -249,7 +247,7 @@ Future<http::Response> Master::WeightsHandler::__updateWeights(
     const vector<WeightInfo>& weightInfos) const
 {
   // Update the registry and acknowledge the request.
-  return master->registrar->apply(Owned<Operation>(
+  return master->registrar->apply(Owned<RegistryOperation>(
       new weights::UpdateWeights(weightInfos)))
     .then(defer(master->self(), [=](bool result) -> Future<http::Response> {
       CHECK(result);
@@ -336,7 +334,8 @@ Future<bool> Master::WeightsHandler::authorizeUpdateWeights(
     request.mutable_subject()->CopyFrom(subject.get());
   }
 
-  list<Future<bool>> authorizations;
+  vector<Future<bool>> authorizations;
+  authorizations.reserve(roles.size());
   foreach (const string& role, roles) {
     request.mutable_object()->set_value(role);
     authorizations.push_back(master->authorizer.get()->authorized(request));
@@ -347,7 +346,7 @@ Future<bool> Master::WeightsHandler::authorizeUpdateWeights(
   }
 
   return await(authorizations)
-      .then([](const list<Future<bool>>& authorizations)
+      .then([](const vector<Future<bool>>& authorizations)
             -> Future<bool> {
         // Compute a disjunction.
         foreach (const Future<bool>& authorization, authorizations) {

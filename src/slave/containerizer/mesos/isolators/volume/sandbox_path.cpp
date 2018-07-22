@@ -41,8 +41,8 @@
 
 #include "slave/containerizer/mesos/isolators/volume/sandbox_path.hpp"
 
-using std::list;
 using std::string;
+using std::vector;
 
 using process::ErrnoFailure;
 using process::Failure;
@@ -101,7 +101,7 @@ bool VolumeSandboxPathIsolatorProcess::supportsStandalone()
 
 
 Future<Nothing> VolumeSandboxPathIsolatorProcess::recover(
-    const list<ContainerState>& states,
+    const vector<ContainerState>& states,
     const hashset<ContainerID>& orphans)
 {
   foreach (const ContainerState& state, states) {
@@ -395,6 +395,16 @@ Future<Option<ContainerLaunchInfo>> VolumeSandboxPathIsolatorProcess::prepare(
   }
 
   return launchInfo;
+}
+
+
+Future<Nothing> VolumeSandboxPathIsolatorProcess::cleanup(
+    const ContainerID& containerId)
+{
+  // Remove the current container's sandbox path from `sandboxes`.
+  sandboxes.erase(containerId);
+
+  return Nothing();
 }
 
 } // namespace slave {

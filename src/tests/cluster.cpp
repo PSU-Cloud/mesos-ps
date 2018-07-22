@@ -92,6 +92,7 @@
 #include "slave/slave.hpp"
 #include "slave/task_status_update_manager.hpp"
 
+#include "slave/containerizer/composing.hpp"
 #include "slave/containerizer/containerizer.hpp"
 #include "slave/containerizer/fetcher.hpp"
 
@@ -434,8 +435,26 @@ Try<process::Owned<Slave>> Slave::create(
       return Error("Failed to create containerizer: " + _containerizer.error());
     }
 
-    slave->ownedContainerizer.reset(_containerizer.get());
     slave->containerizer = _containerizer.get();
+  }
+
+  // As composing containerizer doesn't affect behaviour of underlying
+  // containerizers, we can always use composing containerizer turned on
+  // by default in tests.
+  if (!dynamic_cast<slave::ComposingContainerizer*>(slave->containerizer)) {
+    Try<slave::ComposingContainerizer*> composing =
+      slave::ComposingContainerizer::create({slave->containerizer});
+
+    if (composing.isError()) {
+      return Error(
+          "Failed to create composing containerizer: " + composing.error());
+    }
+
+    slave->containerizer = composing.get();
+  }
+
+  if (containerizer.isNone()) {
+    slave->ownedContainerizer.reset(slave->containerizer);
   }
 
   Option<Authorizer*> authorizer = providedAuthorizer;
@@ -486,7 +505,7 @@ Try<process::Owned<Slave>> Slave::create(
 
   // If the garbage collector is not provided, create a default one.
   if (gc.isNone()) {
-    slave->gc.reset(new slave::GarbageCollector());
+    slave->gc.reset(new slave::GarbageCollector(flags.work_dir));
   }
 
   // If the resource estimator is not provided, create a default one.
@@ -534,7 +553,7 @@ Try<process::Owned<Slave>> Slave::create(
         LOG(WARNING) << "Failed to stat jwt secret key file '"
                      << flags.jwt_secret_key.get()
                      << "': " << permissions.error();
-      } else if (permissions.get().others.rwx) {
+      } else if (permissions->others.rwx) {
         LOG(WARNING) << "Permissions on executor secret key file '"
                      << flags.jwt_secret_key.get()
                      << "' are too open; it is recommended that your"
@@ -600,6 +619,8 @@ Slave::~Slave()
       slave::READWRITE_HTTP_AUTHENTICATION_REALM);
   process::http::authentication::unsetAuthenticator(
       slave::EXECUTOR_HTTP_AUTHENTICATION_REALM);
+  process::http::authentication::unsetAuthenticator(
+      slave::RESOURCE_PROVIDER_HTTP_AUTHENTICATION_REALM);
 
   // If either `shutdown()` or `terminate()` were called already,
   // skip the below container cleanup logic.  Additionally, we can skip
@@ -611,6 +632,20 @@ Slave::~Slave()
   // Startup didn't complete so don't try to do the full shutdown.
   if (!containerizer) {
     return;
+  }
+
+  // We should wait until agent recovery completes to prevent a potential race
+  // between containerizer recovery process and the following code that invokes
+  // methods of the containerizer, e.g. a test can start an agent that in turn
+  // triggers containerizer recovery of orphaned containers, then immediately
+  // destroys the agent. Thus, the containerizer might return a different set of
+  // containers, depending on whether containerizer recovery has been finished.
+  //
+  // NOTE: This wait is omitted if a pointer to a containerizer object was
+  // passed to the slave's constructor, as it might be a mock containerizer,
+  // thereby agent recovery will never be finished.
+  if (ownedContainerizer.get() != nullptr) {
+    slave->recoveryInfo.recovered.future().await();
   }
 
   terminate();
@@ -627,13 +662,32 @@ Slave::~Slave()
 
     AWAIT_READY(containers);
 
+    // Because the `cgroups::destroy()` code path makes use of `delay()`, the
+    // clock must not be paused in order to reliably destroy all remaining
+    // containers. If necessary, we resume the clock here and then pause it
+    // again when we're done destroying containers.
+    bool paused = process::Clock::paused();
+
+    if (paused) {
+      process::Clock::resume();
+    }
+
     foreach (const ContainerID& containerId, containers.get()) {
-      process::Future<Option<ContainerTermination>> wait =
-        containerizer->wait(containerId);
+      process::Future<Option<ContainerTermination>> termination =
+        containerizer->destroy(containerId);
 
-      containerizer->destroy(containerId);
+      AWAIT(termination);
 
-      AWAIT(wait);
+      if (!termination.isReady()) {
+        LOG(ERROR) << "Failed to destroy container " << containerId << ": "
+                   << (termination.isFailed() ?
+                       termination.failure() :
+                       "discarded");
+      }
+    }
+
+    if (paused) {
+      process::Clock::pause();
     }
 
     containers = containerizer->containers();
@@ -658,8 +712,18 @@ void Slave::shutdown()
 {
   cleanUpContainersInDestructor = false;
 
+  bool paused = process::Clock::paused();
+
+  if (paused) {
+    process::Clock::resume();
+  }
+
   process::dispatch(slave.get(), &slave::Slave::shutdown, process::UPID(), "");
   wait();
+
+  if (paused) {
+    process::Clock::pause();
+  }
 }
 
 

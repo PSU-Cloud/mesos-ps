@@ -276,7 +276,8 @@ int main(int argc, char** argv)
   }
 
   if (load.isError()) {
-    cerr << flags.usage(load.error()) << endl;
+    cerr << load.error() << "\n\n"
+         << "See `mesos-agent --help` for a list of supported flags." << endl;
     return EXIT_FAILURE;
   }
 
@@ -298,28 +299,27 @@ int main(int argc, char** argv)
   }
 
   if (flags.master.isNone() && flags.master_detector.isNone()) {
-    EXIT(EXIT_FAILURE) << flags.usage(
-        "Missing required option `--master` or `--master_detector`");
+    EXIT(EXIT_FAILURE)
+      << "Missing required option `--master` or `--master_detector`";
   }
 
   if (flags.master.isSome() && flags.master_detector.isSome()) {
-    EXIT(EXIT_FAILURE) << flags.usage(
-        "Only one of `--master` or `--master_detector` should be specified");
+    EXIT(EXIT_FAILURE)
+      << "Only one of `--master` or `--master_detector` should be specified";
   }
 
   // Initialize libprocess.
   if (flags.ip_discovery_command.isSome() && flags.ip.isSome()) {
-    EXIT(EXIT_FAILURE) << flags.usage(
-        "Only one of `--ip` or `--ip_discovery_command` should be specified");
+    EXIT(EXIT_FAILURE)
+      << "Only one of `--ip` or `--ip_discovery_command` should be specified";
   }
 
   if (flags.ip6_discovery_command.isSome() && flags.ip6.isSome()) {
-    EXIT(EXIT_FAILURE) << flags.usage(
-        "Only one of `--ip6` or `--ip6_discovery_command` should be specified");
+    EXIT(EXIT_FAILURE)
+      << "Only one of `--ip6` or `--ip6_discovery_command` should be specified";
   }
 
   if (flags.ip_discovery_command.isSome()) {
-#ifndef __WINDOWS__
     Try<string> ipAddress = os::shell(flags.ip_discovery_command.get());
 
     if (ipAddress.isError()) {
@@ -327,26 +327,17 @@ int main(int argc, char** argv)
     }
 
     os::setenv("LIBPROCESS_IP", strings::trim(ipAddress.get()));
-#else
-    EXIT(EXIT_FAILURE)
-      << "The `--ip_discovery_command` is not yet supported on Windows";
-#endif // __WINDOWS__
   } else if (flags.ip.isSome()) {
     os::setenv("LIBPROCESS_IP", flags.ip.get());
   }
 
   if (flags.ip6_discovery_command.isSome()) {
-#ifndef __WINDOWS__
     Try<string> ip6Address = os::shell(flags.ip6_discovery_command.get());
     if (ip6Address.isError()) {
       EXIT(EXIT_FAILURE) << ip6Address.error();
     }
 
     os::setenv("LIBPROCESS_IP6", strings::trim(ip6Address.get()));
-#else
-    EXIT(EXIT_FAILURE)
-      << "The `--ip6_discovery_command` is not yet supported on Windows";
-#endif // __WINDOWS__
   } else if (flags.ip6.isSome()) {
     os::setenv("LIBPROCESS_IP6", flags.ip6.get());
   }
@@ -360,6 +351,8 @@ int main(int argc, char** argv)
   if (flags.advertise_port.isSome()) {
     os::setenv("LIBPROCESS_ADVERTISE_PORT", flags.advertise_port.get());
   }
+
+  os::setenv("LIBPROCESS_MEMORY_PROFILING", stringify(flags.memory_profiling));
 
   // Log build information.
   LOG(INFO) << "Build: " << build::DATE << " by " << build::USER;
@@ -420,7 +413,7 @@ int main(int argc, char** argv)
   // Initialize modules.
   if (flags.modules.isSome() && flags.modulesDir.isSome()) {
     EXIT(EXIT_FAILURE) <<
-      flags.usage("Only one of --modules or --modules_dir should be specified");
+      "Only one of --modules or --modules_dir should be specified";
   }
 
   if (flags.modulesDir.isSome()) {
@@ -500,7 +493,9 @@ int main(int argc, char** argv)
   }
 
   Try<MasterDetector*> detector_ = MasterDetector::create(
-      flags.master, flags.master_detector, flags.zk_session_timeout);
+      flags.master.isSome() ? flags.master->value : Option<string>::none(),
+      flags.master_detector,
+      flags.zk_session_timeout);
 
   if (detector_.isError()) {
     EXIT(EXIT_FAILURE)
@@ -544,7 +539,7 @@ int main(int argc, char** argv)
   }
 
   Files* files = new Files(READONLY_HTTP_AUTHENTICATION_REALM, authorizer_);
-  GarbageCollector* gc = new GarbageCollector();
+  GarbageCollector* gc = new GarbageCollector(flags.work_dir);
   TaskStatusUpdateManager* taskStatusUpdateManager =
     new TaskStatusUpdateManager(flags);
 
@@ -582,7 +577,7 @@ int main(int argc, char** argv)
       LOG(WARNING) << "Failed to stat jwt secret key file '"
                    << flags.jwt_secret_key.get()
                    << "': " << permissions.error();
-    } else if (permissions.get().others.rwx) {
+    } else if (permissions->others.rwx) {
       LOG(WARNING) << "Permissions on executor secret key file '"
                    << flags.jwt_secret_key.get()
                    << "' are too open; it is recommended that your"

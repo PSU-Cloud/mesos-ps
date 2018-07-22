@@ -64,6 +64,10 @@
 #include "common/recordio.hpp"
 #include "common/status_utils.hpp"
 
+#ifdef __linux__
+#include "linux/systemd.hpp"
+#endif // __linux__
+
 #include "slave/flags.hpp"
 #include "slave/state.hpp"
 
@@ -76,6 +80,8 @@ namespace http = process::http;
 #ifndef __WINDOWS__
 namespace unix = process::network::unix;
 #endif // __WINDOWS__
+
+using namespace mesos::internal::slave::containerizer::paths;
 
 using std::list;
 using std::map;
@@ -157,7 +163,7 @@ bool IOSwitchboard::supportsStandalone()
 
 
 Future<Nothing> IOSwitchboard::recover(
-    const list<ContainerState>& states,
+    const vector<ContainerState>& states,
     const hashset<ContainerID>& orphans)
 {
 #ifdef __WINDOWS__
@@ -175,7 +181,7 @@ Future<Nothing> IOSwitchboard::recover(
   foreach (const ContainerState& state, states) {
     const ContainerID& containerId = state.container_id();
 
-    const string path = containerizer::paths::getContainerIOSwitchboardPath(
+    const string path = getContainerIOSwitchboardPath(
         flags.runtime_dir, containerId);
 
     // If we don't have a checkpoint directory created for this
@@ -186,7 +192,7 @@ Future<Nothing> IOSwitchboard::recover(
       continue;
     }
 
-    Result<pid_t> pid = containerizer::paths::getContainerIOSwitchboardPid(
+    Result<pid_t> pid = getContainerIOSwitchboardPid(
         flags.runtime_dir, containerId);
 
     // For active containers that have an io switchboard directory,
@@ -211,7 +217,7 @@ Future<Nothing> IOSwitchboard::recover(
 
   // Recover the io switchboards from any orphaned containers.
   foreach (const ContainerID& orphan, orphans) {
-    const string path = containerizer::paths::getContainerIOSwitchboardPath(
+    const string path = getContainerIOSwitchboardPath(
         flags.runtime_dir, orphan);
 
     // If we don't have a checkpoint directory created for this
@@ -220,7 +226,7 @@ Future<Nothing> IOSwitchboard::recover(
       continue;
     }
 
-    Result<pid_t> pid = containerizer::paths::getContainerIOSwitchboardPid(
+    Result<pid_t> pid = getContainerIOSwitchboardPid(
         flags.runtime_dir, orphan);
 
     // If we were able to retrieve the checkpointed pid, we simply
@@ -281,12 +287,7 @@ Future<Option<ContainerLaunchInfo>> IOSwitchboard::prepare(
   // launched, the nested containers launched later might not have
   // access to the root parent container's ExecutorInfo (i.e.,
   // 'containerConfig.executor_info()' will be empty).
-  return logger->prepare(
-      containerConfig.executor_info(),
-      containerConfig.directory(),
-      containerConfig.has_user()
-        ? Option<string>(containerConfig.user())
-        : None())
+  return logger->prepare(containerId, containerConfig)
     .then(defer(
         PID<IOSwitchboard>(this),
         &IOSwitchboard::_prepare,
@@ -301,26 +302,37 @@ Future<Option<ContainerLaunchInfo>> IOSwitchboard::_prepare(
     const ContainerConfig& containerConfig,
     const ContainerIO& loggerIO)
 {
+  bool requiresServer = IOSwitchboard::requiresServer(containerConfig);
+
   // On windows, we do not yet support running an io switchboard
   // server, so we must error out if it is required.
 #ifdef __WINDOWS__
-  if (IOSwitchboard::requiresServer(containerConfig)) {
+  if (requiresServer) {
       return Failure(
           "IO Switchboard server is not supported on windows");
   }
 #endif
 
+  LOG(INFO) << "Container logger module finished preparing container "
+            << containerId << "; IOSwitchboard server is "
+            << (requiresServer ? "" : "not") << " required";
+
   bool hasTTY = containerConfig.has_container_info() &&
                 containerConfig.container_info().has_tty_info();
 
-  if (!IOSwitchboard::requiresServer(containerConfig)) {
+  if (!requiresServer) {
     CHECK(!containerIOs.contains(containerId));
     containerIOs[containerId] = loggerIO;
 
     return ContainerLaunchInfo();
   }
 
-#ifndef __WINDOWS__
+#ifdef __WINDOWS__
+  // NOTE: On Windows, both return values of
+  // `IOSwitchboard::requiresServer(containerConfig)` are checked and will
+  // return before reaching here.
+  UNREACHABLE();
+#else
   // First make sure that we haven't already spawned an io
   // switchboard server for this container.
   if (infos.contains(containerId)) {
@@ -348,7 +360,7 @@ Future<Option<ContainerLaunchInfo>> IOSwitchboard::_prepare(
   int stdoutFromFd = -1;
   int stderrFromFd = -1;
 
-  // A list of file decriptors we've opened so far.
+  // A list of file descriptors we've opened so far.
   hashset<int> openedFds = {};
 
   // A list of file descriptors that will be passed to the I/O
@@ -515,8 +527,7 @@ Future<Option<ContainerLaunchInfo>> IOSwitchboard::_prepare(
   // container. The lack of any expected files in this directroy
   // during recovery/cleanup indicates that something went wrong and
   // we need to take appropriate action.
-  string path = containerizer::paths::getContainerIOSwitchboardPath(
-      flags.runtime_dir, containerId);
+  string path = getContainerIOSwitchboardPath(flags.runtime_dir, containerId);
 
   Try<Nothing> mkdir = os::mkdir(path);
   if (mkdir.isError()) {
@@ -551,6 +562,18 @@ Future<Option<ContainerLaunchInfo>> IOSwitchboard::_prepare(
   VLOG(1) << "Launching '" << IOSwitchboardServer::NAME << "' with flags '"
           << switchboardFlags << "' for container " << containerId;
 
+  // If we are on systemd, then extend the life of the process as we
+  // do with the executor. Any grandchildren's lives will also be
+  // extended.
+  vector<Subprocess::ParentHook> parentHooks;
+
+#ifdef __linux__
+  if (systemd::enabled()) {
+    parentHooks.emplace_back(Subprocess::ParentHook(
+        &systemd::mesos::extendLifetime));
+  }
+#endif // __linux__
+
   // Launch the io switchboard server process.
   // We `dup()` the `stdout` and `stderr` passed to us by the
   // container logger over the `stdout` and `stderr` of the io
@@ -566,7 +589,7 @@ Future<Option<ContainerLaunchInfo>> IOSwitchboard::_prepare(
       &switchboardFlags,
       environment,
       None(),
-      {},
+      parentHooks,
       {Subprocess::ChildHook::SETSID(),
        Subprocess::ChildHook::UNSET_CLOEXEC(stdinToFd),
        Subprocess::ChildHook::UNSET_CLOEXEC(stdoutFromFd),
@@ -593,8 +616,7 @@ Future<Option<ContainerLaunchInfo>> IOSwitchboard::_prepare(
 
   // Now that the child has come up, we checkpoint the socket
   // address we told it to bind to so we can access it later.
-  path = containerizer::paths::getContainerIOSwitchboardSocketPath(
-      flags.runtime_dir, containerId);
+  path = getContainerIOSwitchboardSocketPath(flags.runtime_dir, containerId);
 
   Try<Nothing> checkpointed = slave::state::checkpoint(
       path, switchboardFlags.socket_path.get());
@@ -606,8 +628,7 @@ Future<Option<ContainerLaunchInfo>> IOSwitchboard::_prepare(
   }
 
   // We also checkpoint the child's pid.
-  path = containerizer::paths::getContainerIOSwitchboardPidPath(
-      flags.runtime_dir, containerId);
+  path = getContainerIOSwitchboardPidPath(flags.runtime_dir, containerId);
 
   checkpointed = slave::state::checkpoint(path, stringify(child->pid()));
 
@@ -658,13 +679,8 @@ Future<http::Connection> IOSwitchboard::_connect(
   }
 
   // Get the io switchboard address from the `containerId`.
-  //
-  // NOTE: We explicitly don't want to check for the existence of
-  // `containerId` in our `infos` struct. Otherwise we wouldn't be
-  // able to reconnect to the io switchboard after agent restarts.
-  Result<unix::Address> address =
-    containerizer::paths::getContainerIOSwitchboardAddress(
-        flags.runtime_dir, containerId);
+  Result<unix::Address> address = getContainerIOSwitchboardAddress(
+      flags.runtime_dir, containerId);
 
   if (!address.isSome()) {
     return Failure("Failed to get the io switchboard address"
@@ -688,10 +704,6 @@ Future<http::Connection> IOSwitchboard::_connect(
         return Failure("I/O switchboard has shutdown");
       }
 
-      // TODO(jieyu): We might still get a connection refused error
-      // here because the server might not have started listening on
-      // the socket yet. Consider retrying if 'http::connect' failed
-      // with ECONNREFUSED.
       return http::connect(address.get(), http::Scheme::HTTP);
     }));
 #endif // __WINDOWS__
@@ -803,7 +815,7 @@ Future<Nothing> IOSwitchboard::cleanup(
 
   // NOTE: We use 'await' here so that we can handle the FAILED and
   // DISCARDED cases as well.
-  return await(list<Future<Option<int>>>{status}).then(
+  return await(vector<Future<Option<int>>>{status}).then(
       defer(self(), [this, containerId]() -> Future<Nothing> {
         // We need to call `_extractContainerIO` here in case the
         // `IOSwitchboard` still holds a reference to the container's
@@ -830,17 +842,24 @@ Future<Nothing> IOSwitchboard::cleanup(
         // this container's `IOSwitchboardServer`. If it hasn't been
         // checkpointed yet, or the socket file itself hasn't been created,
         // we simply continue without error.
-        Result<unix::Address> address =
-          containerizer::paths::getContainerIOSwitchboardAddress(
-              flags.runtime_dir, containerId);
+        //
+        // NOTE: As the I/O switchboard creates a unix domain socket using
+        // a provisional address before initialiazing and renaming it, we assume
+        // that the absence of the unix socket at the original address means
+        // that the the I/O switchboard has been terminated before renaming.
+        Result<unix::Address> address = getContainerIOSwitchboardAddress(
+            flags.runtime_dir, containerId);
 
-        if (address.isSome()) {
-          Try<Nothing> rm = os::rm(address->path());
-          if (rm.isError()) {
-            LOG(ERROR) << "Failed to remove unix domain socket file"
-                       << " '" << address->path() << "' for container"
-                       << " '" << containerId << "': " << rm.error();
-          }
+        const string socketPath = address.isSome()
+          ? address->path()
+          : getContainerIOSwitchboardSocketProvisionalPath(
+                flags.runtime_dir, containerId);
+
+        Try<Nothing> rm = os::rm(socketPath);
+        if (rm.isError()) {
+          LOG(ERROR) << "Failed to remove unix domain socket file"
+                     << " '" << socketPath << "' for container"
+                     << " '" << containerId << "': " << rm.error();
         }
 
         return Nothing();
@@ -929,7 +948,7 @@ public:
       bool waitForConnection,
       Option<Duration> heartbeatInterval);
 
-  virtual void finalize();
+  void finalize() override;
 
   Future<Nothing> run();
 
@@ -995,7 +1014,7 @@ private:
       Option<ContentType> messageAcceptType);
 
   // Asynchronously receive data as we read it from our
-  // `stdoutFromFd` and `stdoutFromFd` file descriptors.
+  // `stdoutFromFd` and `stderrFromFd` file descriptors.
   void outputHook(
       const string& data,
       const agent::ProcessIO::Data::Type& type);
@@ -1010,6 +1029,7 @@ private:
   bool waitForConnection;
   Option<Duration> heartbeatInterval;
   bool inputConnected;
+  bool redirectFinished;  // Set when both stdout and stderr redirects finish.
   Future<unix::Socket> accept;
   Promise<Nothing> promise;
   Promise<Nothing> startRedirect;
@@ -1036,22 +1056,35 @@ Try<Owned<IOSwitchboardServer>> IOSwitchboardServer::create(
     return Error("Failed to create socket: " + socket.error());
   }
 
-  Try<unix::Address> address = unix::Address::create(socketPath);
+  // Agent connects to the switchboard once it sees a unix socket. However,
+  // the unix socket is not ready to accept connections until `listen()` has
+  // been called. Therefore we initialize a unix socket using a provisional path
+  // and rename it after `listen()` has been called.
+  const string socketProvisionalPath =
+      getContainerIOSwitchboardSocketProvisionalPath(socketPath);
+
+  Try<unix::Address> address = unix::Address::create(socketProvisionalPath);
   if (address.isError()) {
-    return Error("Failed to build address from '" + socketPath + "':"
+    return Error("Failed to build address from '" + socketProvisionalPath + "':"
                  " " + address.error());
   }
 
   Try<unix::Address> bind = socket->bind(address.get());
   if (bind.isError()) {
-    return Error("Failed to bind to address '" + socketPath + "':"
+    return Error("Failed to bind to address '" + socketProvisionalPath + "':"
                  " " + bind.error());
   }
 
   Try<Nothing> listen = socket->listen(64);
   if (listen.isError()) {
     return Error("Failed to listen on socket at address"
-                 " '" + socketPath + "': " + listen.error());
+                 " '" + socketProvisionalPath + "': " + listen.error());
+  }
+
+  Try<Nothing> renameSocket = os::rename(socketProvisionalPath, socketPath);
+  if (renameSocket.isError()) {
+    return Error("Failed to rename socket from '" + socketProvisionalPath + "'"
+                 " to '" + socketPath + "': " + renameSocket.error());
   }
 
   return new IOSwitchboardServer(
@@ -1130,7 +1163,8 @@ IOSwitchboardServerProcess::IOSwitchboardServerProcess(
     socket(_socket),
     waitForConnection(_waitForConnection),
     heartbeatInterval(_heartbeatInterval),
-    inputConnected(false) {}
+    inputConnected(false),
+    redirectFinished(false) {}
 
 
 Future<Nothing> IOSwitchboardServerProcess::run()
@@ -1173,11 +1207,12 @@ Future<Nothing> IOSwitchboardServerProcess::run()
       // fail the future.
       //
       // For now we simply assume that whenever both `stdoutRedirect`
-      // and `stderrRedirect` have completed then it is OK to exit the
-      // switchboard process. We assume this because `stdoutRedirect`
-      // and `stderrRedirect` will only complete after both the read end
-      // of the `stdout` stream and the read end of the `stderr` stream
-      // have been drained. Since draining these `fds` represents having
+      // and `stderrRedirect` have completed while there is no input
+      // connected then it is OK to exit the switchboard process.
+      // We assume this because `stdoutRedirect` and `stderrRedirect`
+      // will only complete after both the read end of the `stdout`
+      // stream and the read end of the `stderr` stream have been
+      // drained. Since draining these `fds` represents having
       // read everything possible from a container's `stdout` and
       // `stderr` this is likely sufficient termination criteria.
       // However, there's a non-zero chance that *some* containers may
@@ -1185,6 +1220,12 @@ Future<Nothing> IOSwitchboardServerProcess::run()
       // continue reading from `stdin`. For now we don't support
       // containers with this behavior and we will exit out of the
       // switchboard process early.
+      //
+      // If our IO redirects are finished and there is an input connected,
+      // then we postpone our termination until either a container closes
+      // its `stdin` or a client closes the input connection so that we can
+      // guarantee returning a http response for `ATTACH_CONTAINER_INPUT`
+      // request before terminating ourselves.
       //
       // NOTE: We always call `terminate()` with `false` to ensure
       // that our event queue is drained before actually terminating.
@@ -1215,7 +1256,11 @@ Future<Nothing> IOSwitchboardServerProcess::run()
 
       collect(stdoutRedirect, stderrRedirect)
         .then(defer(self(), [this]() {
-          terminate(self(), false);
+          redirectFinished = true;
+
+          if (!inputConnected) {
+            terminate(self(), false);
+          }
           return Nothing();
         }));
 
@@ -1272,8 +1317,10 @@ void IOSwitchboardServerProcess::heartbeatLoop()
   message.set_type(agent::ProcessIO::CONTROL);
   message.mutable_control()->set_type(
       agent::ProcessIO::Control::HEARTBEAT);
-  message.mutable_control()->mutable_heartbeat()
-      ->mutable_interval()->set_nanoseconds(heartbeatInterval.get().ns());
+  message.mutable_control()
+    ->mutable_heartbeat()
+    ->mutable_interval()
+    ->set_nanoseconds(heartbeatInterval->ns());
 
   foreach (HttpConnection& connection, outputConnections) {
     connection.send(message);
@@ -1659,10 +1706,10 @@ Future<http::Response> IOSwitchboardServerProcess::attachContainerInput(
       // Reset `inputConnected` to allow future input connections.
       inputConnected = false;
 
-      // We only set `failure` if writing to `stdin` failed, in which
-      // case we want to terminate ourselves (after flushing any
-      // outstanding messages from our message queue).
-      if (failure.isSome()) {
+      // If IO redirects are finished or writing to `stdin` failed we want
+      // to terminate ourselves (after flushing any outstanding messages
+      // from our message queue).
+      if (redirectFinished || failure.isSome()) {
         terminate(self(), false);
       }
 

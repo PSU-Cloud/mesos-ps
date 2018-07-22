@@ -70,7 +70,7 @@ class TaskStatusUpdateManagerProcess
 {
 public:
   TaskStatusUpdateManagerProcess(const Flags& flags);
-  virtual ~TaskStatusUpdateManagerProcess();
+  ~TaskStatusUpdateManagerProcess() override;
 
   // Explicitly use 'initialize' since we're overloading below.
   using process::ProcessBase::initialize;
@@ -272,7 +272,7 @@ Future<Nothing> TaskStatusUpdateManagerProcess::recover(
         // At the end of the replay, the stream is either terminated or
         // contains only unacknowledged, if any, pending updates. The
         // pending updates will be flushed after the slave
-        // re-registers with the master.
+        // reregisters with the master.
         if (stream->terminated) {
           cleanupStatusUpdateStream(task.id, framework.id);
         }

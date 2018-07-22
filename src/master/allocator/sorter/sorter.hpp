@@ -87,10 +87,10 @@ public:
       const SlaveID& slaveId,
       const Resources& resources) = 0;
 
-  // Updates a portion of the allocation for the client, in order to
-  // augment the resources with additional metadata (e.g., volumes).
-  // This means that the new allocation must not affect the static
-  // roles, or the overall quantities of resources!
+  // Updates a portion of the allocation for the client, in order to augment the
+  // resources with additional metadata (e.g., volumes), or remove certain
+  // resources. If the roles or scalar quantities are changed, the order of the
+  // clients should be updated accordingly.
   virtual void update(
       const std::string& client,
       const SlaveID& slaveId,
@@ -145,7 +145,7 @@ public:
 
   // Returns the number of clients this Sorter contains,
   // either active or inactive.
-  virtual int count() const = 0;
+  virtual size_t count() const = 0;
 };
 
 } // namespace allocator {

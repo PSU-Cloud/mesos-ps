@@ -76,7 +76,7 @@ class PersistentVolumeEndpointsTest : public MesosTest
 public:
   // Set up the master flags such that it allows registration of the framework
   // created with 'createFrameworkInfo'.
-  virtual master::Flags CreateMasterFlags()
+  master::Flags CreateMasterFlags() override
   {
     // Turn off periodic allocations to avoid the race between
     // `HierarchicalAllocator::updateAvailable()` and periodic allocations.
@@ -1524,15 +1524,15 @@ TEST_F(PersistentVolumeEndpointsTest, OfferCreateThenEndpointRemove)
 
   EXPECT_EQ(offer.slave_id(), slaveId);
 
-  Future<CheckpointResourcesMessage> checkpointResources =
-    FUTURE_PROTOBUF(CheckpointResourcesMessage(), _, _);
+  Future<UpdateOperationStatusMessage> updateOperationStatusMessage =
+    FUTURE_PROTOBUF(UpdateOperationStatusMessage(), _, _);
 
   // Reserve the resources.
   driver.acceptOffers({offer.id()}, {RESERVE(dynamicallyReserved)});
 
   // Make sure the allocator processes the `RESERVE` operation before summoning
   // an offer.
-  AWAIT_READY(checkpointResources);
+  AWAIT_READY(updateOperationStatusMessage);
 
   // Summon an offer.
   EXPECT_CALL(sched, resourceOffers(&driver, _))
@@ -1559,13 +1559,14 @@ TEST_F(PersistentVolumeEndpointsTest, OfferCreateThenEndpointRemove)
       None(),
       frameworkInfo.principal());
 
-  checkpointResources = FUTURE_PROTOBUF(CheckpointResourcesMessage(), _, _);
+  updateOperationStatusMessage =
+    FUTURE_PROTOBUF(UpdateOperationStatusMessage(), _, _);
 
   // Create the volume.
   driver.acceptOffers({offer.id()}, {CREATE(volume)});
 
   // Make sure the master processes the accept call before summoning an offer.
-  AWAIT_READY(checkpointResources);
+  AWAIT_READY(updateOperationStatusMessage);
 
   // Summon an offer.
   EXPECT_CALL(sched, resourceOffers(&driver, _))
@@ -1726,13 +1727,13 @@ TEST_F(PersistentVolumeEndpointsTest, EndpointCreateThenOfferRemove)
   EXPECT_TRUE(Resources(offer.resources()).contains(
       allocatedResources(volume, frameworkInfo.roles(0))));
 
-  Future<CheckpointResourcesMessage> checkpointResources =
-    FUTURE_PROTOBUF(CheckpointResourcesMessage(), _, _);
+  Future<UpdateOperationStatusMessage> updateOperationStatusMessage =
+    FUTURE_PROTOBUF(UpdateOperationStatusMessage(), _, _);
 
   driver.acceptOffers({offer.id()}, {DESTROY(volume)});
 
   // Make sure the master processes the accept call before summoning an offer.
-  AWAIT_READY(checkpointResources);
+  AWAIT_READY(updateOperationStatusMessage);
 
   // Summon an offer.
   EXPECT_CALL(sched, resourceOffers(&driver, _))
@@ -1752,13 +1753,14 @@ TEST_F(PersistentVolumeEndpointsTest, EndpointCreateThenOfferRemove)
     << Resources(offer.resources()) << " vs "
     << allocatedResources(dynamicallyReserved, frameworkInfo.roles(0));
 
-  checkpointResources = FUTURE_PROTOBUF(CheckpointResourcesMessage(), _, _);
+  updateOperationStatusMessage =
+    FUTURE_PROTOBUF(UpdateOperationStatusMessage(), _, _);
 
   // Unreserve the resources.
   driver.acceptOffers({offer.id()}, {UNRESERVE(dynamicallyReserved)});
 
   // Make sure the master processes the accept call before summoning an offer.
-  AWAIT_READY(checkpointResources);
+  AWAIT_READY(updateOperationStatusMessage);
 
   // Summon an offer.
   EXPECT_CALL(sched, resourceOffers(&driver, _))
@@ -1805,8 +1807,7 @@ TEST_F(PersistentVolumeEndpointsTest, ReserveAndSlaveRemoval)
 
   // Capture the registration message for the second agent.
   Future<SlaveRegisteredMessage> slave2RegisteredMessage =
-    FUTURE_PROTOBUF(
-        SlaveRegisteredMessage(), master.get()->pid, Not(slave1.get()->pid));
+    FUTURE_PROTOBUF(SlaveRegisteredMessage(), _, Not(slave1.get()->pid));
 
   // Each slave needs its own flags to ensure work_dirs are unique.
   slave::Flags slave2Flags = CreateSlaveFlags();
@@ -1854,10 +1855,11 @@ TEST_F(PersistentVolumeEndpointsTest, ReserveAndSlaveRemoval)
 
   ASSERT_EQ(2u, offers->size());
 
-  Future<CheckpointResourcesMessage> checkpointResources =
-    FUTURE_PROTOBUF(CheckpointResourcesMessage(),
-                    master.get()->pid,
-                    slave2.get()->pid);
+  Future<ApplyOperationMessage> applyOperationMessage =
+    FUTURE_PROTOBUF(ApplyOperationMessage(), _, _);
+
+  Future<UpdateOperationStatusMessage> updateOperationStatusMessage =
+    FUTURE_PROTOBUF(UpdateOperationStatusMessage(), _, _);
 
   // Use the offers API to reserve all CPUs on `slave2`.
   Resources slave2Unreserved = Resources::parse("cpus:3").get();
@@ -1878,9 +1880,15 @@ TEST_F(PersistentVolumeEndpointsTest, ReserveAndSlaveRemoval)
     }
   }
 
-  AWAIT_READY(checkpointResources);
-  EXPECT_EQ(Resources(checkpointResources->resources()),
-            slave2Reserved);
+  Resources sentResources =
+    applyOperationMessage->operation_info().reserve().resources();
+
+  sentResources.unallocate();
+
+  AWAIT_READY(applyOperationMessage);
+  EXPECT_EQ(sentResources, slave2Reserved);
+
+  AWAIT_READY(updateOperationStatusMessage);
 
   // Shutdown `slave2` with an explicit shutdown message.
   EXPECT_CALL(sched, offerRescinded(_, _));
@@ -2349,13 +2357,25 @@ TEST_F(PersistentVolumeEndpointsTest, SlavesEndpointFullResources)
   EXPECT_EQ(expectedReserved.get(), reservedValue);
 
   JSON::Value unreservedValue = slaveObject.values["unreserved_resources_full"];
-  EXPECT_EQ(expectedUnreserved.get(), unreservedValue);
+  EXPECT_EQ(
+      Resources(CHECK_NOTERROR(
+          Resources::fromJSON(expectedUnreserved->as<JSON::Array>()))),
+      Resources(CHECK_NOTERROR(
+          Resources::fromJSON(unreservedValue.as<JSON::Array>()))));
 
   JSON::Value usedValue = slaveObject.values["used_resources_full"];
-  EXPECT_EQ(expectedUsed.get(), usedValue);
+  EXPECT_EQ(
+      Resources(CHECK_NOTERROR(
+          Resources::fromJSON(expectedUsed->as<JSON::Array>()))),
+      Resources(CHECK_NOTERROR(
+          Resources::fromJSON(usedValue.as<JSON::Array>()))));
 
   JSON::Value offeredValue = slaveObject.values["offered_resources_full"];
-  EXPECT_EQ(expectedOffered.get(), offeredValue);
+  EXPECT_EQ(
+      Resources(CHECK_NOTERROR(
+          Resources::fromJSON(expectedOffered->as<JSON::Array>()))),
+      Resources(CHECK_NOTERROR(
+          Resources::fromJSON(offeredValue.as<JSON::Array>()))));
 
   driver.stop();
   driver.join();

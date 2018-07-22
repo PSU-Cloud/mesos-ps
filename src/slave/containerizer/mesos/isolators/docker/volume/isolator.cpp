@@ -22,6 +22,9 @@
 #include <stout/os.hpp>
 
 #include <stout/os/realpath.hpp>
+#include <stout/os/which.hpp>
+
+#include "linux/ns.hpp"
 
 #include "slave/flags.hpp"
 #include "slave/state.hpp"
@@ -82,6 +85,12 @@ Try<Isolator*> DockerVolumeIsolatorProcess::create(const Flags& flags)
   // Check for root permission.
   if (geteuid() != 0) {
     return Error("The 'docker/volume' isolator requires root permissions");
+  }
+
+  Try<bool> supported = ns::supported(CLONE_NEWNS);
+  if (supported.isError() || !supported.get()) {
+    return Error(
+        "The 'docker/volume' isolator requires mount namespace support");
   }
 
   // TODO(gyliu513): Check dvdcli version, the version need to be
@@ -146,7 +155,7 @@ Try<Isolator*> DockerVolumeIsolatorProcess::_create(
 
 
 Future<Nothing> DockerVolumeIsolatorProcess::recover(
-    const list<ContainerState>& states,
+    const vector<ContainerState>& states,
     const hashset<ContainerID>& orphans)
 {
   if (!os::exists(rootDir)) {
@@ -263,7 +272,7 @@ Try<Nothing> DockerVolumeIsolatorProcess::_recover(
     return Nothing();
   }
 
-  Try<string> read = os::read(volumesPath);
+  Result<string> read = state::read<string>(volumesPath);
   if (read.isError()) {
     return Error(
         "Failed to read docker volumes checkpoint file '" +
@@ -481,7 +490,8 @@ Future<Option<ContainerLaunchInfo>> DockerVolumeIsolatorProcess::prepare(
   infos.put(containerId, Owned<Info>(new Info(volumes)));
 
   // Invoke driver client to create the mount.
-  list<Future<string>> futures;
+  vector<Future<string>> futures;
+  futures.reserve(mounts.size());
   foreach (const Mount& mount, mounts) {
     futures.push_back(this->mount(
         mount.volume.driver(),
@@ -505,7 +515,7 @@ Future<Option<ContainerLaunchInfo>> DockerVolumeIsolatorProcess::prepare(
 Future<Option<ContainerLaunchInfo>> DockerVolumeIsolatorProcess::_prepare(
     const ContainerID& containerId,
     const vector<string>& targets,
-    const list<Future<string>>& futures)
+    const vector<Future<string>>& futures)
 {
   ContainerLaunchInfo launchInfo;
   launchInfo.add_clone_namespaces(CLONE_NEWNS);
@@ -576,7 +586,7 @@ Future<Nothing> DockerVolumeIsolatorProcess::cleanup(
     }
   }
 
-  list<Future<Nothing>> futures;
+  vector<Future<Nothing>> futures;
 
   foreach (const DockerVolume& volume, infos[containerId]->volumes) {
     if (references.contains(volume) && references[volume] > 1) {
@@ -606,7 +616,7 @@ Future<Nothing> DockerVolumeIsolatorProcess::cleanup(
 
 Future<Nothing> DockerVolumeIsolatorProcess::_cleanup(
     const ContainerID& containerId,
-    const list<Future<Nothing>>& futures)
+    const vector<Future<Nothing>>& futures)
 {
   CHECK(infos.contains(containerId));
 

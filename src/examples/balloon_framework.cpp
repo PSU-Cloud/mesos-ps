@@ -21,6 +21,8 @@
 #include <mesos/resources.hpp>
 #include <mesos/scheduler.hpp>
 
+#include <mesos/authorizer/acls.hpp>
+
 #include <process/clock.hpp>
 #include <process/defer.hpp>
 #include <process/dispatch.hpp>
@@ -30,7 +32,7 @@
 #include <process/time.hpp>
 
 #include <process/metrics/counter.hpp>
-#include <process/metrics/gauge.hpp>
+#include <process/metrics/pull_gauge.hpp>
 #include <process/metrics/metrics.hpp>
 
 #include <stout/bytes.hpp>
@@ -45,6 +47,8 @@
 
 #include "common/parse.hpp"
 
+#include "examples/flags.hpp"
+
 #include "logging/logging.hpp"
 
 using namespace mesos;
@@ -57,7 +61,7 @@ using google::protobuf::RepeatedPtrField;
 using process::Clock;
 using process::defer;
 
-using process::metrics::Gauge;
+using process::metrics::PullGauge;
 using process::metrics::Counter;
 
 const double CPUS_PER_TASK = 0.1;
@@ -66,11 +70,10 @@ const double CPUS_PER_EXECUTOR = 0.1;
 const int32_t MEM_PER_EXECUTOR = 64;
 
 constexpr char EXECUTOR_BINARY[] = "balloon-executor";
-constexpr char FRAMEWORK_PRINCIPAL[] = "balloon-framework-cpp";
 constexpr char FRAMEWORK_METRICS_PREFIX[] = "balloon_framework";
 
 
-class Flags : public virtual flags::FlagsBase
+class Flags : public virtual mesos::internal::examples::Flags
 {
 public:
   Flags()
@@ -80,10 +83,6 @@ public:
         "Name to be used by the framework.",
         "Balloon Framework");
 
-    add(&Flags::master,
-        "master",
-        "Master to connect to.");
-
     add(&Flags::task_memory_usage_limit,
         "task_memory_usage_limit",
         None(),
@@ -91,7 +90,7 @@ public:
         "The task will attempt to occupy memory up until this limit.",
         static_cast<const Bytes*>(nullptr),
         [](const Bytes& value) -> Option<Error> {
-          if (value.megabytes() < MEM_PER_EXECUTOR) {
+          if (value < Bytes(MEM_PER_EXECUTOR, Bytes::MEGABYTES)) {
             return Error(
                 "Please use a --task_memory_usage_limit greater than " +
                 stringify(MEM_PER_EXECUTOR) + " MB");
@@ -143,11 +142,6 @@ public:
         "The command that should be used to start the executor.\n"
         "This will override the value set by `--build_dir`.");
 
-    add(&Flags::checkpoint,
-        "checkpoint",
-        "Whether this framework should be checkpointed.\n",
-        false);
-
     add(&Flags::long_running,
         "long_running",
         "Whether this framework should launch tasks repeatedly\n"
@@ -156,7 +150,6 @@ public:
   }
 
   string name;
-  string master;
   Bytes task_memory_usage_limit;
   Bytes task_memory;
 
@@ -169,7 +162,6 @@ public:
   Option<JSON::Array> executor_uris;
   Option<string> executor_command;
 
-  bool checkpoint;
   bool long_running;
 };
 
@@ -211,7 +203,8 @@ public:
   {
     Resources taskResources = Resources::parse(
         "cpus:" + stringify(CPUS_PER_TASK) +
-        ";mem:" + stringify(flags.task_memory.megabytes())).get();
+        ";mem:" + stringify(
+            (double) flags.task_memory.bytes() / Bytes::MEGABYTES)).get();
     taskResources.allocate(role);
 
     Resources executorResources = Resources(executor.resources());
@@ -287,7 +280,6 @@ public:
         taskActive = false;
         if (status.reason() == TaskStatus::REASON_CONTAINER_LIMITATION_MEMORY) {
           ++metrics.tasks_oomed;
-          break;
         }
 
         // NOTE: Fetching the executor (e.g. `--executor_uri`) may fail
@@ -295,8 +287,8 @@ public:
         // enough that it makes sense to track this failure metric separately.
         if (status.reason() == TaskStatus::REASON_CONTAINER_LAUNCH_FAILED) {
           ++metrics.launch_failures;
-          break;
         }
+        break;
       case TASK_KILLED:
       case TASK_LOST:
       case TASK_ERROR:
@@ -304,9 +296,22 @@ public:
 
         if (status.reason() != TaskStatus::REASON_INVALID_OFFERS) {
           ++metrics.abnormal_terminations;
-          break;
         }
-      default:
+        break;
+      case TASK_RUNNING:
+        ++metrics.tasks_running;
+        break;
+      // We ignore uninteresting transient task status updates.
+      case TASK_KILLING:
+      case TASK_STAGING:
+      case TASK_STARTING:
+        break;
+      // We ignore task status updates related to reconciliation.
+      case TASK_DROPPED:
+      case TASK_GONE:
+      case TASK_GONE_BY_OPERATOR:
+      case TASK_UNKNOWN:
+      case TASK_UNREACHABLE:
         break;
     }
   }
@@ -342,6 +347,7 @@ private:
             defer(_scheduler, &BalloonSchedulerProcess::_registered)),
         tasks_finished(string(FRAMEWORK_METRICS_PREFIX) + "/tasks_finished"),
         tasks_oomed(string(FRAMEWORK_METRICS_PREFIX) + "/tasks_oomed"),
+        tasks_running(string(FRAMEWORK_METRICS_PREFIX) + "/tasks_running"),
         launch_failures(string(FRAMEWORK_METRICS_PREFIX) + "/launch_failures"),
         abnormal_terminations(
             string(FRAMEWORK_METRICS_PREFIX) + "/abnormal_terminations")
@@ -350,6 +356,7 @@ private:
       process::metrics::add(registered);
       process::metrics::add(tasks_finished);
       process::metrics::add(tasks_oomed);
+      process::metrics::add(tasks_running);
       process::metrics::add(launch_failures);
       process::metrics::add(abnormal_terminations);
     }
@@ -364,11 +371,12 @@ private:
       process::metrics::remove(abnormal_terminations);
     }
 
-    process::metrics::Gauge uptime_secs;
-    process::metrics::Gauge registered;
+    process::metrics::PullGauge uptime_secs;
+    process::metrics::PullGauge registered;
 
     process::metrics::Counter tasks_finished;
     process::metrics::Counter tasks_oomed;
+    process::metrics::Counter tasks_running;
     process::metrics::Counter launch_failures;
     process::metrics::Counter abnormal_terminations;
   } metrics;
@@ -391,39 +399,39 @@ public:
     process::spawn(process);
   }
 
-  virtual ~BalloonScheduler()
+  ~BalloonScheduler() override
   {
     process::terminate(process);
     process::wait(process);
   }
 
-  virtual void registered(
+  void registered(
       SchedulerDriver*,
       const FrameworkID& frameworkId,
-      const MasterInfo&)
+      const MasterInfo&) override
   {
     LOG(INFO) << "Registered with framework ID: " << frameworkId;
 
     process::dispatch(&process, &BalloonSchedulerProcess::registered);
   }
 
-  virtual void reregistered(SchedulerDriver*, const MasterInfo& masterInfo)
+  void reregistered(SchedulerDriver*, const MasterInfo& masterInfo) override
   {
     LOG(INFO) << "Reregistered";
 
     process::dispatch(&process, &BalloonSchedulerProcess::registered);
   }
 
-  virtual void disconnected(SchedulerDriver* driver)
+  void disconnected(SchedulerDriver* driver) override
   {
     LOG(INFO) << "Disconnected";
 
     process::dispatch(&process, &BalloonSchedulerProcess::disconnected);
   }
 
-  virtual void resourceOffers(
+  void resourceOffers(
       SchedulerDriver* driver,
-      const std::vector<Offer>& offers)
+      const std::vector<Offer>& offers) override
   {
     LOG(INFO) << "Resource offers received";
 
@@ -434,12 +442,12 @@ public:
         offers);
   }
 
-  virtual void offerRescinded(SchedulerDriver* driver, const OfferID& offerId)
+  void offerRescinded(SchedulerDriver* driver, const OfferID& offerId) override
   {
     LOG(INFO) << "Offer rescinded";
   }
 
-  virtual void statusUpdate(SchedulerDriver* driver, const TaskStatus& status)
+  void statusUpdate(SchedulerDriver* driver, const TaskStatus& status) override
   {
     LOG(INFO) << "Task " << status.task_id() << " in state "
               << TaskState_Name(status.state())
@@ -454,30 +462,30 @@ public:
         status);
   }
 
-  virtual void frameworkMessage(
+  void frameworkMessage(
       SchedulerDriver* driver,
       const ExecutorID& executorId,
       const SlaveID& slaveId,
-      const string& data)
+      const string& data) override
   {
     LOG(INFO) << "Framework message: " << data;
   }
 
-  virtual void slaveLost(SchedulerDriver* driver, const SlaveID& slaveId)
+  void slaveLost(SchedulerDriver* driver, const SlaveID& slaveId) override
   {
     LOG(INFO) << "Agent lost: " << slaveId;
   }
 
-  virtual void executorLost(
+  void executorLost(
       SchedulerDriver* driver,
       const ExecutorID& executorId,
       const SlaveID& slaveId,
-      int status)
+      int status) override
   {
     LOG(INFO) << "Executor '" << executorId << "' lost on agent: " << slaveId;
   }
 
-  virtual void error(SchedulerDriver* driver, const string& message)
+  void error(SchedulerDriver* driver, const string& message) override
   {
     LOG(INFO) << "Error message: " << message;
   }
@@ -490,7 +498,7 @@ private:
 int main(int argc, char** argv)
 {
   Flags flags;
-  Try<flags::Warnings> load = flags.load("MESOS_", argc, argv);
+  Try<flags::Warnings> load = flags.load("MESOS_EXAMPLE_", argc, argv);
 
   if (flags.help) {
     std::cout << flags.usage() << std::endl;
@@ -568,9 +576,10 @@ int main(int argc, char** argv)
 
   FrameworkInfo framework;
   framework.set_user(os::user().get());
+  framework.set_principal(flags.principal);
   framework.set_name(flags.name);
   framework.set_checkpoint(flags.checkpoint);
-  framework.add_roles("*");
+  framework.add_roles(flags.role);
   framework.add_capabilities()->set_type(
       FrameworkInfo::Capability::MULTI_ROLE);
   framework.add_capabilities()->set_type(
@@ -578,38 +587,39 @@ int main(int argc, char** argv)
 
   BalloonScheduler scheduler(framework, executor, flags);
 
+  if (flags.master == "local") {
+    // Configure master.
+    os::setenv("MESOS_ROLES", flags.role);
+    os::setenv("MESOS_AUTHENTICATE_FRAMEWORKS", stringify(flags.authenticate));
+
+    ACLs acls;
+    ACL::RegisterFramework* acl = acls.add_register_frameworks();
+    acl->mutable_principals()->set_type(ACL::Entity::ANY);
+    acl->mutable_roles()->add_values(flags.role);
+    os::setenv("MESOS_ACLS", stringify(JSON::protobuf(acls)));
+  }
+
   MesosSchedulerDriver* driver;
 
-  // TODO(josephw): Refactor these into a common set of flags.
-  Option<string> value = os::getenv("MESOS_AUTHENTICATE_FRAMEWORKS");
-  if (value.isSome()) {
+  if (flags.authenticate) {
     LOG(INFO) << "Enabling authentication for the framework";
 
-    value = os::getenv("DEFAULT_PRINCIPAL");
-    if (value.isNone()) {
-      EXIT(EXIT_FAILURE)
-        << "Expecting authentication principal in the environment";
-    }
-
     Credential credential;
-    credential.set_principal(value.get());
-
-    framework.set_principal(value.get());
-
-    value = os::getenv("DEFAULT_SECRET");
-    if (value.isNone()) {
-      EXIT(EXIT_FAILURE)
-        << "Expecting authentication secret in the environment";
+    credential.set_principal(flags.principal);
+    if (flags.secret.isSome()) {
+      credential.set_secret(flags.secret.get());
     }
-
-    credential.set_secret(value.get());
 
     driver = new MesosSchedulerDriver(
-        &scheduler, framework, flags.master, credential);
+        &scheduler,
+        framework,
+        flags.master,
+        credential);
   } else {
-    framework.set_principal(FRAMEWORK_PRINCIPAL);
-
-    driver = new MesosSchedulerDriver(&scheduler, framework, flags.master);
+    driver = new MesosSchedulerDriver(
+        &scheduler,
+        framework,
+        flags.master);
   }
 
   int status = driver->run() == DRIVER_STOPPED ? 0 : 1;

@@ -10,6 +10,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License
 
+#include <algorithm>
 #include <list>
 #include <map>
 #include <set>
@@ -23,11 +24,14 @@
 #include <stout/uuid.hpp>
 
 #include <stout/os/access.hpp>
+#include <stout/os/dup.hpp>
 #include <stout/os/find.hpp>
 #include <stout/os/getcwd.hpp>
 #include <stout/os/int_fd.hpp>
 #include <stout/os/ls.hpp>
+#include <stout/os/lseek.hpp>
 #include <stout/os/mkdir.hpp>
+#include <stout/os/pipe.hpp>
 #include <stout/os/read.hpp>
 #include <stout/os/realpath.hpp>
 #include <stout/os/rename.hpp>
@@ -217,16 +221,19 @@ TEST_F(FsTest, WindowsInternalLongPath)
   EXPECT_EQ(longpath(os::LONGPATH_PREFIX + path),
             wide_stringify(os::LONGPATH_PREFIX + path));
 }
+#endif // __WINDOWS__
 
 
 // This test attempts to perform some basic file operations on a file
 // with an absolute path at exactly the internal `MAX_PATH` of 248.
+//
+// NOTE: This tests an edge case on Windows, but is a cross-platform test.
 TEST_F(FsTest, CreateDirectoryAtMaxPath)
 {
   const size_t max_path_length = 248;
   const string testdir = path::join(
     sandbox.get(),
-    string(max_path_length - sandbox.get().length() - 1 /* separator */, 'c'));
+    string(max_path_length - sandbox->length() - 1 /* separator */, 'c'));
 
   EXPECT_EQ(testdir.length(), max_path_length);
   ASSERT_SOME(os::mkdir(testdir));
@@ -242,14 +249,17 @@ TEST_F(FsTest, CreateDirectoryAtMaxPath)
 
 // This test attempts to perform some basic file operations on a file
 // with an absolute path longer than the `MAX_PATH`.
+//
+// NOTE: This tests an edge case on Windows, but is a cross-platform test.
 TEST_F(FsTest, CreateDirectoryLongerThanMaxPath)
 {
   string testdir = sandbox.get();
-  while (testdir.length() <= MAX_PATH) {
+  const size_t max_path_length = 260;
+  while (testdir.length() <= max_path_length) {
     testdir = path::join(testdir, id::UUID::random().toString());
   }
 
-  EXPECT_TRUE(testdir.length() > MAX_PATH);
+  EXPECT_TRUE(testdir.length() > max_path_length);
   ASSERT_SOME(os::mkdir(testdir));
 
   const string testfile = path::join(testdir, "file.txt");
@@ -259,7 +269,26 @@ TEST_F(FsTest, CreateDirectoryLongerThanMaxPath)
   EXPECT_SOME_TRUE(os::access(testfile, R_OK | W_OK));
   EXPECT_SOME_EQ(testfile, os::realpath(testfile));
 }
-#endif // __WINDOWS__
+
+
+// This test ensures that `os::realpath` will work on open files.
+//
+// NOTE: This tests an edge case on Windows, but is a cross-platform test.
+TEST_F(FsTest, RealpathValidationOnOpenFile)
+{
+  // Open a file to write, with "SHARE" read/write permissions,
+  // then call `os::realpath` on that file.
+  const string file = path::join(sandbox.get(), id::UUID::random().toString());
+
+  const Try<int_fd> fd = os::open(file, O_CREAT | O_RDWR);
+  ASSERT_SOME(fd);
+  EXPECT_SOME(os::write(fd.get(), "data"));
+
+  // Verify that `os::realpath` (which calls `CreateFileW` on Windows) is
+  // successful even though the file is open elsewhere.
+  EXPECT_SOME_EQ(file, os::realpath(file));
+  EXPECT_SOME(os::close(fd.get()));
+}
 
 
 TEST_F(FsTest, SYMLINK_Symlink)
@@ -359,17 +388,17 @@ TEST_F(FsTest, List)
   // Search all files in folder
   Try<list<string>> allFiles = fs::list(path::join(testdir, "*"));
   ASSERT_SOME(allFiles);
-  EXPECT_EQ(3u, allFiles.get().size());
+  EXPECT_EQ(3u, allFiles->size());
 
   // Search .jpg files in folder
   Try<list<string>> jpgFiles = fs::list(path::join(testdir, "*.jpg"));
   ASSERT_SOME(jpgFiles);
-  EXPECT_EQ(1u, jpgFiles.get().size());
+  EXPECT_EQ(1u, jpgFiles->size());
 
   // Search test*.txt files in folder
   Try<list<string>> testTxtFiles = fs::list(path::join(testdir, "*.txt"));
   ASSERT_SOME(testTxtFiles);
-  EXPECT_EQ(2u, testTxtFiles.get().size());
+  EXPECT_EQ(2u, testTxtFiles->size());
 
   // Verify that we return empty list when we provide an invalid path.
   Try<list<string>> noFiles = fs::list("this_path_does_not_exist");
@@ -399,7 +428,7 @@ TEST_F(FsTest, Rename)
   // Search all files in folder
   Try<list<string>> allFiles = fs::list(path::join(testdir, "*"));
   ASSERT_SOME(allFiles);
-  EXPECT_EQ(2u, allFiles.get().size());
+  EXPECT_EQ(2u, allFiles->size());
 
   // Rename a `file1` to `file3`, which does not exist yet. Verify `file3`
   // contains the text that was in `file1`, and make sure the count of files in
@@ -412,7 +441,7 @@ TEST_F(FsTest, Rename)
 
   allFiles = fs::list(path::join(testdir, "*"));
   ASSERT_SOME(allFiles);
-  EXPECT_EQ(2u, allFiles.get().size());
+  EXPECT_EQ(2u, allFiles->size());
 
   // Rename `file3` -> `file2`. `file2` exists, so this will replace it. Verify
   // text in the file, and that the count of files in the directory have gone
@@ -424,7 +453,7 @@ TEST_F(FsTest, Rename)
 
   allFiles = fs::list(path::join(testdir, "*"));
   ASSERT_SOME(allFiles);
-  EXPECT_EQ(1u, allFiles.get().size());
+  EXPECT_EQ(1u, allFiles->size());
 
   // Rename a fake file, verify failure.
   const string fakeFile = testdir + "does_not_exist";
@@ -434,19 +463,121 @@ TEST_F(FsTest, Rename)
 
   allFiles = fs::list(path::join(testdir, "*"));
   ASSERT_SOME(allFiles);
-  EXPECT_EQ(1u, allFiles.get().size());
+  EXPECT_EQ(1u, allFiles->size());
+}
+
+
+#ifdef __WINDOWS__
+TEST_F(FsTest, IntFD)
+{
+  const int_fd fd(INVALID_HANDLE_VALUE);
+  EXPECT_EQ(int_fd::Type::HANDLE, fd.type());
+  EXPECT_FALSE(fd.is_valid());
+  EXPECT_EQ(fd, int_fd(-1));
+  EXPECT_EQ(-1, fd);
+  EXPECT_LT(fd, 0);
+  EXPECT_GT(0, fd);
+}
+#endif // __WINDOWS__
+
+
+// NOTE: These tests may not make a lot of sense on Linux, as `open`
+// is expected to be implemented correctly by the system. However, on
+// Windows we map the POSIX semantics of `open` to `CreateFile`, which
+// this checks. These tests passing on Linux assert that the tests
+// themselves are correct.
+TEST_F(FsTest, Open)
+{
+  const string testfile =
+    path::join(os::getcwd(), id::UUID::random().toString());
+  const string data = "data";
+
+  // Without `O_CREAT`, opening a non-existing file should fail.
+  EXPECT_FALSE(os::exists(testfile));
+  EXPECT_ERROR(os::open(testfile, O_RDONLY));
+#ifdef __WINDOWS__
+  // `O_EXCL` without `O_CREAT` is undefined, but on Windows, we error.
+  EXPECT_ERROR(os::open(testfile, O_RDONLY | O_EXCL));
+  EXPECT_ERROR(os::open(testfile, O_RDONLY | O_EXCL | O_TRUNC));
+#endif // __WINDOWS__
+  EXPECT_ERROR(os::open(testfile, O_RDONLY | O_TRUNC));
+
+  // With `O_CREAT | O_EXCL`, open a non-existing file should succeed.
+  Try<int_fd> fd = os::open(testfile, O_CREAT | O_EXCL | O_RDONLY, S_IRWXU);
+  ASSERT_SOME(fd);
+  EXPECT_TRUE(os::exists(testfile));
+  EXPECT_SOME(os::close(fd.get()));
+
+  // File already exists, so `O_EXCL` should fail.
+  EXPECT_ERROR(os::open(testfile, O_CREAT | O_EXCL | O_RDONLY));
+  EXPECT_ERROR(os::open(testfile, O_CREAT | O_EXCL | O_TRUNC | O_RDONLY));
+
+  // With `O_CREAT` but no `O_EXCL`, it should still open.
+  fd = os::open(testfile, O_CREAT | O_RDONLY);
+  ASSERT_SOME(fd);
+  EXPECT_SOME(os::close(fd.get()));
+
+  // `O_RDWR` should be able to write data, and read it back.
+  fd = os::open(testfile, O_RDWR);
+  ASSERT_SOME(fd);
+  EXPECT_SOME(os::write(fd.get(), data));
+  // Seek back to beginning to read the written data.
+  EXPECT_SOME_EQ(0, os::lseek(fd.get(), 0, SEEK_SET));
+  EXPECT_SOME_EQ(data, os::read(fd.get(), data.size()));
+  EXPECT_SOME(os::close(fd.get()));
+
+  // `O_RDONLY` should be able to read the previously written data,
+  // but fail writing more.
+  fd = os::open(testfile, O_RDONLY);
+  ASSERT_SOME(fd);
+  EXPECT_SOME_EQ(data, os::read(fd.get(), data.size()));
+  EXPECT_ERROR(os::write(fd.get(), data));
+  EXPECT_SOME(os::close(fd.get()));
+
+  // `O_WRONLY` should be able to overwrite the data, but fail reading.
+  fd = os::open(testfile, O_WRONLY);
+  ASSERT_SOME(fd);
+  EXPECT_SOME(os::write(fd.get(), data));
+  EXPECT_ERROR(os::read(fd.get(), data.size()));
+  EXPECT_SOME(os::close(fd.get()));
+
+  // `O_APPEND` should write to an existing file.
+  fd = os::open(testfile, O_APPEND | O_RDWR);
+  ASSERT_SOME(fd);
+  EXPECT_SOME_EQ(data, os::read(fd.get(), data.size()));
+  EXPECT_SOME(os::write(fd.get(), data));
+  const string datadata = "datadata";
+  // Seek back to beginning to read the written data.
+  EXPECT_SOME_EQ(0, os::lseek(fd.get(), 0, SEEK_SET));
+  EXPECT_SOME_EQ(datadata, os::read(fd.get(), datadata.size()));
+  EXPECT_SOME(os::close(fd.get()));
+
+  // `O_TRUNC` should truncate an existing file.
+  fd = os::open(testfile, O_TRUNC | O_RDWR);
+  ASSERT_SOME(fd);
+  EXPECT_NONE(os::read(fd.get(), 1));
+  EXPECT_SOME(os::write(fd.get(), data));
+  // Seek back to beginning to read the written data.
+  EXPECT_SOME_EQ(0, os::lseek(fd.get(), 0, SEEK_SET));
+  EXPECT_SOME_EQ(data, os::read(fd.get(), data.size()));
+  EXPECT_SOME(os::close(fd.get()));
+
+  // `O_CREAT | O_TRUNC` should create an empty file.
+  const string testtruncfile =
+    path::join(os::getcwd(), id::UUID::random().toString());
+  fd = os::open(testtruncfile, O_CREAT | O_TRUNC | O_RDWR, S_IRWXU);
+  ASSERT_SOME(fd);
+  EXPECT_NONE(os::read(fd.get(), 1));
+  EXPECT_SOME(os::write(fd.get(), data));
+  // Seek back to beginning to read the written data.
+  EXPECT_SOME_EQ(0, os::lseek(fd.get(), 0, SEEK_SET));
+  EXPECT_SOME_EQ(data, os::read(fd.get(), data.size()));
+  EXPECT_SOME(os::close(fd.get()));
 }
 
 
 TEST_F(FsTest, Close)
 {
-#ifdef __WINDOWS__
-  // On Windows, CRT functions like `_close` will cause an assert dialog box
-  // to pop up if you pass them a bad file descriptor. For this test, we prefer
-  // to just have the functions error out.
-  const int previous_report_mode = _CrtSetReportMode(_CRT_ASSERT, 0);
-#endif // __WINDOWS__
-
   const string testfile =
     path::join(os::getcwd(), id::UUID::random().toString());
 
@@ -458,70 +589,32 @@ TEST_F(FsTest, Close)
 
   // Open a file, and verify that writing to that file descriptor succeeds
   // before we close it, and fails after.
-  const Try<int_fd> open_valid_fd = os::open(testfile, O_RDWR);
-  ASSERT_SOME(open_valid_fd);
-  ASSERT_SOME(os::write(open_valid_fd.get(), test_message1));
-
-  EXPECT_SOME(os::close(open_valid_fd.get()));
-
-  EXPECT_ERROR(os::write(open_valid_fd.get(), error_message));
-
-  const Result<string> read_valid_fd = os::read(testfile);
-  EXPECT_SOME(read_valid_fd);
-  ASSERT_EQ(test_message1, read_valid_fd.get());
-
+  const Try<int_fd> fd = os::open(testfile, O_CREAT | O_RDWR);
+  ASSERT_SOME(fd);
 #ifdef __WINDOWS__
-  // Open a file with the traditional Windows `HANDLE` API, then verify that
-  // writing to that `HANDLE` succeeds before we close it, and fails after.
-  const HANDLE open_valid_handle = CreateFileW(
-      wide_stringify(testfile).data(),
-      FILE_APPEND_DATA,
-      0,                     // No sharing mode.
-      nullptr,               // Default security.
-      OPEN_EXISTING,         // Open only if it exists.
-      FILE_ATTRIBUTE_NORMAL, // Open a normal file.
-      nullptr);              // No attribute tempate file.
-  ASSERT_NE(INVALID_HANDLE_VALUE, open_valid_handle);
-
-  DWORD bytes_written;
-  BOOL written = WriteFile(
-      open_valid_handle,
-      test_message1.c_str(),                     // Data to write.
-      static_cast<DWORD>(test_message1.size()),  // Bytes to write.
-      &bytes_written,                            // Bytes written.
-      nullptr);                                  // No overlapped I/O.
-  ASSERT_TRUE(written == TRUE);
-  ASSERT_EQ(test_message1.size(), bytes_written);
-
-  EXPECT_SOME(os::close(open_valid_handle));
-
-  written = WriteFile(
-      open_valid_handle,
-      error_message.c_str(),                     // Data to write.
-      static_cast<DWORD>(error_message.size()),  // Bytes to write.
-      &bytes_written,                            // Bytes written.
-      nullptr);                                  // No overlapped I/O.
-  ASSERT_TRUE(written == FALSE);
-  ASSERT_EQ(0, bytes_written);
-
-  const Result<string> read_valid_handle = os::read(testfile);
-  EXPECT_SOME(read_valid_handle);
-  ASSERT_EQ(test_message1 + test_message1, read_valid_handle.get());
+  ASSERT_EQ(fd->type(), os::WindowsFD::Type::HANDLE);
+  ASSERT_TRUE(fd->is_valid());
 #endif // __WINDOWS__
 
+  ASSERT_SOME(os::write(fd.get(), test_message1));
+
+  EXPECT_SOME(os::close(fd.get()));
+
+  EXPECT_ERROR(os::write(fd.get(), error_message));
+
+  const Result<string> read = os::read(testfile);
+  EXPECT_SOME(read);
+  ASSERT_EQ(test_message1, read.get());
+
   // Try `close` with invalid file descriptor.
+  // NOTE: This should work on both Windows and POSIX because the implicit
+  // conversion to `int_fd` maps `-1` to `INVALID_HANDLE_VALUE` on Windows.
   EXPECT_ERROR(os::close(static_cast<int>(-1)));
 
 #ifdef __WINDOWS__
-  // Try `close` with invalid `SOCKET` and `HANDLE`.
-  EXPECT_ERROR(os::close(static_cast<SOCKET>(INVALID_SOCKET)));
-  EXPECT_ERROR(os::close(INVALID_SOCKET));
-  EXPECT_ERROR(os::close(static_cast<HANDLE>(open_valid_handle)));
-#endif // __WINDOWS__
-
-#ifdef __WINDOWS__
-  // Reset the CRT assert dialog settings.
-  _CrtSetReportMode(_CRT_ASSERT, previous_report_mode);
+  // Try `close` with invalid `HANDLE` and `SOCKET`.
+  EXPECT_ERROR(os::close(int_fd(INVALID_HANDLE_VALUE)));
+  EXPECT_ERROR(os::close(int_fd(INVALID_SOCKET)));
 #endif // __WINDOWS__
 }
 
@@ -561,3 +654,151 @@ TEST_F(FsTest, Xattr)
   ASSERT_ERROR(os::getxattr(file, "user.mesos.test"));
 }
 #endif // __linux__ || __APPLE__
+
+#ifdef __WINDOWS__
+// Check if the overlapped field is set properly on Windows.
+TEST_F(FsTest, Overlapped)
+{
+  const string testfile =
+    path::join(sandbox.get(), id::UUID::random().toString());
+
+  // Case 1: `os::open` should return non-overlapped handles.
+  const Try<int_fd> fd1 = os::open(testfile, O_CREAT | O_TRUNC | O_RDWR);
+  ASSERT_SOME(fd1);
+  ASSERT_FALSE(fd1->is_overlapped());
+
+  const Try<int_fd> fd2 = os::dup(fd1.get());
+  ASSERT_SOME(fd2);
+  ASSERT_FALSE(fd2->is_overlapped());
+
+  EXPECT_SOME(os::close(fd1.get()));
+  EXPECT_SOME(os::close(fd2.get()));
+
+  // Case 2: `net::socket` should return overlapped handles.
+  const Try<int_fd> socket1 = net::socket(AF_INET, SOCK_STREAM, 0);
+  ASSERT_SOME(socket1);
+  ASSERT_TRUE(socket1->is_overlapped());
+
+  const Try<int_fd> socket2 = os::dup(socket1.get());
+  ASSERT_SOME(socket2);
+  ASSERT_TRUE(socket2->is_overlapped());
+
+  EXPECT_SOME(os::close(socket1.get()));
+  EXPECT_SOME(os::close(socket2.get()));
+
+  // Case 3: `os::pipe` should return overlapped values depending on the
+  // parameters given.
+  const Try<std::array<int_fd, 2>> pipes = os::pipe(true, false);
+  ASSERT_SOME(pipes);
+
+  const int_fd pipe1 = pipes.get()[0];
+  const int_fd pipe2 = pipes.get()[1];
+  ASSERT_TRUE(pipe1.is_overlapped());
+  ASSERT_FALSE(pipe2.is_overlapped());
+
+  Try<int_fd> pipe3 = os::dup(pipe1);
+  ASSERT_SOME(pipe3);
+  ASSERT_TRUE(pipe3->is_overlapped());
+
+  Try<int_fd> pipe4 = os::dup(pipe2);
+  ASSERT_SOME(pipe4);
+  ASSERT_FALSE(pipe4->is_overlapped());
+
+  EXPECT_SOME(os::close(pipe1));
+  EXPECT_SOME(os::close(pipe2));
+  EXPECT_SOME(os::close(pipe3.get()));
+  EXPECT_SOME(os::close(pipe4.get()));
+}
+
+
+TEST_F(FsTest, ReadWriteAsync)
+{
+  const Try<std::array<int_fd, 2>> pipes = os::pipe(true, true);
+  ASSERT_SOME(pipes);
+
+  OVERLAPPED read_overlapped = {};
+  OVERLAPPED write_overlapped = {};
+  std::vector<char> write_buffer(64, 'A');
+  std::vector<char> read_buffer(write_buffer.size());
+
+  // Do an async read. This should return that the IO is pending.
+  const Result<size_t> result_read = os::read_async(
+      pipes.get()[0],
+      read_buffer.data(),
+      read_buffer.size(),
+      &read_overlapped);
+
+  ASSERT_NONE(result_read);
+
+  // Do an async write. This will return immediately.
+  const Result<size_t> result_write = os::write_async(
+      pipes.get()[1],
+      write_buffer.data(),
+      write_buffer.size(),
+      &write_overlapped);
+
+  ASSERT_SOME(result_write);
+
+  // Wait for read to finish.
+  DWORD bytes;
+  ASSERT_EQ(
+      TRUE,
+      ::GetOverlappedResult(pipes.get()[0], &read_overlapped, &bytes, TRUE));
+
+  ASSERT_GT(bytes, static_cast<DWORD>(0));
+  ASSERT_EQ(result_write.get(), bytes);
+  ASSERT_EQ(
+      string(write_buffer.data(), result_write.get()),
+      string(read_buffer.data(), bytes));
+
+  EXPECT_SOME(os::close(pipes.get()[0]));
+  EXPECT_SOME(os::close(pipes.get()[1]));
+}
+
+
+TEST_F(FsTest, ReadWriteAsyncLargeBuffer)
+{
+  const Try<std::array<int_fd, 2>> pipes = os::pipe(true, true);
+  ASSERT_SOME(pipes);
+
+  OVERLAPPED read_overlapped = {};
+  OVERLAPPED write_overlapped = {};
+  std::vector<char> write_buffer(1024 * 1024, 'A');
+  std::vector<char> read_buffer(write_buffer.size());
+
+  // This should return IO pending because it's larger than the internal pipe
+  // buffer.
+  const Result<size_t>  result_write = os::write_async(
+      pipes.get()[1],
+      write_buffer.data(),
+      write_buffer.size(),
+      &write_overlapped);
+
+  ASSERT_NONE(result_write);
+
+  // This should return immediately.
+  const Result<size_t> result_read = os::read_async(
+      pipes.get()[0],
+      read_buffer.data(),
+      read_buffer.size(),
+      &read_overlapped);
+
+  ASSERT_SOME(result_read);
+
+  // Wait for write to finish.
+  DWORD bytes;
+  ASSERT_EQ(
+      TRUE,
+      ::GetOverlappedResult(pipes.get()[1], &write_overlapped, &bytes, TRUE));
+
+  ASSERT_GT(bytes, static_cast<DWORD>(0));
+  ASSERT_EQ(result_read.get(), bytes);
+  ASSERT_EQ(
+      string(write_buffer.data(), result_read.get()),
+      string(read_buffer.data(), bytes));
+
+  EXPECT_SOME(os::close(pipes.get()[0]));
+  EXPECT_SOME(os::close(pipes.get()[1]));
+}
+
+#endif // __WINDOWS__

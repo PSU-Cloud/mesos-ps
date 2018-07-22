@@ -42,9 +42,9 @@ class LogrotateContainerLoggerProcess;
 
 
 // These flags are loaded twice: once when the `ContainerLogger` module
-// is created and each time before launching executors. The flags loaded
+// is created and each time before launching containers. The flags loaded
 // at module creation act as global default values, whereas flags loaded
-// prior to executors can override the global values.
+// prior to containers can override the global values.
 struct LoggerFlags : public virtual flags::FlagsBase
 {
   LoggerFlags()
@@ -112,9 +112,9 @@ struct Flags : public virtual LoggerFlags
     add(&Flags::environment_variable_prefix,
         "environment_variable_prefix",
         "Prefix for environment variables meant to modify the behavior of\n"
-        "the logrotate logger for the specific executor being launched.\n"
+        "the logrotate logger for the specific container being launched.\n"
         "The logger will look for four prefixed environment variables in the\n"
-        "'ExecutorInfo's 'CommandInfo's 'Environment':\n"
+        "container's 'CommandInfo's 'Environment':\n"
         "  * MAX_STDOUT_SIZE\n"
         "  * LOGROTATE_STDOUT_OPTIONS\n"
         "  * MAX_STDERR_SIZE\n"
@@ -192,15 +192,14 @@ class LogrotateContainerLogger : public mesos::slave::ContainerLogger
 public:
   LogrotateContainerLogger(const Flags& _flags);
 
-  virtual ~LogrotateContainerLogger();
+  ~LogrotateContainerLogger() override;
 
-  // This is a noop.  The logrotate container logger has nothing to initialize.
-  virtual Try<Nothing> initialize();
+  // This is a noop. The logrotate container logger has nothing to initialize.
+  Try<Nothing> initialize() override;
 
-  virtual process::Future<mesos::slave::ContainerIO> prepare(
-      const ExecutorInfo& executorInfo,
-      const std::string& sandboxDirectory,
-      const Option<std::string>& user);
+  process::Future<mesos::slave::ContainerIO> prepare(
+      const ContainerID& containerId,
+      const mesos::slave::ContainerConfig& containerConfig) override;
 
 protected:
   Flags flags;

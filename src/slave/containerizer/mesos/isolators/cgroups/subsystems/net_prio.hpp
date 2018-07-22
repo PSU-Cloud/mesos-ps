@@ -35,22 +35,22 @@ namespace slave {
 /**
  * Represent cgroups net_prio subsystem.
  */
-class NetPrioSubsystem : public Subsystem
+class NetPrioSubsystemProcess : public SubsystemProcess
 {
 public:
-  static Try<process::Owned<Subsystem>> create(
+  static Try<process::Owned<SubsystemProcess>> create(
       const Flags& flags,
       const std::string& hierarchy);
 
-  virtual ~NetPrioSubsystem() {}
+  ~NetPrioSubsystemProcess() override = default;
 
-  virtual std::string name() const
+  std::string name() const override
   {
     return CGROUP_SUBSYSTEM_NET_PRIO_NAME;
   };
 
 private:
-  NetPrioSubsystem(const Flags& flags, const std::string& hierarchy);
+  NetPrioSubsystemProcess(const Flags& flags, const std::string& hierarchy);
 };
 
 } // namespace slave {

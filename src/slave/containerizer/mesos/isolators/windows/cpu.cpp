@@ -15,7 +15,7 @@
 // limitations under the License.
 
 #include <algorithm>
-#include <list>
+#include <vector>
 
 #include <process/future.hpp>
 #include <process/id.hpp>
@@ -23,11 +23,12 @@
 #include <stout/duration.hpp>
 #include <stout/hashset.hpp>
 #include <stout/nothing.hpp>
+#include <stout/os.hpp>
 #include <stout/stringify.hpp>
 #include <stout/try.hpp>
 #include <stout/windows.hpp>
 
-#include <stout/windows/os.hpp>
+#include <stout/os/windows/jobobject.hpp>
 
 #include "slave/flags.hpp"
 
@@ -43,8 +44,8 @@ using process::Failure;
 using process::Future;
 using process::Owned;
 
-using std::list;
 using std::max;
+using std::vector;
 
 namespace mesos {
 namespace internal {
@@ -61,7 +62,7 @@ bool WindowsCpuIsolatorProcess::supportsStandalone() { return true; }
 // When recovering, this ensures that our ContainerID -> PID mapping is
 // recreated.
 Future<Nothing> WindowsCpuIsolatorProcess::recover(
-    const list<ContainerState>& state, const hashset<ContainerID>& orphans)
+    const vector<ContainerState>& state, const hashset<ContainerID>& orphans)
 {
   foreach (const ContainerState& run, state) {
     // This should (almost) never occur: see comment in
@@ -70,7 +71,7 @@ Future<Nothing> WindowsCpuIsolatorProcess::recover(
       return Failure("Container already recovered");
     }
 
-    infos[run.container_id()] = {run.pid(), None()};
+    infos[run.container_id()] = {static_cast<pid_t>(run.pid()), None()};
   }
 
   return Nothing();
@@ -211,14 +212,14 @@ Future<ResourceStatistics> WindowsCpuIsolatorProcess::usage(
     return result;
   }
 
-  result.set_processes(info.get().ActiveProcesses);
+  result.set_processes(info->ActiveProcesses);
 
   // The reported time fields are in 100-nanosecond ticks.
   result.set_cpus_user_time_secs(
-      Nanoseconds(info.get().TotalUserTime.QuadPart * 100).secs());
+      Nanoseconds(info->TotalUserTime.QuadPart * 100).secs());
 
   result.set_cpus_system_time_secs(
-      Nanoseconds(info.get().TotalKernelTime.QuadPart * 100).secs());
+      Nanoseconds(info->TotalKernelTime.QuadPart * 100).secs());
 
   return result;
 }

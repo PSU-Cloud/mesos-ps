@@ -30,6 +30,7 @@
 #include <process/collect.hpp>
 #include <process/future.hpp>
 #include <process/gmock.hpp>
+#include <process/gtest.hpp>
 #include <process/latch.hpp>
 #include <process/message.hpp>
 #include <process/owned.hpp>
@@ -74,6 +75,7 @@ using mesos::internal::slave::FetcherProcess;
 
 using mesos::master::detector::MasterDetector;
 
+using process::TEST_AWAIT_TIMEOUT;
 using process::Future;
 using process::HttpEvent;
 using process::Latch;
@@ -133,8 +135,8 @@ public:
 protected:
   void setupArchiveAsset();
 
-  virtual void SetUp();
-  virtual void TearDown();
+  void SetUp() override;
+  void TearDown() override;
 
   // Sets up the slave and starts it. Calling this late in the test
   // instead of having it included in SetUp() gives us the opportunity
@@ -411,10 +413,10 @@ static Future<Nothing> awaitFinished(FetcherCacheTest::Task task)
 // Create a future that indicates that all tasks are finished.
 // TODO(bernd-mesos): Make this abstractions as generic and generally
 // available for all testing as possible.
-static Future<list<Nothing>> awaitFinished(
+static Future<vector<Nothing>> awaitFinished(
     vector<FetcherCacheTest::Task> tasks)
 {
-  list<Future<Nothing>> futures;
+  vector<Future<Nothing>> futures;
 
   foreach (FetcherCacheTest::Task task, tasks) {
     futures.push_back(awaitFinished(task));
@@ -452,11 +454,7 @@ Try<FetcherCacheTest::Task> FetcherCacheTest::launchTask(
     .WillOnce(FutureArg<1>(&offers))
     .WillRepeatedly(DeclineOffers());
 
-  // The default timeout in AWAIT_READY is 15 seconds,
-  // so we use that amount here.
-  // TODO(bernd-mesos): Make this a symbolic constant in "gtest.hpp"
-  // that we can reference here.
-  offers.await(Seconds(15));
+  offers.await(TEST_AWAIT_TIMEOUT);
   if (!offers.isReady()) {
     return Error("Failed to wait for resource offers: " +
            (offers.isFailed() ? offers.failure() : "discarded"));
@@ -565,11 +563,7 @@ Try<vector<FetcherCacheTest::Task>> FetcherCacheTest::launchTasks(
     .WillOnce(FutureArg<1>(&offers))
     .WillRepeatedly(DeclineOffers());
 
-  // The default timeout in AWAIT_READY is 15 seconds,
-  // so we use that amount here.
-  // TODO(bernd-mesos): Make this a symbolic constant in "gtest.hpp"
-  // that we can reference here.
-  offers.await(Seconds(15));
+  offers.await(TEST_AWAIT_TIMEOUT);
   if (!offers.isReady()) {
     return Error("Failed to wait for resource offers: " +
            (offers.isFailed() ? offers.failure() : "discarded"));
@@ -949,7 +943,7 @@ public:
       CHECK(!_archivePath.empty());
     }
 
-    virtual void initialize()
+    void initialize() override
     {
       provide(COMMAND_NAME, commandPath);
       provide(ARCHIVE_NAME, archivePath);
@@ -977,7 +971,7 @@ public:
       }
     }
 
-    virtual void consume(HttpEvent&& event)
+    void consume(HttpEvent&& event) override
     {
       if (latch.get() != nullptr) {
         latch->await();
@@ -1013,7 +1007,7 @@ public:
     Owned<Latch> latch;
   };
 
-  virtual void SetUp()
+  void SetUp() override
   {
     FetcherCacheTest::SetUp();
 
@@ -1021,7 +1015,7 @@ public:
     spawn(httpServer);
   }
 
-  virtual void TearDown()
+  void TearDown() override
   {
     terminate(httpServer);
     wait(httpServer);
@@ -1355,7 +1349,7 @@ TEST_F(FetcherCacheHttpTest, DISABLED_HttpCachedRecovery)
   containerizer.reset(_containerizer.get());
 
   // Set up so we can wait until the new slave updates the container's
-  // resources (this occurs after the executor has re-registered).
+  // resources (this occurs after the executor has reregistered).
   Future<Nothing> update =
     FUTURE_DISPATCH(_, &MesosContainerizerProcess::update);
 

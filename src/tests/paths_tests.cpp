@@ -41,7 +41,7 @@ using strings::format;
 class PathsTest : public ::testing::Test
 {
 public:
-  virtual void SetUp()
+  void SetUp() override
   {
     slaveId.set_value("agent1");
     frameworkId.set_value("framework1");
@@ -62,7 +62,7 @@ public:
     imageType = Image::APPC;
   }
 
-  virtual void TearDown()
+  void TearDown() override
   {
      os::rmdir(rootDir);
      os::rmdir(diskSourceDir);
@@ -84,7 +84,7 @@ protected:
 
 TEST_F(PathsTest, CreateExecutorDirectory)
 {
-  const string& result = paths::createExecutorDirectory(
+  Try<string> result = paths::createExecutorDirectory(
       rootDir, slaveId, frameworkId, executorId, containerId);
 
   // Expected directory layout.
@@ -99,7 +99,7 @@ TEST_F(PathsTest, CreateExecutorDirectory)
       "runs",
       containerId.value());
 
-  ASSERT_EQ(dir, result);
+  ASSERT_SOME_EQ(dir, result);
 }
 
 

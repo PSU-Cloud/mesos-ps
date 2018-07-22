@@ -127,7 +127,7 @@ public:
       Future<http::Response>(const http::Request&, const Option<Principal>&));
 
 protected:
-  virtual void initialize()
+  void initialize() override
   {
     route("/body", None(), &HttpProcess::body);
     route("/pipe", None(), &HttpProcess::pipe);
@@ -173,7 +173,7 @@ class HTTPTest : public SSLTemporaryDirectoryTest,
 // These are only needed if libprocess is compiled with SSL support.
 #ifdef USE_SSL_SOCKET
 protected:
-  virtual void SetUp()
+  void SetUp() override
   {
     // We must run the parent's `SetUp` first so that we `chdir` into the test
     // directory before SSL helpers like `key_path()` are called.
@@ -231,72 +231,97 @@ INSTANTIATE_TEST_CASE_P(
 
 // TODO(vinod): Use AWAIT_EXPECT_RESPONSE_STATUS_EQ in the tests.
 
+TEST_P(HTTPTest, Statuses)
+{
+  EXPECT_TRUE(process::http::isValidStatus(200));
+  EXPECT_TRUE(process::http::isValidStatus(404));
+  EXPECT_FALSE(process::http::isValidStatus(1337));
+}
 
 TEST_P(HTTPTest, Endpoints)
 {
   Http http;
 
   // First hit '/body' (using explicit sockets and HTTP/1.0).
-  Try<inet::Socket> create = inet::Socket::create();
-  ASSERT_SOME(create);
+  {
+    Try<inet::Socket> create = inet::Socket::create();
+    ASSERT_SOME(create);
 
-  inet::Socket socket = create.get();
+    inet::Socket socket = create.get();
 
-  AWAIT_READY(socket.connect(http.process->self().address));
+    AWAIT_READY(socket.connect(http.process->self().address));
 
-  std::ostringstream out;
-  out << "GET /" << http.process->self().id << "/body"
-      << " HTTP/1.0\r\n"
-      << "Connection: Keep-Alive\r\n"
-      << "\r\n";
+    std::ostringstream out;
+    out << "GET /" << http.process->self().id << "/body"
+        << " HTTP/1.0\r\n"
+        << "Connection: Keep-Alive\r\n"
+        << "\r\n";
 
-  const string data = out.str();
+    const string data = out.str();
+    const string response = "HTTP/1.1 200 OK";
 
-  EXPECT_CALL(*http.process, body(_))
-    .WillOnce(Return(http::OK()));
+    EXPECT_CALL(*http.process, body(_))
+      .WillOnce(Return(http::OK()));
 
-  AWAIT_READY(socket.send(data));
+    AWAIT_READY(socket.send(data));
+    AWAIT_EXPECT_EQ(response, socket.recv(response.size()));
+  }
 
-  string response = "HTTP/1.1 200 OK";
+  // Now hit '/body/' (by using http::get) and ensure it succeeds as well
+  // and resolved with the '/body' route.
+  {
+    EXPECT_CALL(*http.process, body(_))
+      .WillOnce(Return(http::OK()));
 
-  AWAIT_EXPECT_EQ(response, socket.recv(response.size()));
+    Future<http::Response> response =
+      http::get(http.process->self(), "body/", None(), None(), GetParam());
 
-  // Now hit '/pipe' (by using http::get).
-  http::Pipe pipe;
-  http::OK ok;
-  ok.type = http::Response::PIPE;
-  ok.reader = pipe.reader();
-
-  Future<Nothing> request;
-  EXPECT_CALL(*http.process, pipe(_))
-    .WillOnce(DoAll(FutureSatisfy(&request),
-                    Return(ok)));
-
-  Future<http::Response> future =
-    http::get(http.process->self(), "pipe", None(), None(), GetParam());
-
-  AWAIT_READY(request);
-
-  // Write the response.
-  http::Pipe::Writer writer = pipe.writer();
-  EXPECT_TRUE(writer.write("Hello World\n"));
-  EXPECT_TRUE(writer.close());
-
-  AWAIT_READY(future);
-  EXPECT_EQ(http::Status::OK, future->code);
-  EXPECT_EQ(http::Status::string(http::Status::OK), future->status);
-
-  EXPECT_SOME_EQ("chunked", future->headers.get("Transfer-Encoding"));
-  EXPECT_EQ("Hello World\n", future->body);
+    AWAIT_ASSERT_RESPONSE_STATUS_EQ(http::OK().status, response);
+  }
 
   // Test that an endpoint handler failure results in a 500.
-  EXPECT_CALL(*http.process, body(_))
-    .WillOnce(Return(Future<http::Response>::failed("failure")));
+  {
+    EXPECT_CALL(*http.process, body(_))
+      .WillOnce(Return(Future<http::Response>::failed("failure")));
 
-  future = http::get(http.process->self(), "body", None(), None(), GetParam());
+    Future<http::Response> response =
+      http::get(http.process->self(), "body", None(), None(), GetParam());
 
-  AWAIT_ASSERT_RESPONSE_STATUS_EQ(http::InternalServerError().status, future);
-  EXPECT_EQ("failure", future->body);
+    AWAIT_ASSERT_RESPONSE_STATUS_EQ(
+        http::InternalServerError().status,
+        response);
+    EXPECT_EQ("failure", response->body);
+  }
+
+  // Now hit '/pipe' (by using http::get).
+  {
+    http::Pipe pipe;
+    http::OK ok;
+    ok.type = http::Response::PIPE;
+    ok.reader = pipe.reader();
+
+    Future<Nothing> request;
+    EXPECT_CALL(*http.process, pipe(_))
+      .WillOnce(DoAll(FutureSatisfy(&request),
+                      Return(ok)));
+
+    Future<http::Response> future =
+      http::get(http.process->self(), "pipe", None(), None(), GetParam());
+
+    AWAIT_READY(request);
+
+    // Write the response.
+    http::Pipe::Writer writer = pipe.writer();
+    EXPECT_TRUE(writer.write("Hello World\n"));
+    EXPECT_TRUE(writer.close());
+
+    AWAIT_READY(future);
+    EXPECT_EQ(http::Status::OK, future->code);
+    EXPECT_EQ(http::Status::string(http::Status::OK), future->status);
+
+    EXPECT_SOME_EQ("chunked", future->headers.get("Transfer-Encoding"));
+    EXPECT_EQ("Hello World\n", future->body);
+  }
 }
 
 
@@ -616,26 +641,26 @@ TEST_P(HTTPTest, PathParse)
     http::path::parse(pattern, "/books/0304827484/chapters/3");
 
   ASSERT_SOME(parse);
-  EXPECT_EQ(4u, parse.get().size());
-  EXPECT_SOME_EQ("books", parse.get().get("books"));
-  EXPECT_SOME_EQ("0304827484", parse.get().get("isbn"));
-  EXPECT_SOME_EQ("chapters", parse.get().get("chapters"));
-  EXPECT_SOME_EQ("3", parse.get().get("chapter"));
+  EXPECT_EQ(4u, parse->size());
+  EXPECT_SOME_EQ("books", parse->get("books"));
+  EXPECT_SOME_EQ("0304827484", parse->get("isbn"));
+  EXPECT_SOME_EQ("chapters", parse->get("chapters"));
+  EXPECT_SOME_EQ("3", parse->get("chapter"));
 
   parse = http::path::parse(pattern, "/books/0304827484");
 
   ASSERT_SOME(parse);
-  EXPECT_EQ(2u, parse.get().size());
-  EXPECT_SOME_EQ("books", parse.get().get("books"));
-  EXPECT_SOME_EQ("0304827484", parse.get().get("isbn"));
+  EXPECT_EQ(2u, parse->size());
+  EXPECT_SOME_EQ("books", parse->get("books"));
+  EXPECT_SOME_EQ("0304827484", parse->get("isbn"));
 
   parse = http::path::parse(pattern, "/books/0304827484/chapters");
 
   ASSERT_SOME(parse);
-  EXPECT_EQ(3u, parse.get().size());
-  EXPECT_SOME_EQ("books", parse.get().get("books"));
-  EXPECT_SOME_EQ("0304827484", parse.get().get("isbn"));
-  EXPECT_SOME_EQ("chapters", parse.get().get("chapters"));
+  EXPECT_EQ(3u, parse->size());
+  EXPECT_SOME_EQ("books", parse->get("books"));
+  EXPECT_SOME_EQ("0304827484", parse->get("isbn"));
+  EXPECT_SOME_EQ("chapters", parse->get("chapters"));
 
   parse = http::path::parse(pattern, "/foo/0304827484/chapters");
 
@@ -757,11 +782,11 @@ TEST_P(HTTPTest, StreamingGetComplete)
   // The response should be ready since the headers were sent.
   AWAIT_READY(response);
 
-  EXPECT_SOME_EQ("chunked", response.get().headers.get("Transfer-Encoding"));
-  ASSERT_EQ(http::Response::PIPE, response.get().type);
-  ASSERT_SOME(response.get().reader);
+  EXPECT_SOME_EQ("chunked", response->headers.get("Transfer-Encoding"));
+  ASSERT_EQ(http::Response::PIPE, response->type);
+  ASSERT_SOME(response->reader);
 
-  http::Pipe::Reader reader = response.get().reader.get();
+  http::Pipe::Reader reader = response->reader.get();
 
   // There is no data to read yet.
   Future<string> read = reader.read();
@@ -799,11 +824,11 @@ TEST_P(HTTPTest, StreamingGetFailure)
   // The response should be ready since the headers were sent.
   AWAIT_READY(response);
 
-  EXPECT_SOME_EQ("chunked", response.get().headers.get("Transfer-Encoding"));
-  ASSERT_EQ(http::Response::PIPE, response.get().type);
-  ASSERT_SOME(response.get().reader);
+  EXPECT_SOME_EQ("chunked", response->headers.get("Transfer-Encoding"));
+  ASSERT_EQ(http::Response::PIPE, response->type);
+  ASSERT_SOME(response->reader);
 
-  http::Pipe::Reader reader = response.get().reader.get();
+  http::Pipe::Reader reader = response->reader.get();
 
   // There is no data to read yet.
   Future<string> read = reader.read();
@@ -997,7 +1022,7 @@ TEST(HTTPConnectionTest, GzipRequestBody)
   request.keepAlive = true;
 
   request.headers["Content-Encoding"] = "gzip";
-  request.headers["Content-Length"] = request.body.length();
+  request.headers["Content-Length"] = stringify(request.body.length());
 
   Future<http::Response> response = connection.send(request);
 
@@ -1418,11 +1443,7 @@ TEST(HTTPConnectionTest, RequestStreaming)
 }
 
 
-// TODO(hausdorff): This test seems to create inconsistent (though not
-// incorrect) results across platforms. Fix and enable the test on Windows. In
-// particular, the encoding in the 3rd example puts the first variable into the
-// query string before the second, but we expect the reverse. See MESOS-5814.
-TEST_P_TEMP_DISABLED_ON_WINDOWS(HTTPTest, QueryEncodeDecode)
+TEST_P(HTTPTest, QueryEncodeDecode)
 {
   // If we use Type<a, b> directly inside a macro without surrounding
   // parenthesis the comma will be eaten by the macro rather than the
@@ -1435,9 +1456,13 @@ TEST_P_TEMP_DISABLED_ON_WINDOWS(HTTPTest, QueryEncodeDecode)
   EXPECT_EQ("foo=bar",
             http::query::encode(HashmapStringString({{"foo", "bar"}})));
 
-  EXPECT_EQ("c%7E%2Fasdf=%25asdf&a()=b%2520",
-            http::query::encode(
-                HashmapStringString({{"a()", "b%20"}, {"c~/asdf", "%asdf"}})));
+  // Because `http::query::encode` is implemented with
+  // `std::unsorted_map`, it can return two possible strings since the
+  // STL does not require a particular element iteration order.
+  const string encoded = http::query::encode(
+      HashmapStringString({{"a()", "b%20"}, {"c~/asdf", "%asdf"}}));
+  EXPECT_TRUE(encoded == "c%7E%2Fasdf=%25asdf&a()=b%2520" ||
+              encoded == "a()=b%2520&c%7E%2Fasdf=%25asdf");
 
   EXPECT_EQ("d",
             http::query::encode(HashmapStringString({{"d", ""}})));
@@ -1452,8 +1477,15 @@ TEST_P_TEMP_DISABLED_ON_WINDOWS(HTTPTest, QueryEncodeDecode)
   EXPECT_SOME_EQ(HashmapStringString({{"foo", "bar"}}),
                  http::query::decode("foo=bar"));
 
+
+  // Again, because the iteration order of `std::unsorted_map` is
+  // unspecified, we must test that `http::query::decode` can
+  // correctly decode both encoded orderings.
   EXPECT_SOME_EQ(HashmapStringString({{"a()", "b%20"}, {"c~/asdf", "%asdf"}}),
                  http::query::decode("c%7E%2Fasdf=%25asdf&a()=b%2520"));
+
+  EXPECT_SOME_EQ(HashmapStringString({{"a()", "b%20"}, {"c~/asdf", "%asdf"}}),
+                 http::query::decode("a()=b%2520&c%7E%2Fasdf=%25asdf"));
 
   EXPECT_SOME_EQ(HashmapStringString({{"d", ""}}),
                  http::query::decode("d"));
@@ -1715,24 +1747,24 @@ TEST(URLTest, ParseUrls)
 {
   Try<http::URL> url = URL::parse("https://auth.docker.com");
   EXPECT_SOME(url);
-  EXPECT_SOME_EQ("https", url.get().scheme);
-  EXPECT_SOME_EQ(443, url.get().port);
-  EXPECT_SOME_EQ("auth.docker.com", url.get().domain);
-  EXPECT_EQ("/", url.get().path);
+  EXPECT_SOME_EQ("https", url->scheme);
+  EXPECT_SOME_EQ(443, url->port);
+  EXPECT_SOME_EQ("auth.docker.com", url->domain);
+  EXPECT_EQ("/", url->path);
 
   url = URL::parse("http://docker.com/");
   EXPECT_SOME(url);
-  EXPECT_SOME_EQ("http", url.get().scheme);
-  EXPECT_SOME_EQ(80, url.get().port);
-  EXPECT_SOME_EQ("docker.com", url.get().domain);
-  EXPECT_EQ("/", url.get().path);
+  EXPECT_SOME_EQ("http", url->scheme);
+  EXPECT_SOME_EQ(80, url->port);
+  EXPECT_SOME_EQ("docker.com", url->domain);
+  EXPECT_EQ("/", url->path);
 
   url = URL::parse("http://registry.docker.com:1234/abc/1");
   EXPECT_SOME(url);
-  EXPECT_SOME_EQ("http", url.get().scheme);
-  EXPECT_SOME_EQ(1234, url.get().port);
-  EXPECT_SOME_EQ("registry.docker.com", url.get().domain);
-  EXPECT_EQ("/abc/1", url.get().path);
+  EXPECT_SOME_EQ("http", url->scheme);
+  EXPECT_SOME_EQ(1234, url->port);
+  EXPECT_SOME_EQ("registry.docker.com", url->domain);
+  EXPECT_EQ("/abc/1", url->path);
 
   // Missing scheme.
   EXPECT_ERROR(URL::parse("mesos.com"));
@@ -1754,7 +1786,7 @@ public:
       authenticate,
       Future<AuthenticationResult>(const http::Request&));
 
-  virtual string scheme() const { return "Basic"; }
+  string scheme() const override { return "Basic"; }
 };
 
 
@@ -1770,7 +1802,7 @@ protected:
     return authentication::setAuthenticator(realm, authenticator);
   }
 
-  virtual void TearDown()
+  void TearDown() override
   {
     foreach (const string& realm, realms) {
       // We need to wait in order to ensure that the operation
@@ -1824,7 +1856,7 @@ TEST_F(HttpAuthenticationTest, Unauthorized)
 
   EXPECT_EQ(
       authentication.unauthorized->headers.get("WWW-Authenticate"),
-      response.get().headers.get("WWW-Authenticate"));
+      response->headers.get("WWW-Authenticate"));
 }
 
 
@@ -2057,9 +2089,7 @@ TEST_F(HttpAuthenticationTest, JWT)
 
     Try<JWT, JWTError> jwt = JWT::create(payload, "a different secret");
 
-    // TODO(nfnt): Change this to `EXPECT_SOME(jwt)`
-    // once MESOS-7220 is resolved.
-    EXPECT_TRUE(jwt.isSome());
+    EXPECT_SOME(jwt);
 
     http::Headers headers;
     headers["Authorization"] = "Bearer " + stringify(jwt.get());
@@ -2085,9 +2115,7 @@ TEST_F(HttpAuthenticationTest, JWT)
 
     Try<JWT, JWTError> jwt = JWT::create(payload, "secret");
 
-    // TODO(nfnt): Change this to `EXPECT_SOME(jwt)`
-    // once MESOS-7220 is resolved.
-    EXPECT_TRUE(jwt.isSome());
+    EXPECT_SOME(jwt);
 
     http::Headers headers;
     headers["Authorization"] = "Bearer " + stringify(jwt.get());

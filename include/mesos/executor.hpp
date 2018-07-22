@@ -17,6 +17,7 @@
 #ifndef __MESOS_EXECUTOR_HPP__
 #define __MESOS_EXECUTOR_HPP__
 
+#include <map>
 #include <mutex>
 #include <string>
 
@@ -87,7 +88,7 @@ public:
       const FrameworkInfo& frameworkInfo,
       const SlaveInfo& slaveInfo) = 0;
 
-  // Invoked when the executor re-registers with a restarted slave.
+  // Invoked when the executor reregisters with a restarted slave.
   virtual void reregistered(
       ExecutorDriver* driver,
       const SlaveInfo& slaveInfo) = 0;
@@ -213,22 +214,34 @@ class MesosExecutorDriver : public ExecutorDriver
 public:
   // Creates a new driver that uses the specified Executor. Note, the
   // executor pointer must outlive the driver.
+  //
+  // Note that the other constructor overload that accepts `environment`
+  // argument is preferable to this one in a multithreaded environment,
+  // because the implementation of this one accesses global environment
+  // which is unsafe due to a potential concurrent modification of the
+  // environment by another thread.
   explicit MesosExecutorDriver(Executor* executor);
+
+  // Creates a new driver that uses the specified `Executor` and environment
+  // variables. Note, the executor pointer must outlive the driver.
+  explicit MesosExecutorDriver(
+      Executor* executor,
+      const std::map<std::string, std::string>& environment);
 
   // This destructor will block indefinitely if
   // MesosExecutorDriver::start was invoked successfully (possibly via
   // MesosExecutorDriver::run) and MesosExecutorDriver::stop has not
   // been invoked.
-  virtual ~MesosExecutorDriver();
+  ~MesosExecutorDriver() override;
 
   // See ExecutorDriver for descriptions of these.
-  virtual Status start();
-  virtual Status stop();
-  virtual Status abort();
-  virtual Status join();
-  virtual Status run();
-  virtual Status sendStatusUpdate(const TaskStatus& status);
-  virtual Status sendFrameworkMessage(const std::string& data);
+  Status start() override;
+  Status stop() override;
+  Status abort() override;
+  Status join() override;
+  Status run() override;
+  Status sendStatusUpdate(const TaskStatus& status) override;
+  Status sendFrameworkMessage(const std::string& data) override;
 
 private:
   friend class internal::ExecutorProcess;
@@ -246,6 +259,8 @@ private:
 
   // Current status of the driver.
   Status status;
+
+  std::map<std::string, std::string> environment;
 };
 
 } // namespace mesos {

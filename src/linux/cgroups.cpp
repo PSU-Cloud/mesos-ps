@@ -35,7 +35,6 @@ extern "C" {
 #include <glog/logging.h>
 
 #include <fstream>
-#include <list>
 #include <map>
 #include <set>
 #include <sstream>
@@ -78,7 +77,6 @@ using std::dec;
 using std::getline;
 using std::ifstream;
 using std::istringstream;
-using std::list;
 using std::map;
 using std::ofstream;
 using std::ostream;
@@ -309,7 +307,7 @@ static Try<Nothing> create(
     return Error(
         "Failed to determine if hierarchy '" + hierarchy +
         "' has the 'cpuset' subsystem attached: " + attached.error());
-  } else if (attached.get().count("cpuset") > 0) {
+  } else if (attached->count("cpuset") > 0) {
     string parent = Path(path::join("/", cgroup)).dirname();
     return cloneCpusetCpusMems(hierarchy, parent, cgroup);
   }
@@ -458,35 +456,6 @@ Try<string> prepare(
     }
   }
 
-  // Test for nested cgroup support.
-  // TODO(jieyu): Consider doing this test only once.
-  const string& testCgroup = path::join(cgroup, "test");
-
-  // Create a nested test cgroup if it doesn't exist.
-  exists = cgroups::exists(hierarchy.get(), testCgroup);
-  if (exists.isError()) {
-    return Error(
-        "Failed to check existence of the nested test cgroup " +
-        path::join(hierarchy.get(), testCgroup) +
-        ": " + exists.error());
-  }
-
-  if (!exists.get()) {
-    // Make sure this kernel supports creating nested cgroups.
-    Try<Nothing> create = cgroups::create(hierarchy.get(), testCgroup);
-    if (create.isError()) {
-      return Error(
-          "Your kernel might be too old to support nested cgroup: " +
-          create.error());
-    }
-  }
-
-  // Remove the nested 'test' cgroup.
-  Try<Nothing> remove = cgroups::remove(hierarchy.get(), testCgroup);
-  if (remove.isError()) {
-    return Error("Failed to remove the nested test cgroup: " + remove.error());
-  }
-
   return hierarchy.get();
 }
 
@@ -539,7 +508,7 @@ Try<set<string>> hierarchies()
   }
 
   set<string> results;
-  foreach (const fs::MountTable::Entry& entry, table.get().entries) {
+  foreach (const fs::MountTable::Entry& entry, table->entries) {
     if (entry.type == "cgroup") {
       Result<string> realpath = os::realpath(entry.dir);
       if (!realpath.isSome()) {
@@ -675,7 +644,7 @@ Try<set<string>> subsystems(const string& hierarchy)
 
   // Check if hierarchy is a mount point of type cgroup.
   Option<fs::MountTable::Entry> hierarchyEntry;
-  foreach (const fs::MountTable::Entry& entry, table.get().entries) {
+  foreach (const fs::MountTable::Entry& entry, table->entries) {
     if (entry.type == "cgroup") {
       Result<string> dirAbsPath = os::realpath(entry.dir);
       if (!dirAbsPath.isSome()) {
@@ -710,7 +679,7 @@ Try<set<string>> subsystems(const string& hierarchy)
 
   set<string> result;
   foreach (const string& name, names.get()) {
-    if (hierarchyEntry.get().hasOption(name)) {
+    if (hierarchyEntry->hasOption(name)) {
       result.insert(name);
     }
   }
@@ -781,7 +750,7 @@ Try<bool> mounted(const string& hierarchy, const string& subsystems)
         "Failed to get mounted hierarchies: " + hierarchies.error());
   }
 
-  if (hierarchies.get().count(realpath.get()) == 0) {
+  if (hierarchies->count(realpath.get()) == 0) {
     return false;
   }
 
@@ -794,7 +763,7 @@ Try<bool> mounted(const string& hierarchy, const string& subsystems)
   }
 
   foreach (const string& subsystem, strings::tokenize(subsystems, ",")) {
-    if (attached.get().count(subsystem) == 0) {
+    if (attached->count(subsystem) == 0) {
       return false;
     }
   }
@@ -829,7 +798,7 @@ Try<Nothing> remove(const string& hierarchy, const string& cgroup)
     return Error("Failed to get nested cgroups: " + cgroups.error());
   }
 
-  if (!cgroups.get().empty()) {
+  if (!cgroups->empty()) {
     return Error("Nested cgroups exist");
   }
 
@@ -874,7 +843,7 @@ Try<vector<string>> get(const string& hierarchy, const string& cgroup)
          : "No such file or directory"));
   }
 
-  char* paths[] = { const_cast<char*>(destAbsPath.get().c_str()), nullptr };
+  char* paths[] = {const_cast<char*>(destAbsPath->c_str()), nullptr};
 
   FTS* tree = fts_open(paths, FTS_NOCHDIR, nullptr);
   if (tree == nullptr) {
@@ -891,7 +860,7 @@ Try<vector<string>> get(const string& hierarchy, const string& cgroup)
     // FTS_DP indicates a directory being visited in postorder.
     if (node->fts_level > 0 && node->fts_info & FTS_DP) {
       string path =
-        strings::trim(node->fts_path + hierarchyAbsPath.get().length(), "/");
+        strings::trim(node->fts_path + hierarchyAbsPath->length(), "/");
       cgroups.push_back(path);
     }
   }
@@ -948,12 +917,25 @@ Try<string> read(
     const string& cgroup,
     const string& control)
 {
-  Option<Error> error = verify(hierarchy, cgroup, control);
-  if (error.isSome()) {
-    return error.get();
+  Try<string> read = internal::read(hierarchy, cgroup, control);
+
+  // It turns out that `verify()` is expensive, so rather than
+  // verifying *prior* to the read, as is currently done for other
+  // cgroup helpers, we only verify if the read fails. This ensures
+  // we still provide a good error message. See: MESOS-8418.
+  //
+  // TODO(bmahler): Longer term, verification should be done
+  // explicitly by the caller, or its performance should be
+  // improved, or verification could be done consistently
+  // post-failure, as done here.
+  if (read.isError()) {
+    Option<Error> error = verify(hierarchy, cgroup, control);
+    if (error.isSome()) {
+      return error.get();
+    }
   }
 
-  return internal::read(hierarchy, cgroup, control);
+  return read;
 }
 
 
@@ -1203,7 +1185,7 @@ public:
       args(_args),
       data(0) {}
 
-  virtual ~Listener() {}
+  ~Listener() override {}
 
   // Waits for the next event to occur, at which point the future
   // becomes ready. Returns a failure if error occurs. If any previous
@@ -1235,7 +1217,7 @@ public:
   }
 
 protected:
-  virtual void initialize()
+  void initialize() override
   {
     // Register an eventfd "notifier" for the given control.
     Try<int> fd = registerNotifier(hierarchy, cgroup, control, args);
@@ -1247,7 +1229,7 @@ protected:
     }
   }
 
-  virtual void finalize()
+  void finalize() override
   {
     // Discard the nonblocking read.
     reading.discard();
@@ -1293,7 +1275,7 @@ private:
     }
 
     // Inform failure and not listen again.
-    promise.get()->fail(error.get().message);
+    promise.get()->fail(error->message);
   }
 
   const string hierarchy;
@@ -1392,7 +1374,7 @@ public:
       cgroup(_cgroup),
       start(Clock::now()) {}
 
-  virtual ~Freezer() {}
+  ~Freezer() override {}
 
   void freeze()
   {
@@ -1456,11 +1438,11 @@ public:
   Future<Nothing> future() { return promise.future(); }
 
 protected:
-  virtual void initialize()
+  void initialize() override
   {
     Option<Error> error = verify(hierarchy, cgroup, "freezer.state");
     if (error.isSome()) {
-      promise.fail("Invalid freezer cgroup: " + error.get().message);
+      promise.fail("Invalid freezer cgroup: " + error->message);
       terminate(self());
       return;
     }
@@ -1470,7 +1452,7 @@ protected:
           static_cast<void(*)(const UPID&, bool)>(terminate), self(), true));
   }
 
-  virtual void finalize()
+  void finalize() override
   {
     promise.discard();
   }
@@ -1492,7 +1474,7 @@ public:
       hierarchy(_hierarchy),
       cgroup(_cgroup) {}
 
-  virtual ~TasksKiller() {}
+  ~TasksKiller() override {}
 
   // Return a future indicating the state of the killer.
   // Failure occurs if any process in the cgroup is unable to be
@@ -1500,7 +1482,7 @@ public:
   Future<Nothing> future() { return promise.future(); }
 
 protected:
-  virtual void initialize()
+  void initialize() override
   {
     // Stop when no one cares.
     promise.future().onDiscard(lambda::bind(
@@ -1509,7 +1491,7 @@ protected:
     killTasks();
   }
 
-  virtual void finalize()
+  void finalize() override
   {
     chain.discard();
 
@@ -1584,13 +1566,13 @@ private:
     return cgroups::freezer::thaw(hierarchy, cgroup);
   }
 
-  Future<list<Option<int>>> reap()
+  Future<vector<Option<int>>> reap()
   {
     // Wait until we've reaped all processes.
     return collect(statuses);
   }
 
-  void finished(const Future<list<Option<int>>>& future)
+  void finished(const Future<vector<Option<int>>>& future)
   {
     if (future.isDiscarded()) {
       promise.fail("Unexpected discard of future");
@@ -1614,7 +1596,7 @@ private:
     Try<set<pid_t>> processes = cgroups::processes(hierarchy, cgroup);
 
     // If the `cgroup` is already removed, treat this as a success.
-    if ((processes.isError() || !processes.get().empty()) &&
+    if ((processes.isError() || !processes->empty()) &&
         os::exists(path::join(hierarchy, cgroup))) {
       promise.fail("Failed to kill all processes in cgroup: " +
                    (processes.isError() ? processes.error()
@@ -1630,8 +1612,8 @@ private:
   const string hierarchy;
   const string cgroup;
   Promise<Nothing> promise;
-  list<Future<Option<int>>> statuses; // List of statuses for processes.
-  Future<list<Option<int>>> chain; // Used to discard all operations.
+  vector<Future<Option<int>>> statuses; // List of statuses for processes.
+  Future<vector<Option<int>>> chain; // Used to discard all operations.
 };
 
 
@@ -1644,14 +1626,14 @@ public:
       hierarchy(_hierarchy),
       cgroups(_cgroups) {}
 
-  virtual ~Destroyer() {}
+  ~Destroyer() override {}
 
   // Return a future indicating the state of the destroyer.
   // Failure occurs if any cgroup fails to be destroyed.
   Future<Nothing> future() { return promise.future(); }
 
 protected:
-  virtual void initialize()
+  void initialize() override
   {
     // Stop when no one cares.
     promise.future().onDiscard(lambda::bind(
@@ -1670,14 +1652,14 @@ protected:
       .onAny(defer(self(), &Destroyer::killed, lambda::_1));
   }
 
-  virtual void finalize()
+  void finalize() override
   {
     discard(killers);
     promise.discard();
   }
 
 private:
-  void killed(const Future<list<Nothing>>& kill)
+  void killed(const Future<vector<Nothing>>& kill)
   {
     if (kill.isReady()) {
       remove();
@@ -1717,7 +1699,7 @@ private:
   Promise<Nothing> promise;
 
   // The killer processes used to atomically kill tasks in each cgroup.
-  list<Future<Nothing>> killers;
+  vector<Future<Nothing>> killers;
 };
 
 } // namespace internal {
@@ -2395,7 +2377,7 @@ Try<Stats> stat(
     return Error(stats.error());
   }
 
-  if (!stats.get().contains("user") || !stats.get().contains("system")) {
+  if (!stats->contains("user") || !stats->contains("system")) {
     return Error("Failed to get user/system value from cpuacct.stat");
   }
 
@@ -2407,8 +2389,7 @@ Try<Stats> stat(
     return ErrnoError("Failed to get _SC_CLK_TCK");
   }
 
-  Try<Duration> user =
-    Duration::create((double) stats.get().at("user") / userTicks);
+  Try<Duration> user = Duration::create((double)stats->at("user") / userTicks);
 
   if (user.isError()) {
     return Error(
@@ -2416,7 +2397,7 @@ Try<Stats> stat(
   }
 
   Try<Duration> system =
-    Duration::create((double) stats.get().at("system") / userTicks);
+    Duration::create((double)stats->at("system") / userTicks);
 
   if (system.isError()) {
     return Error(
@@ -2713,7 +2694,7 @@ public:
           "memory.pressure_level",
           stringify(level))) {}
 
-  virtual ~CounterProcess() {}
+  ~CounterProcess() override {}
 
   Future<uint64_t> value()
   {
@@ -2725,13 +2706,13 @@ public:
   }
 
 protected:
-  virtual void initialize()
+  void initialize() override
   {
     spawn(CHECK_NOTNULL(process.get()));
     listen();
   }
 
-  virtual void finalize()
+  void finalize() override
   {
     terminate(process.get());
     wait(process.get());
@@ -3130,5 +3111,15 @@ Try<Nothing> classid(
 }
 
 } // namespace net_cls {
+
+
+namespace named {
+
+Result<string> cgroup(const string& hierarchyName, pid_t pid)
+{
+  return internal::cgroup(pid, "name=" + hierarchyName);
+}
+
+} // namespace named {
 
 } // namespace cgroups {

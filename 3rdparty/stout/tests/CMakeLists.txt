@@ -17,8 +17,11 @@
 # STOUT TESTS.
 ##############
 set(STOUT_ROOT_TESTS_SRC
+  adaptor_tests.cpp
+  archiver_tests.cpp
   base64_tests.cpp
   bits_tests.cpp
+  boundedhashmap_tests.cpp
   bytes_tests.cpp
   cache_tests.cpp
   cpp17_tests.cpp
@@ -43,6 +46,8 @@ set(STOUT_ROOT_TESTS_SRC
   option_tests.cpp
   os_tests.cpp
   path_tests.cpp
+  protobuf_tests.cpp
+  protobuf_tests.pb.cc
   protobuf_tests.pb.h
   protobuf_tests.proto
   recordio_tests.cpp
@@ -58,8 +63,6 @@ set(STOUT_ROOT_TESTS_SRC
 
 if (NOT WIN32)
   list(APPEND STOUT_ROOT_TESTS_SRC
-    protobuf_tests.cpp
-    protobuf_tests.pb.cc
     svn_tests.cpp)
 endif ()
 
@@ -71,12 +74,14 @@ set(STOUT_OS_TESTS_SRC
   os/rmdir_tests.cpp
   os/socket_tests.cpp
   os/strerror_tests.cpp
-  os/systems_tests.cpp)
+  os/sendfile_tests.cpp)
 
 if (NOT WIN32)
   list(APPEND STOUT_OS_TESTS_SRC
-    os/sendfile_tests.cpp
-    os/signals_tests.cpp)
+    # NOTE: There is no intention to port the functions exercised in
+    # the following tests to Windows.
+    os/signals_tests.cpp
+    os/systems_tests.cpp)
 endif ()
 
 if (${CMAKE_SYSTEM_NAME} MATCHES "Linux")

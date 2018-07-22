@@ -39,12 +39,17 @@
 
 using mesos::internal::master::Master;
 
+using mesos::internal::slave::CGROUP_SUBSYSTEM_BLKIO_NAME;
 using mesos::internal::slave::CGROUP_SUBSYSTEM_CPU_NAME;
 using mesos::internal::slave::CGROUP_SUBSYSTEM_CPUACCT_NAME;
+using mesos::internal::slave::CGROUP_SUBSYSTEM_CPUSET_NAME;
 using mesos::internal::slave::CGROUP_SUBSYSTEM_DEVICES_NAME;
+using mesos::internal::slave::CGROUP_SUBSYSTEM_HUGETLB_NAME;
 using mesos::internal::slave::CGROUP_SUBSYSTEM_MEMORY_NAME;
 using mesos::internal::slave::CGROUP_SUBSYSTEM_NET_CLS_NAME;
+using mesos::internal::slave::CGROUP_SUBSYSTEM_NET_PRIO_NAME;
 using mesos::internal::slave::CGROUP_SUBSYSTEM_PERF_EVENT_NAME;
+using mesos::internal::slave::CGROUP_SUBSYSTEM_PIDS_NAME;
 using mesos::internal::slave::CPU_SHARES_PER_CPU_REVOCABLE;
 using mesos::internal::slave::DEFAULT_EXECUTOR_CPUS;
 
@@ -95,7 +100,8 @@ class CgroupsIsolatorTest
 // task with an unprivileged user. Then verifies that the unprivileged
 // user has write permission under the corresponding cgroups which are
 // prepared for the container to run the task.
-TEST_F(CgroupsIsolatorTest, ROOT_CGROUPS_PERF_NET_CLS_UserCgroup)
+TEST_F(CgroupsIsolatorTest,
+       ROOT_CGROUPS_PERF_NET_CLS_UNPRIVILEGED_USER_UserCgroup)
 {
   Try<Owned<cluster::Master>> master = StartMaster();
   ASSERT_SOME(master);
@@ -158,13 +164,16 @@ TEST_F(CgroupsIsolatorTest, ROOT_CGROUPS_PERF_NET_CLS_UserCgroup)
   AWAIT_READY(offers);
   ASSERT_FALSE(offers->empty());
 
+  Option<string> user = os::getenv("SUDO_USER");
+  ASSERT_SOME(user);
+
   // Launch a task with the command executor.
   CommandInfo command;
   command.set_shell(false);
   command.set_value("/bin/sleep");
   command.add_arguments("sleep");
   command.add_arguments("120");
-  command.set_user("nobody");
+  command.set_user(user.get());
 
   TaskInfo task = createTask(
       offers.get()[0].slave_id(),
@@ -217,22 +226,25 @@ TEST_F(CgroupsIsolatorTest, ROOT_CGROUPS_PERF_NET_CLS_UserCgroup)
 
     // Verify that the user cannot manipulate the container's cgroup
     // control files as their owner is root.
-    EXPECT_NE(0, os::system(strings::format(
-        "su - nobody -s /bin/sh -c 'echo $$ > %s'",
+    EXPECT_SOME_NE(0, os::system(strings::format(
+        "su - %s -s /bin/sh -c 'echo $$ > %s'",
+        user.get(),
         path::join(hierarchy.get(), cgroup, "cgroup.procs")).get()));
 
     // Verify that the user can create a cgroup under the container's
     // cgroup as the isolator changes the owner of the cgroup.
     string userCgroup = path::join(cgroup, "user");
 
-    EXPECT_EQ(0, os::system(strings::format(
-        "su - nobody -s /bin/sh -c 'mkdir %s'",
+    EXPECT_SOME_EQ(0, os::system(strings::format(
+        "su - %s -s /bin/sh -c 'mkdir %s'",
+        user.get(),
         path::join(hierarchy.get(), userCgroup)).get()));
 
     // Verify that the user can manipulate control files in the
     // created cgroup as it's owned by the user.
-    EXPECT_EQ(0, os::system(strings::format(
-        "su - nobody -s /bin/sh -c 'echo $$ > %s'",
+    EXPECT_SOME_EQ(0, os::system(strings::format(
+        "su - %s -s /bin/sh -c 'echo $$ > %s'",
+        user.get(),
         path::join(hierarchy.get(), userCgroup, "cgroup.procs")).get()));
 
     // Clear up the folder.
@@ -840,7 +852,7 @@ TEST_F(CgroupsIsolatorTest, ROOT_CGROUPS_NET_CLS_Isolate)
   AWAIT_READY(statusRunning);
   ASSERT_EQ(TASK_RUNNING, statusRunning->state());
 
-  // Task is ready.  Make sure there is exactly 1 container in the hashset.
+  // Task is ready. Make sure there is exactly 1 container in the hashset.
   Future<hashset<ContainerID>> containers = containerizer->containers();
   AWAIT_READY(containers);
   ASSERT_EQ(1u, containers->size());
@@ -1728,7 +1740,7 @@ TEST_F(CgroupsIsolatorTest, ROOT_CGROUPS_BlkioUsage)
 
     os::sleep(Seconds(1));
     waited += Seconds(1);
-  } while (waited < Seconds(15));
+  } while (waited < process::TEST_AWAIT_TIMEOUT);
 
   ASSERT_SOME(fileSize);
   ASSERT_EQ(10240u, fileSize->bytes());
@@ -1778,6 +1790,300 @@ TEST_F(CgroupsIsolatorTest, ROOT_CGROUPS_BlkioUsage)
   EXPECT_EQ(CgroupInfo::Blkio::TOTAL, totalIOServiceBytes.op());
   EXPECT_TRUE(totalIOServiceBytes.has_value());
   EXPECT_LE(10240u, totalIOServiceBytes.value());
+
+  driver.stop();
+  driver.join();
+}
+
+
+// This test verifies all the local enabled cgroups subsystems
+// can be automatically loaded by the cgroup isolator.
+TEST_F(CgroupsIsolatorTest, ROOT_CGROUPS_AutoLoadSubsystems)
+{
+  Try<Owned<cluster::Master>> master = StartMaster();
+  ASSERT_SOME(master);
+
+  slave::Flags flags = CreateSlaveFlags();
+  flags.isolation = "cgroups/all";
+
+  Fetcher fetcher(flags);
+
+  Try<MesosContainerizer*> _containerizer =
+    MesosContainerizer::create(flags, true, &fetcher);
+
+  ASSERT_SOME(_containerizer);
+
+  Owned<MesosContainerizer> containerizer(_containerizer.get());
+
+  Owned<MasterDetector> detector = master.get()->createDetector();
+
+  Try<Owned<cluster::Slave>> slave = StartSlave(
+      detector.get(),
+      containerizer.get());
+
+  ASSERT_SOME(slave);
+
+  MockScheduler sched;
+
+  MesosSchedulerDriver driver(
+      &sched,
+      DEFAULT_FRAMEWORK_INFO,
+      master.get()->pid,
+      DEFAULT_CREDENTIAL);
+
+  EXPECT_CALL(sched, registered(&driver, _, _));
+
+  Future<vector<Offer>> offers;
+  EXPECT_CALL(sched, resourceOffers(&driver, _))
+    .WillOnce(FutureArg<1>(&offers))
+    .WillRepeatedly(Return()); // Ignore subsequent offers.
+
+  driver.start();
+
+  AWAIT_READY(offers);
+  ASSERT_FALSE(offers->empty());
+
+  TaskInfo task = createTask(offers.get()[0], "sleep 1000");
+
+  Future<TaskStatus> statusStarting;
+  Future<TaskStatus> statusRunning;
+  EXPECT_CALL(sched, statusUpdate(_, _))
+    .WillOnce(FutureArg<1>(&statusStarting))
+    .WillOnce(FutureArg<1>(&statusRunning));
+
+  driver.launchTasks(offers.get()[0].id(), {task});
+
+  // Capture the update to verify that the task has been launched.
+  AWAIT_READY(statusStarting);
+  ASSERT_EQ(TASK_STARTING, statusStarting->state());
+
+  AWAIT_READY(statusRunning);
+  ASSERT_EQ(TASK_RUNNING, statusRunning->state());
+
+  // Task is ready. Make sure there is exactly 1 container in the hashset.
+  Future<hashset<ContainerID>> containers = containerizer->containers();
+  AWAIT_READY(containers);
+  ASSERT_EQ(1u, containers->size());
+
+  const ContainerID& containerId = *(containers->begin());
+
+  Try<set<string>> enabledSubsystems = cgroups::subsystems();
+  ASSERT_SOME(enabledSubsystems);
+
+  set<string> supportedSubsystems = {
+    CGROUP_SUBSYSTEM_BLKIO_NAME,
+    CGROUP_SUBSYSTEM_CPU_NAME,
+    CGROUP_SUBSYSTEM_CPUACCT_NAME,
+    CGROUP_SUBSYSTEM_CPUSET_NAME,
+    CGROUP_SUBSYSTEM_DEVICES_NAME,
+    CGROUP_SUBSYSTEM_HUGETLB_NAME,
+    CGROUP_SUBSYSTEM_MEMORY_NAME,
+    CGROUP_SUBSYSTEM_NET_CLS_NAME,
+    CGROUP_SUBSYSTEM_NET_PRIO_NAME,
+    CGROUP_SUBSYSTEM_PERF_EVENT_NAME,
+    CGROUP_SUBSYSTEM_PIDS_NAME,
+  };
+
+  // Check cgroups for all the local enabled subsystems
+  // have been created for the container.
+  foreach (const string& subsystem, enabledSubsystems.get()) {
+    if (supportedSubsystems.count(subsystem) == 0) {
+      continue;
+    }
+
+    Result<string> hierarchy = cgroups::hierarchy(subsystem);
+    ASSERT_SOME(hierarchy);
+
+    string cgroup = path::join(flags.cgroups_root, containerId.value());
+
+    ASSERT_TRUE(os::exists(path::join(hierarchy.get(), cgroup)));
+  }
+
+  driver.stop();
+  driver.join();
+}
+
+
+// This test verifies the container-specific cgroups are correctly mounted
+// inside the nested container.
+TEST_F(CgroupsIsolatorTest, ROOT_CGROUPS_NestedContainerSpecificCgroupsMount)
+{
+  // Disable AuthN on the agent.
+  slave::Flags flags = CreateSlaveFlags();
+  flags.isolation = "filesystem/linux,docker/runtime,cgroups/mem";
+  flags.image_providers = "docker";
+  flags.authenticate_http_readwrite = false;
+
+  Try<Owned<cluster::Master>> master = StartMaster();
+  ASSERT_SOME(master);
+
+  Owned<MasterDetector> detector = master.get()->createDetector();
+
+  Try<Owned<cluster::Slave>> slave = StartSlave(detector.get(), flags);
+  ASSERT_SOME(slave);
+
+  auto scheduler = std::make_shared<v1::MockHTTPScheduler>();
+
+  EXPECT_CALL(*scheduler, connected(_))
+    .WillOnce(v1::scheduler::SendSubscribe(v1::DEFAULT_FRAMEWORK_INFO));
+
+  Future<Event::Subscribed> subscribed;
+  EXPECT_CALL(*scheduler, subscribed(_, _))
+    .WillOnce(FutureArg<1>(&subscribed));
+
+  Future<Event::Offers> offers;
+  EXPECT_CALL(*scheduler, offers(_, _))
+    .WillOnce(FutureArg<1>(&offers))
+    .WillRepeatedly(Return());
+
+  EXPECT_CALL(*scheduler, heartbeat(_))
+    .WillRepeatedly(Return()); // Ignore heartbeats.
+
+  v1::scheduler::TestMesos mesos(
+      master.get()->pid, ContentType::PROTOBUF, scheduler);
+
+  AWAIT_READY(subscribed);
+  v1::FrameworkID frameworkId(subscribed->framework_id());
+
+  v1::ExecutorInfo executorInfo = v1::createExecutorInfo(
+      "test_default_executor",
+      None(),
+      "cpus:0.1;mem:32;disk:32",
+      v1::ExecutorInfo::DEFAULT);
+
+  // Update `executorInfo` with the subscribed `frameworkId`.
+  executorInfo.mutable_framework_id()->CopyFrom(frameworkId);
+
+  AWAIT_READY(offers);
+  ASSERT_FALSE(offers->offers().empty());
+
+  const v1::Offer& offer = offers->offers(0);
+
+  // Create a task to check if its memory (including both executor and task's
+  // memory) is correctly set in its specific cgroup, e.g.:
+  //  `/sys/fs/cgroup/memory/memory.soft_limit_in_bytes`
+  //
+  // And we also verify the freezer cgroup is correctly mounted for this task
+  // by checking if the current shell PID is included in the freezer cgroup.
+  v1::TaskInfo taskInfo = v1::createTask(
+      offer.agent_id(),
+      v1::Resources::parse("cpus:0.1;mem:32;disk:32").get(),
+      "test `cat /sys/fs/cgroup/memory/memory.soft_limit_in_bytes` = 67108864 "
+      "&& grep $$ /sys/fs/cgroup/freezer/cgroup.procs");
+
+  mesos::v1::Image image;
+  image.set_type(mesos::v1::Image::DOCKER);
+  image.mutable_docker()->set_name("alpine");
+
+  mesos::v1::ContainerInfo* container = taskInfo.mutable_container();
+  container->set_type(mesos::v1::ContainerInfo::MESOS);
+  container->mutable_mesos()->mutable_image()->CopyFrom(image);
+
+  Future<v1::scheduler::Event::Update> startingUpdate;
+  Future<v1::scheduler::Event::Update> runningUpdate;
+  Future<v1::scheduler::Event::Update> finishedUpdate;
+  EXPECT_CALL(*scheduler, update(_, _))
+    .WillOnce(DoAll(
+        FutureArg<1>(&startingUpdate),
+        v1::scheduler::SendAcknowledge(frameworkId, offer.agent_id())))
+    .WillOnce(DoAll(
+        FutureArg<1>(&runningUpdate),
+        v1::scheduler::SendAcknowledge(frameworkId, offer.agent_id())))
+    .WillOnce(DoAll(
+        FutureArg<1>(&finishedUpdate),
+        v1::scheduler::SendAcknowledge(frameworkId, offer.agent_id())));
+
+  mesos.send(
+      v1::createCallAccept(
+          frameworkId,
+          offer,
+          {v1::LAUNCH_GROUP(
+              executorInfo, v1::createTaskGroupInfo({taskInfo}))}));
+
+  AWAIT_READY(startingUpdate);
+  ASSERT_EQ(v1::TASK_STARTING, startingUpdate->status().state());
+  ASSERT_EQ(taskInfo.task_id(), startingUpdate->status().task_id());
+
+  AWAIT_READY(runningUpdate);
+  ASSERT_EQ(v1::TASK_RUNNING, runningUpdate->status().state());
+  ASSERT_EQ(taskInfo.task_id(), runningUpdate->status().task_id());
+
+  AWAIT_READY(finishedUpdate);
+  ASSERT_EQ(v1::TASK_FINISHED, finishedUpdate->status().state());
+  ASSERT_EQ(taskInfo.task_id(), finishedUpdate->status().task_id());
+}
+
+
+// This test verifies the container-specific cgroups are correctly mounted for
+// the command task.
+TEST_F(CgroupsIsolatorTest, ROOT_CGROUPS_CommandTaskSpecificCgroupsMount)
+{
+  Try<Owned<cluster::Master>> master = StartMaster();
+  ASSERT_SOME(master);
+
+  Owned<MasterDetector> detector = master.get()->createDetector();
+
+  slave::Flags flags = CreateSlaveFlags();
+  flags.isolation = "filesystem/linux,docker/runtime,cgroups/mem";
+  flags.image_providers = "docker";
+
+  Try<Owned<cluster::Slave>> slave = StartSlave(detector.get(), flags);
+  ASSERT_SOME(slave);
+
+  MockScheduler sched;
+  MesosSchedulerDriver driver(
+      &sched, DEFAULT_FRAMEWORK_INFO, master.get()->pid, DEFAULT_CREDENTIAL);
+
+  EXPECT_CALL(sched, registered(&driver, _, _));
+
+  Future<vector<Offer>> offers;
+  EXPECT_CALL(sched, resourceOffers(&driver, _))
+    .WillOnce(FutureArg<1>(&offers))
+    .WillRepeatedly(Return()); // Ignore subsequent offers.
+
+  driver.start();
+
+  AWAIT_READY(offers);
+  EXPECT_EQ(1u, offers->size());
+
+  // Create a task to check if its memory (including both executor and task's
+  // memory) is correctly set in its specific cgroup, e.g.:
+  //  `/sys/fs/cgroup/memory/memory.soft_limit_in_bytes`
+  //
+  // And we also verify the freezer cgroup is correctly mounted for this task
+  // by checking if the current shell PID is included in the freezer cgroup.
+  TaskInfo task = createTask(
+      offers->front().slave_id(),
+      Resources::parse("cpus:0.1;mem:32;disk:32").get(),
+      "test `cat /sys/fs/cgroup/memory/memory.soft_limit_in_bytes` = 67108864 "
+      "&& grep $$ /sys/fs/cgroup/freezer/cgroup.procs");
+
+  Image image;
+  image.set_type(Image::DOCKER);
+  image.mutable_docker()->set_name("alpine");
+
+  ContainerInfo* container = task.mutable_container();
+  container->set_type(ContainerInfo::MESOS);
+  container->mutable_mesos()->mutable_image()->CopyFrom(image);
+
+  Future<TaskStatus> statusStarting;
+  Future<TaskStatus> statusRunning;
+  Future<TaskStatus> statusFinished;
+  EXPECT_CALL(sched, statusUpdate(_, _))
+    .WillOnce(FutureArg<1>(&statusStarting))
+    .WillOnce(FutureArg<1>(&statusRunning))
+    .WillOnce(FutureArg<1>(&statusFinished));
+
+  driver.launchTasks(offers->front().id(), {task});
+
+  AWAIT_READY(statusStarting);
+  EXPECT_EQ(TASK_STARTING, statusStarting->state());
+
+  AWAIT_READY(statusRunning);
+  EXPECT_EQ(TASK_RUNNING, statusRunning->state());
+
+  AWAIT_READY(statusFinished);
+  EXPECT_EQ(TASK_FINISHED, statusFinished->state());
 
   driver.stop();
   driver.join();

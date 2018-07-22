@@ -40,8 +40,6 @@
 
 #include "tests/mesos.hpp"
 
-namespace authentication = process::http::authentication;
-
 using process::Future;
 using process::Owned;
 
@@ -53,6 +51,8 @@ using process::http::Response;
 using process::http::Unauthorized;
 
 using process::http::authentication::Principal;
+using process::http::authentication::setAuthenticator;
+using process::http::authentication::unsetAuthenticator;
 
 using std::string;
 
@@ -69,7 +69,7 @@ protected:
       const string& realm,
       const Credentials& credentials)
   {
-    Try<authentication::Authenticator*> authenticator =
+    Try<process::http::authentication::Authenticator*> authenticator =
       BasicAuthenticatorFactory::create(realm, credentials);
 
     ASSERT_SOME(authenticator);
@@ -78,17 +78,18 @@ protected:
     realms.insert(realm);
 
     // Pass ownership of the authenticator to libprocess.
-    AWAIT_READY(authentication::setAuthenticator(
+    AWAIT_READY(setAuthenticator(
         realm,
-        Owned<authentication::Authenticator>(authenticator.get())));
+        Owned<process::http::authentication::Authenticator>(
+            authenticator.get())));
   }
 
-  virtual void TearDown()
+  void TearDown() override
   {
     foreach (const string& realm, realms) {
       // We need to wait in order to ensure that the operation completes before
       // we leave `TearDown`. Otherwise, we may leak a mock object.
-      AWAIT_READY(authentication::unsetAuthenticator(realm));
+      AWAIT_READY(unsetAuthenticator(realm));
     }
 
     realms.clear();
@@ -240,20 +241,20 @@ TEST_F(FilesTest, ReadTest)
 }
 
 
-TEST_F_TEMP_DISABLED_ON_WINDOWS(FilesTest, ResolveTest)
+TEST_F(FilesTest, ResolveTest)
 {
   Files files;
   process::UPID upid("files", process::address());
 
   // Test the directory / file resolution.
-  ASSERT_SOME(os::mkdir("1/2"));
-  ASSERT_SOME(os::write("1/two", "two"));
-  ASSERT_SOME(os::write("1/2/three", "three"));
+  ASSERT_SOME(os::mkdir(path::join("1", "2")));
+  ASSERT_SOME(os::write(path::join("1", "two"), "two"));
+  ASSERT_SOME(os::write(path::join(path::join("1", "2"), "three"), "three"));
 
   // Attach some paths.
   AWAIT_EXPECT_READY(files.attach("1", "one"));
   AWAIT_EXPECT_READY(files.attach("1", "/one/"));
-  AWAIT_EXPECT_READY(files.attach("1/2", "two"));
+  AWAIT_EXPECT_READY(files.attach(path::join("1", "2"), "two"));
   AWAIT_EXPECT_READY(files.attach("1/2", "one/two"));
 
   // Resolve 1/2/3 via each attached path.
@@ -319,15 +320,15 @@ TEST_F_TEMP_DISABLED_ON_WINDOWS(FilesTest, ResolveTest)
 }
 
 
-TEST_F_TEMP_DISABLED_ON_WINDOWS(FilesTest, BrowseTest)
+TEST_F(FilesTest, BrowseTest)
 {
   Files files;
   process::UPID upid("files", process::address());
 
-  ASSERT_SOME(os::mkdir("1/2"));
-  ASSERT_SOME(os::mkdir("1/3"));
-  ASSERT_SOME(os::write("1/two", "two"));
-  ASSERT_SOME(os::write("1/three", "three"));
+  ASSERT_SOME(os::mkdir(path::join("1", "2")));
+  ASSERT_SOME(os::mkdir(path::join("1", "3")));
+  ASSERT_SOME(os::write(path::join("1", "two"), "two"));
+  ASSERT_SOME(os::write(path::join("1", "three"), "three"));
   ASSERT_SOME(os::mkdir("2"));
 
   AWAIT_EXPECT_READY(files.attach("1", "one"));
@@ -335,14 +336,20 @@ TEST_F_TEMP_DISABLED_ON_WINDOWS(FilesTest, BrowseTest)
   // Get the listing.
   struct stat s;
   JSON::Array expected;
-  ASSERT_EQ(0, stat("1/2", &s));
-  expected.values.push_back(model(protobuf::createFileInfo("one/2", s)));
-  ASSERT_EQ(0, stat("1/3", &s));
-  expected.values.push_back(model(protobuf::createFileInfo("one/3", s)));
-  ASSERT_EQ(0, stat("1/three", &s));
-  expected.values.push_back(model(protobuf::createFileInfo("one/three", s)));
-  ASSERT_EQ(0, stat("1/two", &s));
-  expected.values.push_back(model(protobuf::createFileInfo("one/two", s)));
+
+  // TODO(johnkord): As per MESOS-8275, we don't want to use stat on Windows.
+  ASSERT_EQ(0, ::stat(path::join("1", "2").c_str(), &s));
+  expected.values.push_back(
+      model(protobuf::createFileInfo(path::join("one", "2"), s)));
+  ASSERT_EQ(0, ::stat(path::join("1", "3").c_str(), &s));
+  expected.values.push_back(
+      model(protobuf::createFileInfo(path::join("one", "3"), s)));
+  ASSERT_EQ(0, ::stat(path::join("1", "three").c_str(), &s));
+  expected.values.push_back(
+      model(protobuf::createFileInfo(path::join("one", "three"), s)));
+  ASSERT_EQ(0, ::stat(path::join("1", "two").c_str(), &s));
+  expected.values.push_back(
+      model(protobuf::createFileInfo(path::join("one", "two"), s)));
 
   Future<Response> response =
       process::http::get(upid, "browse", "path=one/");

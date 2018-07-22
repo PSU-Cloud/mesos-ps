@@ -73,6 +73,7 @@
 #include <process/id.hpp>
 #include <process/io.hpp>
 #include <process/logging.hpp>
+#include <process/loop.hpp>
 #include <process/mime.hpp>
 #include <process/owned.hpp>
 #include <process/process.hpp>
@@ -94,6 +95,7 @@
 #endif // __WINDOWS__
 
 #include <stout/duration.hpp>
+#include <stout/error.hpp>
 #include <stout/flags.hpp>
 #include <stout/foreach.hpp>
 #include <stout/lambda.hpp>
@@ -115,6 +117,7 @@
 #include "event_queue.hpp"
 #include "gate.hpp"
 #include "http_proxy.hpp"
+#include "memory_profiler.hpp"
 #include "process_reference.hpp"
 #include "socket_manager.hpp"
 #include "run_queue.hpp"
@@ -246,6 +249,14 @@ struct Flags : public virtual flags::FlagsBase
         "libprocess is listening may not match the address from\n"
         "which libprocess connects to other actors.\n",
         false);
+
+    // TODO(bevers): Set the default to `true` after gathering some
+    // real-world experience with this.
+    add(&Flags::memory_profiling,
+        "memory_profiling",
+        "If set to false, disables the memory profiling functionality\n"
+        "of libprocess.",
+        false);
   }
 
   Option<net::IP> ip;
@@ -254,6 +265,7 @@ struct Flags : public virtual flags::FlagsBase
   Option<int> port;
   Option<int> advertise_port;
   bool require_peer_address_ip_match;
+  bool memory_profiling;
 };
 
 } // namespace internal {
@@ -316,7 +328,7 @@ private:
         handler(_handler) {}
 
   protected:
-    virtual void initialize()
+    void initialize() override
     {
       route("/", help, &RouteProcess::handle);
     }
@@ -407,7 +419,8 @@ public:
 
   long workers() const
   {
-    return threads.size() - 1; // Less 1 for event loop thread.
+    // Less 1 for event loop thread.
+    return static_cast<long>(threads.size() - 1);
   }
 
 private:
@@ -490,8 +503,19 @@ static ProcessManager* process_manager = nullptr;
 // Used for authenticating HTTP requests.
 static AuthenticatorManager* authenticator_manager = nullptr;
 
-// Authorization callbacks for HTTP endpoints.
-static AuthorizationCallbacks* authorization_callbacks = nullptr;
+// Authorization callbacks for HTTP endpoints. Note that we use
+// an atomic + mutex in order to do "double-checked locking" to
+// avoid the cost of acquiring the mutex when authorization is
+// not enabled. The mutex is non-recursive, which means that
+// an authorization callback must not set or unset the callbacks
+// or else we will deadlock! This is already a requirement,
+// since a callback calling in to clear or re-set the callbacks
+// is thereby deleting itself!
+//
+// TODO(bmahler): Consider using a read/write lock.
+static std::atomic<AuthorizationCallbacks*> authorization_callbacks =
+  ATOMIC_VAR_INIT(nullptr);
+static std::mutex* authorization_callbacks_mutex = new std::mutex();
 
 // Global route that returns process information.
 static Route* processes_route = nullptr;
@@ -556,21 +580,25 @@ namespace authorization {
 
 void setCallbacks(const AuthorizationCallbacks& callbacks)
 {
-  if (authorization_callbacks != nullptr) {
-    delete authorization_callbacks;
-  }
+  synchronized (authorization_callbacks_mutex) {
+    if (authorization_callbacks.load() != nullptr) {
+      delete authorization_callbacks.load();
+    }
 
-  authorization_callbacks = new AuthorizationCallbacks(callbacks);
+    authorization_callbacks.store(new AuthorizationCallbacks(callbacks));
+  }
 }
 
 
 void unsetCallbacks()
 {
-  if (authorization_callbacks != nullptr) {
-    delete authorization_callbacks;
-  }
+  synchronized (authorization_callbacks_mutex) {
+    if (authorization_callbacks.load() != nullptr) {
+      delete authorization_callbacks.load();
+    }
 
-  authorization_callbacks = nullptr;
+    authorization_callbacks.store(nullptr);
+  }
 }
 
 } // namespace authorization {
@@ -762,63 +790,60 @@ static Future<MessageEvent*> parse(const Request& request)
 
 namespace internal {
 
-void decode_recv(
-    const Future<size_t>& length,
-    char* data,
-    size_t size,
-    Socket socket,
-    StreamingRequestDecoder* decoder)
+void receive(Socket socket)
 {
-  if (length.isDiscarded() || length.isFailed()) {
-    if (length.isFailed()) {
-      VLOG(1) << "Decode failure: " << length.failure();
+  StreamingRequestDecoder* decoder = new StreamingRequestDecoder();
+
+  const size_t size = 80 * 1024;
+  char* data = new char[size];
+
+  Future<Nothing> recv_loop = process::loop(
+      None(),
+      [=] {
+        return socket.recv(data, size);
+      },
+      [=](size_t length) -> Future<ControlFlow<Nothing>> {
+        if (length == 0) {
+          return Break(); // EOF.
+        }
+
+        // Decode as much of the data as possible into HTTP requests.
+        const deque<Request*> requests = decoder->decode(data, length);
+
+        if (requests.empty() && decoder->failed()) {
+          return Failure("Decoder error");
+        }
+
+        if (!requests.empty()) {
+          // Get the peer address to augment the requests.
+          Try<Address> address = socket.peer();
+
+          if (address.isError()) {
+            return Failure("Failed to get peer address: " + address.error());
+          }
+
+          foreach (Request* request, requests) {
+            request->client = address.get();
+            process_manager->handle(socket, request);
+          }
+        }
+
+        return Continue();
+      });
+
+  recv_loop.onAny([=](const Future<Nothing> f) {
+    if (f.isFailed()) {
+      Try<Address> peer = socket.peer();
+
+      VLOG(1) << "Failure while receiving from peer '"
+              << (peer.isSome() ? stringify(peer.get()) : "unknown")
+              << "': " << f.failure();
     }
 
     socket_manager->close(socket);
     delete[] data;
     delete decoder;
-    return;
-  }
-
-  if (length.get() == 0) {
-    socket_manager->close(socket);
-    delete[] data;
-    delete decoder;
-    return;
-  }
-
-  // Decode as much of the data as possible into HTTP requests.
-  const deque<Request*> requests = decoder->decode(data, length.get());
-
-  if (requests.empty() && decoder->failed()) {
-     VLOG(1) << "Decoder error while receiving";
-     socket_manager->close(socket);
-     delete[] data;
-     delete decoder;
-     return;
-  }
-
-  if (!requests.empty()) {
-    // Get the peer address to augment the requests.
-    Try<Address> address = socket.peer();
-
-    if (address.isError()) {
-      VLOG(1) << "Failed to get peer address while receiving: "
-              << address.error();
-      socket_manager->close(socket);
-      delete[] data;
-      delete decoder;
-      return;
-    }
-
-    foreach (Request* request, requests) {
-      request->client = address.get();
-      process_manager->handle(socket, request);
-    }
-  }
-
-  socket.recv(data, size)
-    .onAny(lambda::bind(&decode_recv, lambda::_1, data, size, socket, decoder));
+  });
 }
 
 } // namespace internal {
@@ -866,34 +891,39 @@ namespace internal {
 
 void on_accept(const Future<Socket>& socket)
 {
-  if (socket.isReady()) {
+  // We stop the accept loop when libprocess is finalizing.
+  // Either we'll see a discarded socket here, or we'll see
+  // the server socket set to null below.
+  bool stopped = false;
+
+  if (socket.isDiscarded()) {
+    stopped = true;
+  } else if (socket.isFailed()) {
+    LOG(WARNING) << "Failed to accept socket: " << socket.failure();
+  } else {
+    CHECK_READY(socket);
+
     // Inform the socket manager for proper bookkeeping.
     socket_manager->accepted(socket.get());
 
-    const size_t size = 80 * 1024;
-    char* data = new char[size];
-
-    StreamingRequestDecoder* decoder = new StreamingRequestDecoder();
-
-    socket.get().recv(data, size)
-      .onAny(lambda::bind(
-          &internal::decode_recv,
-          lambda::_1,
-          data,
-          size,
-          socket.get(),
-          decoder));
-  } else {
-     LOG(INFO) << "Failed to accept socket: "
-               << (socket.isFailed() ? socket.failure() : "future discarded");
+    // Start the receive loop for the socket.
+    receive(socket.get());
   }
 
   // NOTE: `__s__` may be cleaned up during `process::finalize`.
-  synchronized (socket_mutex) {
-    if (__s__ != nullptr) {
-      future_accept = __s__->accept()
-        .onAny(lambda::bind(&on_accept, lambda::_1));
+  if (!stopped) {
+    synchronized (socket_mutex) {
+      if (__s__ != nullptr) {
+        future_accept = __s__->accept()
+          .onAny(lambda::bind(&on_accept, lambda::_1));
+      } else {
+        stopped = true;
+      }
     }
+  }
+
+  if (stopped) {
+    LOG(INFO) << "Stopped the socket accept loop";
   }
 }
 
@@ -1155,7 +1185,7 @@ bool initialize(
   //   |  |--All other processes
   //   |
   //   |--logging
-  //   |--profiler
+  //   |--(memory-)profiler
   //   |--processesRoute
   //
   //   authenticator_manager
@@ -1173,6 +1203,12 @@ bool initialize(
 
   // Create the global profiler process.
   spawn(new Profiler(readwriteAuthenticationRealm), true);
+
+  // Create the global memory profiler process unless memory profiling
+  // was disabled.
+  if (libprocess_flags->memory_profiling) {
+    spawn(new MemoryProfiler(readwriteAuthenticationRealm), true);
+  }
 
   // Create the global system statistics process.
   spawn(new System(), true);
@@ -1410,7 +1446,8 @@ void SocketManager::link_connect(
 {
   if (future.isDiscarded() || future.isFailed()) {
     if (future.isFailed()) {
-      VLOG(1) << "Failed to link, connect: " << future.failure();
+      LOG(WARNING) << "Failed to link to '" << to.address
+                   << "', connect: " << future.failure();
     }
 
     // Check if SSL is enabled, and whether we allow a downgrade to
@@ -1438,7 +1475,8 @@ void SocketManager::link_connect(
 
         Try<Socket> create = Socket::create(SocketImpl::Kind::POLL);
         if (create.isError()) {
-          VLOG(1) << "Failed to link, create socket: " << create.error();
+          LOG(WARNING) << "Failed to link to '" << to.address
+                       << "', create socket: " << create.error();
           socket_manager->close(socket);
           return;
         }
@@ -1542,7 +1580,8 @@ void SocketManager::link(
         // from SSL to POLL if enabled.
         Try<Socket> create = Socket::create(kind);
         if (create.isError()) {
-          LOG(WARNING) << "Failed to link, create socket: " << create.error();
+          LOG(WARNING) << "Failed to link to '" << to.address
+                       << "', create socket: " << create.error();
 
           // Failure to create a new socket should generate an `ExitedEvent`
           // for the linkee. At this point, we have not passed ownership of
@@ -1552,7 +1591,7 @@ void SocketManager::link(
           return;
         }
         socket = create.get();
-        int_fd s = socket.get().get();
+        int_fd s = socket->get();
 
         CHECK(sockets.count(s) == 0);
         sockets.emplace(s, socket.get());
@@ -1574,7 +1613,8 @@ void SocketManager::link(
         // create a new socket anyway.
         Try<Socket> create = Socket::create(kind);
         if (create.isError()) {
-          LOG(WARNING) << "Failed to link, create socket: " << create.error();
+          LOG(WARNING) << "Failed to link to '" << to.address
+                       << "', create socket: " << create.error();
 
           // Failure to create a new socket should generate an `ExitedEvent`
           // for the linkee. At this point, we have not passed ownership of
@@ -1599,9 +1639,10 @@ void SocketManager::link(
         // the final socket reference. This will not result in an
         // `ExitedEvent` because we have already removed the `existing`
         // socket from the mapping of linkees and linkers.
-        Try<Nothing> shutdown = existing.shutdown();
+        Try<Nothing, SocketError> shutdown = existing.shutdown();
         if (shutdown.isError()) {
-          VLOG(1) << "Failed to shutdown old link: " << shutdown.error();
+          VLOG(1) << "Failed to shutdown old link: "
+                  << shutdown.error().message;
         }
 
         connect = true;
@@ -1699,71 +1740,73 @@ void SocketManager::unproxy(const Socket& socket)
 
 namespace internal {
 
-void _send(
-    const Future<size_t>& result,
-    Socket socket,
-    Encoder* encoder,
-    size_t size);
-
+Future<Nothing> _send(Encoder* encoder, Socket socket);
 
 void send(Encoder* encoder, Socket socket)
 {
-  switch (encoder->kind()) {
-    case Encoder::DATA: {
-      size_t size;
-      const char* data = static_cast<DataEncoder*>(encoder)->next(&size);
-      socket.send(data, size)
-        .onAny(lambda::bind(
-            &internal::_send,
-            lambda::_1,
-            socket,
-            encoder,
-            size));
-      break;
-    }
-    case Encoder::FILE: {
-      off_t offset;
-      size_t size;
-      int_fd fd = static_cast<FileEncoder*>(encoder)->next(&offset, &size);
-      socket.sendfile(fd, offset, size)
-        .onAny(lambda::bind(
-            &internal::_send,
-            lambda::_1,
-            socket,
-            encoder,
-            size));
-      break;
-    }
-  }
+  _send(encoder, socket)
+    .then([socket] {
+      // Continue sending until this socket has no more
+      // queued outgoing messages.
+      return process::loop(
+          None(),
+          [=] { return socket_manager->next(socket); },
+          [=](Encoder* encoder) -> Future<ControlFlow<Nothing>> {
+            if (encoder == nullptr) {
+              return Break();
+            }
+
+            return _send(encoder, socket)
+              .then([]() -> ControlFlow<Nothing> { return Continue(); });
+        });
+    });
 }
 
 
-void _send(
-    const Future<size_t>& length,
-    Socket socket,
-    Encoder* encoder,
-    size_t size)
+Future<Nothing> _send(Encoder* encoder, Socket socket)
 {
-  if (length.isDiscarded() || length.isFailed()) {
-    socket_manager->close(socket);
-    delete encoder;
-  } else {
-    // Update the encoder with the amount sent.
-    encoder->backup(size - length.get());
+  // Loop until all of the data in the provided encoder is sent.
+  return process::loop(
+      None(),
+      [=] {
+        size_t size;
+        Future<size_t> send;
 
-    // See if there is any more of the message to send.
-    if (encoder->remaining() == 0) {
-      delete encoder;
+        switch (encoder->kind()) {
+          case Encoder::DATA: {
+            const char* data =
+              static_cast<DataEncoder*>(encoder)->next(&size);
+            send = socket.send(data, size);
+            break;
+          }
+          case Encoder::FILE: {
+            off_t offset;
+            int_fd fd =
+              static_cast<FileEncoder*>(encoder)->next(&offset, &size);
+            send = socket.sendfile(fd, offset, size);
+            break;
+          }
+        }
 
-      // Check for more stuff to send on socket.
-      Encoder* next = socket_manager->next(socket);
-      if (next != nullptr) {
-        send(next, socket);
-      }
-    } else {
-      send(encoder, socket);
-    }
-  }
+        return send
+          .then([=](size_t sent) {
+            // Update the encoder with the amount sent.
+            encoder->backup(size - sent);
+            return Nothing();
+          })
+          .recover([=](const Future<Nothing>& f) {
+            socket_manager->close(socket);
+            delete encoder;
+            return f; // Break the loop by propagating the "failure".
+          });
+      },
+      [=](Nothing) -> ControlFlow<Nothing> {
+        if (encoder->remaining() == 0) {
+          delete encoder;
+          return Break();
+        }
+        return Continue();
+      });
 }
 
 } // namespace internal {
@@ -1827,8 +1870,8 @@ void SocketManager::send_connect(
 {
   if (future.isDiscarded() || future.isFailed()) {
     if (future.isFailed()) {
-      VLOG(1) << "Failed to send '" << message.name << "' to '"
-              << message.to.address << "', connect: " << future.failure();
+      LOG(WARNING) << "Failed to send '" << message.name << "' to '"
+                   << message.to.address << "', connect: " << future.failure();
     }
 
     // Check if SSL is enabled, and whether we allow a downgrade to
@@ -1848,7 +1891,8 @@ void SocketManager::send_connect(
       synchronized (mutex) {
         Try<Socket> create = Socket::create(SocketImpl::Kind::POLL);
         if (create.isError()) {
-          VLOG(1) << "Failed to link, create socket: " << create.error();
+          LOG(WARNING) << "Failed to link to '" << message.to.address
+                       << "', create socket: " << create.error();
           socket_manager->close(socket);
           return;
         }
@@ -1864,7 +1908,7 @@ void SocketManager::send_connect(
       }
 
       CHECK_SOME(poll_socket);
-      Future<Nothing> connect = poll_socket.get().connect(message.to.address);
+      Future<Nothing> connect = poll_socket->connect(message.to.address);
       connect.onAny(lambda::bind(
           // TODO(benh): with C++14 we can use lambda instead of
           // `std::bind` and capture `message` with a `std::move`.
@@ -1943,7 +1987,9 @@ void SocketManager::send(Message&& message, const SocketImpl::Kind& kind)
       // from SSL to POLL if enabled.
       Try<Socket> create = Socket::create(kind);
       if (create.isError()) {
-        VLOG(1) << "Failed to send, create socket: " << create.error();
+        LOG(WARNING) << "Failed to send '" << message.name
+                     << "' to '" << message.to.address
+                     << "', create socket: " << create.error();
         return;
       }
       socket = create.get();
@@ -2042,7 +2088,7 @@ Encoder* SocketManager::next(int_fd s)
           Socket socket = iterator->second;
           sockets.erase(iterator);
 
-          Try<Nothing> shutdown = socket.shutdown();
+          Try<Nothing, SocketError> shutdown = socket.shutdown();
 
           // Failure here could be due to reasons including that the underlying
           // socket is already closed so it by itself doesn't necessarily
@@ -2052,7 +2098,7 @@ Encoder* SocketManager::next(int_fd s)
                       << ", address " << (socket.address().isSome()
                                             ? stringify(socket.address().get())
                                             : "N/A")
-                      << ": " << shutdown.error();
+                      << ": " << shutdown.error().message;
           }
         }
       }
@@ -2134,13 +2180,21 @@ void SocketManager::close(int_fd s)
       // Failure here could be due to reasons including that the underlying
       // socket is already closed so it by itself doesn't necessarily
       // suggest anything wrong.
-      Try<Nothing> shutdown = socket.shutdown();
-      if (shutdown.isError()) {
-        LOG(INFO) << "Failed to shutdown socket with fd " << socket.get()
-                  << ", address " << (socket.address().isSome()
-                                        ? stringify(socket.address().get())
-                                        : "N/A")
-                  << ": " << shutdown.error();
+      Try<Nothing, SocketError> shutdown = socket.shutdown();
+
+      // Avoid logging an error when the shutdown was triggered on a
+      // socket that is not connected.
+      if (shutdown.isError() &&
+#ifdef __WINDOWS__
+          shutdown.error().code != WSAENOTCONN) {
+#else // __WINDOWS__
+          shutdown.error().code != ENOTCONN) {
+#endif // __WINDOWS__
+        LOG(ERROR) << "Failed to shutdown socket with fd " << socket.get()
+                   << ", address " << (socket.address().isSome()
+                                         ? stringify(socket.address().get())
+                                         : "N/A")
+                   << ": " << shutdown.error().message;
       }
     }
   }
@@ -2356,7 +2410,7 @@ void ProcessManager::finalize()
       }
 
       // Grab the `UPID` for the next process we'll terminate.
-      pid = processes.values().front()->self();
+      pid = processes.begin()->second->self();
     }
 
     // Terminate this process but do not inject the message,
@@ -2405,7 +2459,7 @@ long ProcessManager::init_threads()
   Option<string> value = os::getenv(env_var);
   if (value.isSome()) {
     constexpr long maxval = 1024;
-    Try<long> number = numify<long>(value.get().c_str());
+    Try<long> number = numify<long>(value->c_str());
     if (number.isSome() && number.get() > 0L && number.get() <= maxval) {
       VLOG(1) << "Overriding default number of worker threads "
               << num_worker_threads << ", using the value "
@@ -2635,7 +2689,7 @@ void ProcessManager::handle(
     foreach (const Owned<firewall::FirewallRule>& rule, firewallRules) {
       Option<Response> rejection = rule->apply(socket, *request);
       if (rejection.isSome()) {
-        VLOG(1) << "Returning '"<< rejection.get().status << "' for '"
+        VLOG(1) << "Returning '" << rejection->status << "' for '"
                 << request->url.path << "' (firewall rule forbids request)";
 
         // TODO(arojas): Get rid of the duplicated code to return an
@@ -2816,8 +2870,19 @@ void ProcessManager::resume(ProcessBase* process)
         state == ProcessBase::State::READY);
 
   if (state == ProcessBase::State::BOTTOM) {
-    try { process->initialize(); }
-    catch (...) { terminate = true; }
+    // In the event that the process throws an exception,
+    // we will abort the program.
+    //
+    // TODO(bmahler): Consider providing recovery mechanisms.
+    try {
+      process->initialize();
+    } catch (const std::exception& e) {
+      LOG(FATAL) << "Aborting libprocess: '" << process->pid << "'"
+                 << " threw exception during initialization: " << e.what();
+    } catch (...) {
+      LOG(FATAL) << "Aborting libprocess: '" << process->pid << "'"
+                 << " threw exception during initialization: unknown";
+    }
 
     state = ProcessBase::State::READY;
     process->state.store(state);
@@ -2915,17 +2980,18 @@ void ProcessManager::resume(ProcessBase* process)
       // Determine if we should terminate.
       terminate = event->is<TerminateEvent>();
 
-      // Now service the event.
+      // Now service the event. In the event that the process
+      // throws an exception, we will abort the program.
+      //
+      // TODO(bmahler): Consider providing recovery mechanisms.
       try {
         process->serve(std::move(*event));
       } catch (const std::exception& e) {
-        LOG(ERROR) << "libprocess: " << process->pid
-                   << " terminating due to " << e.what();
-        terminate = true;
+        LOG(FATAL) << "Aborting libprocess: '" << process->pid << "'"
+                   << " threw exception: " << e.what();
       } catch (...) {
-        LOG(ERROR) << "libprocess: " << process->pid
-                   << " terminating due to unknown exception";
-        terminate = true;
+        LOG(FATAL) << "Aborting libprocess: '" << process->pid << "'"
+                   << " threw unknown exception";
       }
 
       delete event;
@@ -3316,7 +3382,7 @@ Future<Response> ProcessManager::__processes__(const Request&)
               });
         },
         process_manager->processes.values()))
-      .then([](const std::list<JSON::Object>& objects) -> Response {
+      .then([](const std::vector<JSON::Object>& objects) -> Response {
         JSON::Array array;
         foreach (const JSON::Object& object, objects) {
           array.values.push_back(object);
@@ -3528,6 +3594,11 @@ void ProcessBase::consume(HttpEvent&& event)
       event.request->url.path, "/" + tokens[0], strings::PREFIX);
   name = strings::trim(name, strings::PREFIX, "/");
 
+  // Normalize the name by trimming the trailing '/'. We enforce that requests
+  // to ".../path/" are resolved with the ".../path" route. The trailing slash
+  // is stripped here in order to accomplish this.
+  name = strings::trim(name, strings::SUFFIX, "/");
+
   // Look for an endpoint handler for this path. We begin with the full path,
   // but if no handler is found and the path is nested, we shorten it and look
   // again. For example: if the request is for '/a/b/c' and no handler is found,
@@ -3621,6 +3692,10 @@ Future<Response> ProcessBase::_consume(
         *request, endpoint.realm.get());
   }
 
+  // TODO(bmahler): This is an interim check to diagnose MESOS-8687.
+  CHECK(handlers.httpSequence.get() != nullptr)
+    << "PID '" << pid << "' with endpoint name '" << name << "'";
+
   // Sequence the authentication future to ensure the handlers
   // are invoked in the same order that requests arrive.
   authentication = handlers.httpSequence->add<Option<AuthenticationResult>>(
@@ -3646,25 +3721,43 @@ Future<Response> ProcessBase::_consume(
         principal = authentication->principal;
       }
 
-      // The result of a call to an authorization callback.
-      Future<bool> authorization;
+      // Look for an authorization callback installed for this endpoint.
+      //
+      // NOTE: we use double-checked locking here to avoid
+      // head-of-line blocking that occurs when the first thread
+      // attempts to check for authorization callbacks.
+      //
+      // TODO(bmahler): Consider a read/write lock in addition to
+      // double checked locking. Since we expect the callbacks to
+      // be set in production, it would be ideal to avoid locking
+      // altogether. This would be possible if authorization
+      // callbacks were bound to the lifetime of libprocess
+      // initialization and finalization.
+      //
+      // TODO(benh): Consider optimizing this further to not be
+      // sequentially consistent. For more details see:
+      // http://preshing.com/20130930/double-checked-locking-is-fixed-in-cpp11.
+      Future<bool> authorization = true;
 
-      // Look for an authorization callback installed for this endpoint path.
-      // If none is found, use a trivial one.
-      const string callback_path = path::join("/" + pid.id, name);
-      if (authorization_callbacks != nullptr &&
-          authorization_callbacks->count(callback_path) > 0) {
-        authorization = authorization_callbacks->at(callback_path)(
-            *request, principal);
+      if (authorization_callbacks.load() != nullptr) {
+        const string callback_path = path::join("/" + pid.id, name);
 
-        // Sequence the authorization future to ensure the handlers
-        // are invoked in the same order that requests arrive.
-        authorization = handlers.httpSequence->add<bool>(
-            [authorization]() { return authorization; });
-      } else {
-        authorization = handlers.httpSequence->add<bool>(
-            []() { return true; });
+        synchronized (authorization_callbacks_mutex) {
+          AuthorizationCallbacks* callbacks = authorization_callbacks.load();
+
+          if (callbacks != nullptr) {
+            auto callback = callbacks->find(callback_path);
+            if (callback != callbacks->end()) {
+              authorization = (callback->second)(*request, principal);
+            }
+          }
+        }
       }
+
+      // Sequence the authorization future to ensure the handlers
+      // are invoked in the same order that requests arrive.
+      authorization = handlers.httpSequence->add<bool>(
+          [authorization]() { return authorization; });
 
       // Install a callback on the authorization result.
       return authorization
@@ -3720,6 +3813,10 @@ void ProcessBase::route(
   // Routes must start with '/'.
   CHECK(name.find('/') == 0);
 
+  // To avoid ambiguity between "/path" and "/path/" we disallow the latter.
+  CHECK(name.size() == 1 || name.back() != '/')
+    << "Routes must not end with '/'" << ": " << name;
+
   HttpEndpoint endpoint;
   endpoint.handler = handler;
   endpoint.options = options;
@@ -3739,6 +3836,10 @@ void ProcessBase::route(
 {
   // Routes must start with '/'.
   CHECK(name.find('/') == 0);
+
+  // To avoid ambiguity between "/path" and "/path/" we disallow the latter.
+  CHECK(name.size() == 1 || name.back() != '/')
+    << "Routes must not end with '/'" << ": " << name;
 
   HttpEndpoint endpoint;
   endpoint.realm = realm;
@@ -3805,7 +3906,7 @@ public:
       duration(_duration),
       waited(_waited) {}
 
-  virtual void initialize()
+  void initialize() override
   {
     VLOG(3) << "Running waiter process for " << pid;
     link(pid);
@@ -3813,7 +3914,7 @@ public:
   }
 
 private:
-  virtual void exited(const UPID&)
+  void exited(const UPID&) override
   {
     VLOG(3) << "Waiter process waited for " << pid;
     *waited = true;

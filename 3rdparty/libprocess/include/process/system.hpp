@@ -20,7 +20,7 @@
 #include <process/http.hpp>
 #include <process/process.hpp>
 
-#include <process/metrics/gauge.hpp>
+#include <process/metrics/pull_gauge.hpp>
 #include <process/metrics/metrics.hpp>
 
 #include <stout/os.hpp>
@@ -54,10 +54,10 @@ public:
           self().id + "/mem_free_bytes",
           defer(self(), &System::_mem_free_bytes)) {}
 
-  virtual ~System() {}
+  ~System() override {}
 
 protected:
-  virtual void initialize()
+  void initialize() override
   {
     // TODO(dhamon): Check return values.
     metrics::add(load_1min);
@@ -70,7 +70,7 @@ protected:
     route("/stats.json", statsHelp(), &System::stats);
   }
 
-  virtual void finalize()
+  void finalize() override
   {
     metrics::remove(load_1min);
     metrics::remove(load_5min);
@@ -103,7 +103,7 @@ private:
   {
     Try<os::Load> load = os::loadavg();
     if (load.isSome()) {
-      return load.get().one;
+      return load->one;
     }
     return Failure("Failed to get loadavg: " + load.error());
   }
@@ -113,7 +113,7 @@ private:
   {
     Try<os::Load> load = os::loadavg();
     if (load.isSome()) {
-      return load.get().five;
+      return load->five;
     }
     return Failure("Failed to get loadavg: " + load.error());
   }
@@ -123,7 +123,7 @@ private:
   {
     Try<os::Load> load = os::loadavg();
     if (load.isSome()) {
-      return load.get().fifteen;
+      return load->fifteen;
     }
     return Failure("Failed to get loadavg: " + load.error());
   }
@@ -143,7 +143,7 @@ private:
   {
     Try<os::Memory> memory = os::memory();
     if (memory.isSome()) {
-      return static_cast<double>(memory.get().total.bytes());
+      return static_cast<double>(memory->total.bytes());
     }
     return Failure("Failed to get memory: " + memory.error());
   }
@@ -153,7 +153,7 @@ private:
   {
     Try<os::Memory> memory = os::memory();
     if (memory.isSome()) {
-      return static_cast<double>(memory.get().free.bytes());
+      return static_cast<double>(memory->free.bytes());
     }
     return Failure("Failed to get memory: " + memory.error());
   }
@@ -164,9 +164,9 @@ private:
     JSON::Object object;
     Try<os::Load> load = os::loadavg();
     if (load.isSome()) {
-      object.values["avg_load_1min"] = load.get().one;
-      object.values["avg_load_5min"] = load.get().five;
-      object.values["avg_load_15min"] = load.get().fifteen;
+      object.values["avg_load_1min"] = load->one;
+      object.values["avg_load_5min"] = load->five;
+      object.values["avg_load_15min"] = load->fifteen;
     }
 
     Try<long> cpus = os::cpus();
@@ -176,21 +176,21 @@ private:
 
     Try<os::Memory> memory = os::memory();
     if (memory.isSome()) {
-      object.values["mem_total_bytes"] = memory.get().total.bytes();
-      object.values["mem_free_bytes"] = memory.get().free.bytes();
+      object.values["mem_total_bytes"] = memory->total.bytes();
+      object.values["mem_free_bytes"] = memory->free.bytes();
     }
 
     return http::OK(object, request.url.query.get("jsonp"));
   }
 
-  metrics::Gauge load_1min;
-  metrics::Gauge load_5min;
-  metrics::Gauge load_15min;
+  metrics::PullGauge load_1min;
+  metrics::PullGauge load_5min;
+  metrics::PullGauge load_15min;
 
-  metrics::Gauge cpus_total;
+  metrics::PullGauge cpus_total;
 
-  metrics::Gauge mem_total_bytes;
-  metrics::Gauge mem_free_bytes;
+  metrics::PullGauge mem_total_bytes;
+  metrics::PullGauge mem_free_bytes;
 };
 
 } // namespace process {

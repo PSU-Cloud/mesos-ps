@@ -621,7 +621,7 @@ TEST(FutureTest, Discard3)
 }
 
 
-TEST(FutureTest, THREADSAFE_Select)
+TEST(FutureTest, Select)
 {
   Promise<int> promise1;
   Promise<int> promise2;
@@ -641,7 +641,7 @@ TEST(FutureTest, THREADSAFE_Select)
 
   AWAIT_READY(future);
   AWAIT_READY(future.get());
-  EXPECT_EQ(42, future.get().get());
+  EXPECT_EQ(42, future->get());
 
   futures.erase(promise1.future());
 

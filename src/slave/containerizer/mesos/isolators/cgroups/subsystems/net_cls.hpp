@@ -130,43 +130,43 @@ private:
 /**
  * Represent cgroups net_cls subsystem.
  */
-class NetClsSubsystem : public Subsystem
+class NetClsSubsystemProcess : public SubsystemProcess
 {
 public:
-  static Try<process::Owned<Subsystem>> create(
+  static Try<process::Owned<SubsystemProcess>> create(
       const Flags& flags,
       const std::string& hierarchy);
 
-  virtual ~NetClsSubsystem() {}
+  ~NetClsSubsystemProcess() override = default;
 
-  virtual std::string name() const
+  std::string name() const override
   {
     return CGROUP_SUBSYSTEM_NET_CLS_NAME;
   }
 
-  virtual process::Future<Nothing> recover(
+  process::Future<Nothing> recover(
       const ContainerID& containerId,
-      const std::string& cgroup);
+      const std::string& cgroup) override;
 
-  virtual process::Future<Nothing> prepare(
+  process::Future<Nothing> prepare(
       const ContainerID& containerId,
-      const std::string& cgroup);
+      const std::string& cgroup) override;
 
-  virtual process::Future<Nothing> isolate(
+  process::Future<Nothing> isolate(
       const ContainerID& containerId,
       const std::string& cgroup,
-      pid_t pid);
+      pid_t pid) override;
 
-  virtual process::Future<ContainerStatus> status(
+  process::Future<ContainerStatus> status(
       const ContainerID& containerId,
-      const std::string& cgroup);
+      const std::string& cgroup) override;
 
-  virtual process::Future<Nothing> cleanup(
+  process::Future<Nothing> cleanup(
       const ContainerID& containerId,
-      const std::string& cgroup);
+      const std::string& cgroup) override;
 
 private:
-  NetClsSubsystem(
+  NetClsSubsystemProcess(
       const Flags& flags,
       const std::string& hierarchy,
       const IntervalSet<uint32_t>& primaries,

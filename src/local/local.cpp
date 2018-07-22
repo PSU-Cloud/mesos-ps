@@ -57,6 +57,10 @@
 #include <stout/strings.hpp>
 
 #ifdef USE_SSL_SOCKET
+#include <stout/os/permissions.hpp>
+#endif // USE_SSL_SOCKET
+
+#ifdef USE_SSL_SOCKET
 #include "authentication/executor/jwt_secret_generator.hpp"
 #endif // USE_SSL_SOCKET
 
@@ -423,7 +427,7 @@ PID<Master> launch(const Flags& flags, Allocator* _allocator)
         << slaveFlags.runtime_dir << "': " << mkdir.error();
     }
 
-    garbageCollectors->push_back(new GarbageCollector());
+    garbageCollectors->push_back(new GarbageCollector(slaveFlags.work_dir));
     taskStatusUpdateManagers->push_back(
         new TaskStatusUpdateManager(slaveFlags));
     fetchers->push_back(new Fetcher(slaveFlags));
@@ -466,7 +470,7 @@ PID<Master> launch(const Flags& flags, Allocator* _allocator)
         LOG(WARNING) << "Failed to stat jwt secret key file '"
                      << slaveFlags.jwt_secret_key.get()
                      << "': " << permissions.error();
-      } else if (permissions.get().others.rwx) {
+      } else if (permissions->others.rwx) {
         LOG(WARNING) << "Permissions on executor secret key file '"
                      << slaveFlags.jwt_secret_key.get()
                      << "' are too open; it is recommended that your"

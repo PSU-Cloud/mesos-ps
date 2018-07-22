@@ -17,24 +17,25 @@
 #include <stdarg.h> // For va_list, va_start, etc.
 
 #include <algorithm>
+#include <array>
 #include <map>
-#include <ostream>
 #include <string>
-#include <tuple>
 #include <vector>
 
 #include <stout/error.hpp>
 #include <stout/foreach.hpp>
+#include <stout/none.hpp>
 #include <stout/option.hpp>
 #include <stout/os.hpp>
-#include <stout/os/int_fd.hpp>
 #include <stout/try.hpp>
-#include <stout/unimplemented.hpp>
-
 #include <stout/windows.hpp>
 
-namespace internal {
+#include <stout/os/int_fd.hpp>
+#include <stout/os/pipe.hpp>
 
+#include <stout/internal/windows/inherit.hpp>
+
+namespace internal {
 namespace windows {
 
 // Retrieves system environment in a `std::map`, ignoring
@@ -208,11 +209,13 @@ inline std::wstring stringify_args(const std::vector<std::string>& argv)
   return command;
 }
 
+
 struct ProcessData {
   SharedHandle process_handle;
   SharedHandle thread_handle;
   pid_t pid;
 };
+
 
 // Provides an interface for creating a child process on Windows.
 //
@@ -227,6 +230,10 @@ struct ProcessData {
 // The caller can specify explicit `stdin`, `stdout`, and `stderr` handles,
 // in that order, for the process via the `pipes` argument.
 //
+// NOTE: If `pipes` are specified, they will be temporarily set to
+// inheritable, and then set to uninheritable. This is a side effect
+// on each `HANDLE`.
+//
 // The return value is a `ProcessData` struct, with the process and thread
 // handles each saved in a `SharedHandle`, ensuring they are closed when struct
 // goes out of scope.
@@ -235,21 +242,24 @@ inline Try<ProcessData> create_process(
     const std::vector<std::string>& argv,
     const Option<std::map<std::string, std::string>>& environment,
     const bool create_suspended = false,
-    const Option<std::tuple<int_fd, int_fd, int_fd>> pipes = None())
+    const Option<std::array<int_fd, 3>>& pipes = None(),
+    const std::vector<int_fd>& whitelist_fds = {})
 {
   // TODO(andschwa): Assert that `command` and `argv[0]` are the same.
-  std::wstring arg_string = stringify_args(argv);
+  const std::wstring arg_string = stringify_args(argv);
   std::vector<wchar_t> arg_buffer(arg_string.begin(), arg_string.end());
   arg_buffer.push_back(L'\0');
 
-  // Create the process with a Unicode environment.
-  DWORD creation_flags = CREATE_UNICODE_ENVIRONMENT;
+  // Create the process with a Unicode environment and extended
+  // startup info.
+  DWORD creation_flags =
+    CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT;
   if (create_suspended) {
     creation_flags |= CREATE_SUSPENDED;
   }
 
   // Construct the environment that will be passed to `::CreateProcessW`.
-  Option<std::wstring> env_string = create_process_env(environment);
+  const Option<std::wstring> env_string = create_process_env(environment);
   std::vector<wchar_t> env_buffer;
   if (env_string.isSome()) {
     // This string contains the necessary null characters.
@@ -258,56 +268,124 @@ inline Try<ProcessData> create_process(
 
   wchar_t* process_env = env_buffer.empty() ? nullptr : env_buffer.data();
 
-  PROCESS_INFORMATION process_info;
-  memset(&process_info, 0, sizeof(PROCESS_INFORMATION));
+  PROCESS_INFORMATION process_info = {};
 
-  STARTUPINFOW startup_info;
-  memset(&startup_info, 0, sizeof(STARTUPINFOW));
-  startup_info.cb = sizeof(STARTUPINFOW);
+  STARTUPINFOEXW startup_info_ex = {};
+  startup_info_ex.StartupInfo.cb = sizeof(startup_info_ex);
 
-  // Hook up the stdin/out/err pipes and use the `STARTF_USESTDHANDLES`
-  // flag to instruct the child to use them [1].
-  // A more user-friendly example can be found in [2].
-  //
-  // [1] https://msdn.microsoft.com/en-us/library/windows/desktop/ms686331(v=vs.85).aspx
-  // [2] https://msdn.microsoft.com/en-us/library/windows/desktop/ms682499(v=vs.85).aspx
+  // Windows provides a way to whitelist a set of handles to be
+  // inherited by the child process.
+  // https://blogs.msdn.microsoft.com/oldnewthing/20111216-00/?p=8873
+  // (1) We're setting the pipe handles and whitelisted handles to be
+  //     temporarily inheritable.
+  // (2) We're explicitly whitelisting the handles using a Windows API.
+  // (3) We're then setting the handles to back to non-inheritable
+  //     after the child process has been created.
+  std::vector<HANDLE> handles;
   if (pipes.isSome()) {
-    startup_info.hStdInput = std::get<0>(pipes.get());
-    startup_info.hStdOutput = std::get<1>(pipes.get());
-    startup_info.hStdError = std::get<2>(pipes.get());
-    startup_info.dwFlags |= STARTF_USESTDHANDLES;
+    // Each of these handles must be inheritable.
+    foreach (const int_fd& fd, pipes.get()) {
+      handles.emplace_back(static_cast<HANDLE>(fd));
+      const Try<Nothing> inherit = set_inherit(fd, true);
+      if (inherit.isError()) {
+        return Error(inherit.error());
+      }
+    }
+
+    // Hook up the stdin/out/err pipes and use the `STARTF_USESTDHANDLES`
+    // flag to instruct the child to use them [1].
+    // A more user-friendly example can be found in [2].
+    //
+    // [1] https://msdn.microsoft.com/en-us/library/windows/desktop/ms686331(v=vs.85).aspx
+    // [2] https://msdn.microsoft.com/en-us/library/windows/desktop/ms682499(v=vs.85).aspx
+    startup_info_ex.StartupInfo.dwFlags   |= STARTF_USESTDHANDLES;
+    startup_info_ex.StartupInfo.hStdInput  = std::get<0>(pipes.get());
+    startup_info_ex.StartupInfo.hStdOutput = std::get<1>(pipes.get());
+    startup_info_ex.StartupInfo.hStdError  = std::get<2>(pipes.get());
   }
 
-  BOOL create_process_result = ::CreateProcessW(
+  foreach (const int_fd& fd, whitelist_fds) {
+    handles.emplace_back(static_cast<HANDLE>(fd));
+    const Try<Nothing> inherit = set_inherit(fd, true);
+    if (inherit.isError()) {
+      return Error(inherit.error());
+    }
+  }
+
+  Result<std::shared_ptr<AttributeList>> attribute_list =
+    create_attributes_list_for_handles(handles);
+
+  if (attribute_list.isError()) {
+    return Error(attribute_list.error());
+  }
+
+  if (attribute_list.isSome()) {
+    startup_info_ex.lpAttributeList = attribute_list->get();
+  }
+
+  const BOOL result = ::CreateProcessW(
       // This is replaced by the first token of `arg_buffer` string.
       static_cast<LPCWSTR>(nullptr),
       static_cast<LPWSTR>(arg_buffer.data()),
       static_cast<LPSECURITY_ATTRIBUTES>(nullptr),
       static_cast<LPSECURITY_ATTRIBUTES>(nullptr),
-      TRUE, // Inherited parent process handles.
+      TRUE, // Inherit parent process handles (such as those in `pipes`).
       creation_flags,
       static_cast<LPVOID>(process_env),
-      static_cast<LPCWSTR>(nullptr), // Inherited working directory.
-      &startup_info,
+      static_cast<LPCWSTR>(nullptr), // Inherit working directory.
+      &startup_info_ex.StartupInfo,
       &process_info);
 
-  if (!create_process_result) {
+  // Save the error from the previous call so that we can proceed to
+  // always revert the inheritance of the handles, and then report
+  // this error, if there was one.
+  const DWORD create_process_error = ::GetLastError();
+
+  // NOTE: The MSDN documentation for `CreateProcess` states that it
+  // returns before the process has "finished initialization," but is
+  // not clear on precisely what initialization entails. It would seem
+  // that this does not affect inherited handles, as it stands to
+  // reason that the system call to `CreateProcess` causes inheritable
+  // handles to become inherited, and not some "initialization" of the
+  // child process. However, if an inheritance race condition
+  // manifests, this assumption should be re-evaluated.
+  if (pipes.isSome()) {
+    // These handles should no longer be inheritable. This prevents other child
+    // processes from accidentally inheriting the wrong handles.
+    //
+    // NOTE: This is explicit, and does not take into account the
+    // previous inheritance semantics of each `HANDLE`. It is assumed
+    // that users of this function send non-inheritable handles.
+    foreach (const int_fd& fd, pipes.get()) {
+      const Try<Nothing> inherit = set_inherit(fd, false);
+      if (inherit.isError()) {
+        return Error(inherit.error());
+      }
+    }
+  }
+
+  foreach (const int_fd& fd, whitelist_fds) {
+    const Try<Nothing> inherit = set_inherit(fd, false);
+    if (inherit.isError()) {
+      return Error(inherit.error());
+    }
+  }
+
+  if (result == FALSE) {
     return WindowsError(
+        create_process_error,
         "Failed to call `CreateProcess`: " + stringify(arg_string));
   }
 
-  return ProcessData{
-    SharedHandle{process_info.hProcess, ::CloseHandle},
-    SharedHandle{process_info.hThread, ::CloseHandle},
-    static_cast<pid_t>(process_info.dwProcessId)};
+  return ProcessData{SharedHandle{process_info.hProcess, ::CloseHandle},
+                     SharedHandle{process_info.hThread, ::CloseHandle},
+                     static_cast<pid_t>(process_info.dwProcessId)};
 }
 
 } // namespace windows {
-
 } // namespace internal {
 
 namespace os {
-
 namespace Shell {
 
 // Canonical constants used as platform-dependent args to `exec` calls.
@@ -320,8 +398,128 @@ constexpr const char* arg1 = "/c";
 
 } // namespace Shell {
 
+// Runs a shell command (with `cmd.exe`) with optional arguments.
+//
+// This assumes that a successful execution will result in the exit
+// code for the command to be `0`; in this case, the contents of the
+// `Try` will be the contents of `stdout`.
+//
+// If the exit code is non-zero, we will return an appropriate error
+// message; but *not* `stderr`.
+//
+// If the caller needs to examine the contents of `stderr` it should
+// be redirected to `stdout` (using, e.g., `2>&1 || exit /b 0` in the
+// command string). The `|| exit /b 0` is required to obtain a success
+// exit code in case of errors, and still obtain `stderr`, as piped to
+// `stdout`.
 template <typename... T>
-Try<std::string> shell(const std::string& fmt, const T&... t) = delete;
+Try<std::string> shell(const std::string& fmt, const T&... t)
+{
+  using std::array;
+  using std::string;
+  using std::vector;
+
+  const Try<string> command = strings::internal::format(fmt, t...);
+  if (command.isError()) {
+    return Error(command.error());
+  }
+
+  // This function is intended to pass the arguments to the default
+  // shell, so we first add the arguments `cmd.exe cmd.exe /c`,
+  // followed by the command and arguments given.
+  vector<string> args = {os::Shell::name, os::Shell::arg0, os::Shell::arg1};
+
+  { // Minimize the lifetime of the system allocated buffer.
+    //
+    // NOTE: This API returns a pointer to an array of `wchar_t*`,
+    // similar to `argv`. Each pointer to a null-terminated Unicode
+    // string represents an individual argument found on the command
+    // line. We use this because we cannot just split on whitespace.
+    int argc;
+    const std::unique_ptr<wchar_t*, decltype(&::LocalFree)> argv(
+      ::CommandLineToArgvW(wide_stringify(command.get()).data(), &argc),
+      &::LocalFree);
+    if (argv == nullptr) {
+      return WindowsError();
+    }
+
+    for (int i = 0; i < argc; ++i) {
+      args.push_back(stringify(std::wstring(argv.get()[i])));
+    }
+  }
+
+  // This function is intended to return only the `stdout` of the
+  // command; but since we have to redirect all of `stdin`, `stdout`,
+  // `stderr` if we want to redirect any one of them, we redirect
+  // `stdin` and `stderr` to `NUL`, and `stdout` to a pipe.
+  Try<int_fd> stdin_ = os::open(os::DEV_NULL, O_RDONLY);
+  if (stdin_.isError()) {
+    return Error(stdin_.error());
+  }
+
+  Try<array<int_fd, 2>> stdout_ = os::pipe();
+  if (stdout_.isError()) {
+    return Error(stdout_.error());
+  }
+
+  Try<int_fd> stderr_ = os::open(os::DEV_NULL, O_WRONLY);
+  if (stderr_.isError()) {
+    return Error(stderr_.error());
+  }
+
+  // Ensure the file descriptors are closed when we leave this scope.
+  struct Closer
+  {
+    vector<int_fd> fds;
+    ~Closer()
+    {
+      foreach (int_fd& fd, fds) {
+        os::close(fd);
+      }
+    }
+  } closer = {{stdin_.get(), stdout_.get()[0], stderr_.get()}};
+
+  array<int_fd, 3> pipes = {stdin_.get(), stdout_.get()[1], stderr_.get()};
+
+  using namespace ::internal::windows;
+
+  Try<ProcessData> process_data =
+    create_process(args.front(), args, None(), false, pipes);
+
+  if (process_data.isError()) {
+    return Error(process_data.error());
+  }
+
+  // Close the child end of the stdout pipe and then read until EOF.
+  os::close(stdout_.get()[1]);
+  string out;
+  Result<string> part = None();
+  do {
+    part = os::read(stdout_.get()[0], 1024);
+    if (part.isSome()) {
+      out += part.get();
+    }
+  } while (part.isSome());
+
+  // Wait for the process synchronously.
+  ::WaitForSingleObject(process_data->process_handle.get_handle(), INFINITE);
+
+  DWORD status;
+  if (!::GetExitCodeProcess(
+        process_data->process_handle.get_handle(), &status)) {
+    return Error("Failed to `GetExitCodeProcess`: " + command.get());
+  }
+
+  if (status == 0) {
+    return out;
+  }
+
+  return Error(
+    "Failed to execute '" + command.get() +
+    "'; the command was either "
+    "not found or exited with a non-zero exit status: " +
+    stringify(status));
+}
 
 
 template<typename... T>
@@ -329,31 +527,31 @@ inline int execlp(const char* file, T... t) = delete;
 
 
 // Executes a command by calling "<command> <arguments...>", and
-// returns after the command has been completed. Returns process exit code if
-// succeeds, and -1 on error.
-inline int spawn(
+// returns after the command has been completed. Returns the process exit
+// code on success and `None` on error.
+inline Option<int> spawn(
     const std::string& command,
     const std::vector<std::string>& arguments,
     const Option<std::map<std::string, std::string>>& environment = None())
 {
-  Try<::internal::windows::ProcessData> process_data =
-    ::internal::windows::create_process(command, arguments, environment);
+  using namespace ::internal::windows;
+
+  Try<ProcessData> process_data =
+    create_process(command, arguments, environment);
 
   if (process_data.isError()) {
     LOG(WARNING) << process_data.error();
-    return -1;
+    return None();
   }
 
   // Wait for the process synchronously.
-  ::WaitForSingleObject(
-      process_data.get().process_handle.get_handle(), INFINITE);
+  ::WaitForSingleObject(process_data->process_handle.get_handle(), INFINITE);
 
   DWORD status;
   if (!::GetExitCodeProcess(
-           process_data.get().process_handle.get_handle(),
-           &status)) {
+        process_data->process_handle.get_handle(), &status)) {
     LOG(WARNING) << "Failed to `GetExitCodeProcess`: " << command;
-    return -1;
+    return None();
   }
 
   // Return the child exit code.
@@ -362,15 +560,15 @@ inline int spawn(
 
 
 // Executes a command by calling "cmd /c <command>", and returns
-// after the command has been completed. Returns exit code if succeeds, and
-// return -1 on error.
+// after the command has been completed. Returns the process exit
+// code on success and `None` on error.
 //
 // Note: Be cautious about shell injection
 // (https://en.wikipedia.org/wiki/Code_injection#Shell_injection)
 // when using this method and use proper validation and sanitization
 // on the `command`. For this reason in general `os::spawn` is
 // preferred if a shell is not required.
-inline int system(const std::string& command)
+inline Option<int> system(const std::string& command)
 {
   return os::spawn(Shell::name, {Shell::arg0, Shell::arg1, command});
 }
@@ -383,7 +581,7 @@ inline int execvp(
     const std::string& command,
     const std::vector<std::string>& argv)
 {
-  exit(os::spawn(command, argv));
+  exit(os::spawn(command, argv).getOrElse(-1));
   return -1;
 }
 
@@ -396,7 +594,7 @@ inline int execvpe(
     const std::vector<std::string>& argv,
     const std::map<std::string, std::string>& envp)
 {
-  exit(os::spawn(command, argv, envp));
+  exit(os::spawn(command, argv, envp).getOrElse(-1));
   return -1;
 }
 

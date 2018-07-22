@@ -189,6 +189,9 @@ Option<Error> validateTaskAndExecutorResources(const TaskInfo& task);
 // Validates the kill policy of the task.
 Option<Error> validateKillPolicy(const TaskInfo& task);
 
+// Validates `max_completion_time` of the task.
+Option<Error> validateMaxCompletionTime(const TaskInfo& task);
+
 // Validates the check of the task.
 Option<Error> validateCheck(const TaskInfo& task);
 
@@ -299,10 +302,20 @@ Option<Error> validate(
     const Option<FrameworkInfo>& frameworkInfo = None());
 
 
-Option<Error> validate(const Offer::Operation::CreateVolume& createVolume);
-Option<Error> validate(const Offer::Operation::DestroyVolume& destroyVolume);
-Option<Error> validate(const Offer::Operation::CreateBlock& createBlock);
-Option<Error> validate(const Offer::Operation::DestroyBlock& destroyBlock);
+Option<Error> validate(
+    const Offer::Operation::GrowVolume& growVolume,
+    const protobuf::slave::Capabilities& agentCapabilities);
+
+
+Option<Error> validate(
+    const Offer::Operation::ShrinkVolume& shrinkVolume,
+    const protobuf::slave::Capabilities& agentCapabilities);
+
+
+Option<Error> validate(const Offer::Operation::CreateDisk& createDisk);
+
+
+Option<Error> validate(const Offer::Operation::DestroyDisk& destroyDisk);
 
 } // namespace operation {
 

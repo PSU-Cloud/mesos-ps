@@ -25,59 +25,64 @@ endif ()
 # SOURCE FILES FOR THE PROCESS LIBRARY.
 #######################################
 set(PROCESS_SRC
-  authenticator_manager.cpp
-  authenticator_manager.hpp
   authenticator.cpp
+  authenticator_manager.cpp
   clock.cpp
-  config.hpp
-  decoder.hpp
-  encoder.hpp
-  event_loop.hpp
-  event_queue.hpp
   firewall.cpp
-  gate.hpp
+  gtest_constants.cpp
   help.cpp
   http.cpp
   http_proxy.cpp
-  http_proxy.hpp
   io.cpp
   latch.cpp
   logging.cpp
+  memory_profiler.cpp
   metrics/metrics.cpp
   mime.cpp
   pid.cpp
-  poll_socket.cpp
-  poll_socket.hpp
-  profiler.cpp
   process.cpp
-  process_reference.hpp
+  profiler.cpp
   reap.cpp
-  run_queue.hpp
-  semaphore.hpp
   socket.cpp
-  socket_manager.hpp
   subprocess.cpp
-  time.cpp
-  timeseries.cpp)
+  time.cpp)
+
 
 if (WIN32)
   list(APPEND PROCESS_SRC
-    subprocess_windows.cpp)
+    windows/subprocess.cpp)
 else ()
   list(APPEND PROCESS_SRC
-    subprocess_posix.cpp)
+    posix/subprocess.cpp)
+endif ()
+
+if (ENABLE_GRPC)
+  list(APPEND PROCESS_SRC
+    grpc.cpp)
 endif ()
 
 if (ENABLE_LIBEVENT)
   list(APPEND PROCESS_SRC
-    libevent.hpp
-    libevent.cpp
-    libevent_poll.cpp)
+    posix/libevent/libevent.cpp
+    posix/libevent/libevent_poll.cpp)
+elseif (ENABLE_LIBWINIO)
+  list(APPEND PROCESS_SRC
+    windows/event_loop.cpp
+    windows/libwinio.cpp)
 else ()
   list(APPEND PROCESS_SRC
-    libev.hpp
-    libev.cpp
-    libev_poll.cpp)
+    posix/libev/libev.cpp
+    posix/libev/libev_poll.cpp)
+endif ()
+
+if (ENABLE_LIBWINIO)
+  list(APPEND PROCESS_SRC
+    windows/io.cpp
+    windows/poll_socket.cpp)
+else ()
+  list(APPEND PROCESS_SRC
+    posix/io.cpp
+    posix/poll_socket.cpp)
 endif ()
 
 if (ENABLE_SSL)
@@ -89,7 +94,7 @@ if (ENABLE_SSL)
 
   if (ENABLE_LIBEVENT)
     list(APPEND PROCESS_SRC
-      libevent_ssl_socket.cpp)
+      posix/libevent/libevent_ssl_socket.cpp)
   endif ()
 endif ()
 
@@ -99,19 +104,25 @@ target_link_libraries(
   process PUBLIC
   stout
   http_parser
+  $<$<BOOL:${ENABLE_GRPC}>:grpc>
   $<$<BOOL:${ENABLE_SSL}>:OpenSSL::SSL>
   $<$<BOOL:${ENABLE_SSL}>:OpenSSL::Crypto>)
 
 target_link_libraries(
   process PRIVATE
   concurrentqueue
-  $<IF:$<BOOL:${ENABLE_LIBEVENT}>,libevent,libev>)
+  $<IF:$<BOOL:${ENABLE_LIBEVENT}>,libevent,$<$<NOT:$<PLATFORM_ID:Windows>>:libev>>)
 
 target_compile_definitions(
   process PRIVATE
+  $<$<BOOL:${ENABLE_LIBWINIO}>:ENABLE_LIBWINIO>
   $<$<BOOL:${ENABLE_LOCK_FREE_RUN_QUEUE}>:LOCK_FREE_RUN_QUEUE>
   $<$<BOOL:${ENABLE_LOCK_FREE_EVENT_QUEUE}>:LOCK_FREE_EVENT_QUEUE>
   $<$<BOOL:${ENABLE_LAST_IN_FIRST_OUT_FIXED_SIZE_SEMAPHORE}>:LAST_IN_FIRST_OUT_FIXED_SIZE_SEMAPHORE>)
+
+if (LINUX)
+  target_compile_definitions(process PRIVATE LIBPROCESS_ALLOW_JEMALLOC)
+endif ()
 
 target_include_directories(process PUBLIC ../include)
 target_include_directories(process PRIVATE .)

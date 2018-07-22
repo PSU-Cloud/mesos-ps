@@ -44,6 +44,8 @@
 #include <stout/utils.hpp>
 #include <stout/uuid.hpp>
 
+#include <stout/os/ftruncate.hpp>
+
 #include "common/protobuf_utils.hpp"
 
 #include "slave/constants.hpp"
@@ -567,8 +569,8 @@ private:
     }
   }
 
-  // Type of status updates handled by the stream, e.g., "offer operation
-  // status update".
+  // Type of status updates handled by the stream, e.g., "operation status
+  // update".
   const std::string statusUpdateType;
 
   lambda::function<void(UpdateType)> forwardCallback;
@@ -665,7 +667,12 @@ private:
       }
 
       // Open the status updates file for reading and writing.
-      Try<int_fd> fd = os::open(path, O_SYNC | O_RDWR | O_CLOEXEC);
+      Try<int_fd> fd = os::open(
+          path,
+#ifdef __WINDOWS__
+          O_BINARY |
+#endif // __WINDOWS__
+          O_SYNC | O_RDWR | O_CLOEXEC);
 
       if (fd.isError()) {
         return Error("Failed to open '" + path + "': " + fd.error());
@@ -752,8 +759,13 @@ private:
         // A stream is created only once there's something to write to it, so
         // this can only happen if the checkpointing of the first update was
         // interrupted.
-        Try<Nothing> removed = os::rm(path);
 
+        // On Windows you can only delete a file if it is not open. The
+        // stream's destructor will close the file, so we need to destroy it
+        // here.
+        stream.reset();
+
+        Try<Nothing> removed = os::rm(path);
         if (removed.isError()) {
           return Error(
               "Failed to remove file '" + path + "': " + removed.error());
@@ -777,26 +789,21 @@ private:
         return Error(error.get());
       }
 
-      // TODO(gkleiman): This won't work with `StatusUpdate`, because the field
-      // containing the status update uuid has a different name. In order to
-      // make the `TaskStatusUpdateManager` use this process, we should avoid
-      // depending on identical field names.
-      if (!update.status().has_status_uuid()) {
-        return Error("Status update is missing 'status_uuid'");
+      if (!update.status().has_uuid()) {
+        return Error("Status update is missing 'uuid'");
       }
-      Try<id::UUID> statusUuid =
-        id::UUID::fromBytes(update.status().status_uuid().value());
-      CHECK_SOME(statusUuid);
+      Try<id::UUID> uuid = id::UUID::fromBytes(update.status().uuid().value());
+      CHECK_SOME(uuid);
 
       // Check that this status update has not already been acknowledged.
-      if (acknowledged.contains(statusUuid.get())) {
+      if (acknowledged.contains(uuid.get())) {
         LOG(WARNING) << "Ignoring " << statusUpdateType << " " << update
                      << " that has already been acknowledged";
         return false;
       }
 
       // Check that this update has not already been received.
-      if (received.contains(statusUuid.get())) {
+      if (received.contains(uuid.get())) {
         LOG(WARNING) << "Ignoring duplicate " << statusUpdateType << " "
                      << update;
         return false;
@@ -816,7 +823,7 @@ private:
     // Returns `true`: if the acknowledgement is successfully handled.
     //         `false`: if the acknowledgement is a duplicate.
     //         `Error`: Any errors (e.g., checkpointing).
-    Try<bool> acknowledgement(const id::UUID& statusUuid)
+    Try<bool> acknowledgement(const id::UUID& uuid)
     {
       if (error.isSome()) {
         return Error(error.get());
@@ -832,32 +839,28 @@ private:
       // acknowledgments for both the original and the retried update.
       if (update_.isNone()) {
         return Error(
-            "Unexpected acknowledgment (UUID: " + statusUuid.toString() +
+            "Unexpected acknowledgment (UUID: " + uuid.toString() +
             ") for " + statusUpdateType + " stream " + stringify(streamId));
       }
 
       const UpdateType& update = update_.get();
 
-      if (acknowledged.contains(statusUuid)) {
+      if (acknowledged.contains(uuid)) {
         LOG(WARNING) << "Duplicate acknowledgment for " << statusUpdateType
                      << " " << update;
         return false;
       }
 
-      // TODO(gkleiman): This won't work with `StatusUpdate`, because the field
-      // containing the status update uuid has a different name. In order to
-      // make the `TaskStatusUpdateManager` use this process, we should avoid
-      // depending on identical field names.
-      Try<id::UUID> updateStatusUuid =
-        id::UUID::fromBytes(update.status().status_uuid().value());
-      CHECK_SOME(updateStatusUuid);
+      Try<id::UUID> updateUuid =
+        id::UUID::fromBytes(update.status().uuid().value());
+      CHECK_SOME(updateUuid);
 
       // This might happen if we retried a status update and got back
       // acknowledgments for both the original and the retried update.
-      if (statusUuid != updateStatusUuid.get()) {
+      if (uuid != updateUuid.get()) {
         LOG(WARNING) << "Unexpected " << statusUpdateType
-                     << " acknowledgment (received " << statusUuid
-                     << ", expecting " << updateStatusUuid.get() << ") for "
+                     << " acknowledgment (received " << uuid
+                     << ", expecting " << updateUuid.get() << ") for "
                      << update;
         return false;
       }
@@ -936,11 +939,7 @@ private:
             record.mutable_update()->CopyFrom(update);
             break;
           case CheckpointType::ACK:
-            // TODO(gkleiman): This won't work with `StatusUpdate`, because the
-            // field containing the status update uuid has a different name.
-            // In order to make the `TaskStatusUpdateManager` use this process,
-            // we should avoid depending on identical field names.
-            record.mutable_uuid()->CopyFrom(update.status().status_uuid());
+            record.mutable_uuid()->CopyFrom(update.status().uuid());
             break;
         }
 
@@ -966,13 +965,8 @@ private:
     {
       CHECK_NONE(error);
 
-      // TODO(gkleiman): This won't work with `StatusUpdate`, because the field
-      // containing the status update uuid has a different name.  In order to
-      // make the `TaskStatusUpdateManager` use this process, we should avoid
-      // depending on identical field names.
-      Try<id::UUID> statusUuid =
-        id::UUID::fromBytes(update.status().status_uuid().value());
-      CHECK_SOME(statusUuid);
+      Try<id::UUID> uuid = id::UUID::fromBytes(update.status().uuid().value());
+      CHECK_SOME(uuid);
 
       switch (type) {
         case CheckpointType::UPDATE:
@@ -980,13 +974,13 @@ private:
             frameworkId = update.framework_id();
           }
 
-          received.insert(statusUuid.get());
+          received.insert(uuid.get());
 
           // Add it to the pending updates queue.
           pending.push(update);
           break;
         case CheckpointType::ACK:
-          acknowledged.insert(statusUuid.get());
+          acknowledged.insert(uuid.get());
 
           // Remove the corresponding update from the pending queue.
           pending.pop();
@@ -998,8 +992,8 @@ private:
       }
     }
 
-    // Type of status updates handled by the stream, e.g., "offer operation
-    // status update".
+    // Type of status updates handled by the stream, e.g., "operation status
+    // update".
     const std::string& statusUpdateType;
 
     const Option<std::string> path; // File path of the update stream.

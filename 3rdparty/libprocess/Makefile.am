@@ -31,7 +31,7 @@ endif
 
 ACLOCAL_AMFLAGS = -I m4
 
-AUTOMAKE_OPTIONS = foreign
+AUTOMAKE_OPTIONS = foreign subdir-objects
 LIBPROCESS_BUILD_DIR=@abs_builddir@
 
 if STANDALONE_LIBPROCESS
@@ -74,12 +74,12 @@ BUNDLED_DEPS = # Initialize BUNDLED_DEPENDENCIES so we can add to it.
 	@cd $(BUNDLED_DIR) && $(MAKE) $(AM_MAKEFLAGS) $(@:$(BUNDLED_DIR)/%=%)
 
 if WITH_BUNDLED_BOOST
-BOOST_INCLUDE_FLAGS = -isystem $(BOOST)
+BOOST_INCLUDE_FLAGS = -I$(BOOST)
 BUNDLED_DEPS += $(BOOST)-stamp
 endif
 
 if WITH_BUNDLED_CONCURRENTQUEUE
-CONCURRENTQUEUE_INCLUDE_FLAGS = -isystem $(CONCURRENTQUEUE)
+CONCURRENTQUEUE_INCLUDE_FLAGS = -I$(CONCURRENTQUEUE)
 BUNDLED_DEPS += $(CONCURRENTQUEUE)-stamp
 endif
 
@@ -113,12 +113,15 @@ BUNDLED_DEPS += $(GPERFTOOLS)-build-stamp
 endif
 
 if ENABLE_GRPC
+if !ENABLE_SSL
+GRPC_VARIANT = _unsecure
+endif
+
 if WITH_BUNDLED_GRPC
 GRPC_INCLUDE_FLAGS = -I$(GRPC)/include
-LIB_GRPC = $(GRPC)/libs/opt/libgrpc++.a	\
-           $(GRPC)/libs/opt/libgrpc.a	\
-           $(GRPC)/libs/opt/libgpr.a	\
-           -lssl -lcrypto
+LIB_GRPC = $(GRPC)/libs/opt/libgrpc++$(GRPC_VARIANT).a	\
+           $(GRPC)/libs/opt/libgrpc$(GRPC_VARIANT).a	\
+           $(GRPC)/libs/opt/libgpr.a
 GRPC_CPP_PLUGIN = $(GRPC)/bins/opt/grpc_cpp_plugin
 
 # NOTE: We need to specify the dependency between Protobuf and gRPC
@@ -129,7 +132,7 @@ $(GRPC)-build-stamp: $(PROTOBUF)-build-stamp
 $(LIB_GRPC): $(GRPC)-build-stamp
 BUNDLED_DEPS += $(GRPC)-build-stamp
 else
-LIB_GRPC = -lgrpc++ -lgrpc -lgpr -lssl -lcrypto
+LIB_GRPC = -lgrpc++$(GRPC_VARIANT) -lgrpc$(GRPC_VARIANT) -lgpr
 GRPC_CPP_PLUGIN = @GRPC_CXX_PLUGIN@
 endif
 endif
@@ -154,9 +157,7 @@ LIB_EV = -lev
 endif
 endif
 
-PICOJSON_INCLUDE_FLAGS =	\
-  -DPICOJSON_USE_INT64		\
-  -D__STDC_FORMAT_MACROS
+PICOJSON_INCLUDE_FLAGS = -D__STDC_FORMAT_MACROS
 if WITH_BUNDLED_PICOJSON
 PICOJSON_INCLUDE_FLAGS += -I$(PICOJSON)
 BUNDLED_DEPS += $(PICOJSON)-stamp
@@ -186,9 +187,9 @@ endif
 noinst_LTLIBRARIES = libprocess.la
 
 libprocess_la_SOURCES =		\
-  src/authenticator_manager.hpp	\
-  src/authenticator_manager.cpp	\
   src/authenticator.cpp		\
+  src/authenticator_manager.cpp	\
+  src/authenticator_manager.hpp	\
   src/clock.cpp			\
   src/config.hpp		\
   src/decoder.hpp		\
@@ -197,50 +198,53 @@ libprocess_la_SOURCES =		\
   src/event_queue.hpp		\
   src/firewall.cpp		\
   src/gate.hpp			\
+  src/gtest_constants.cpp	\
   src/help.cpp			\
   src/http.cpp			\
   src/http_proxy.cpp		\
   src/http_proxy.hpp		\
   src/io.cpp			\
+  src/io_internal.hpp		\
   src/latch.cpp			\
   src/logging.cpp		\
+  src/memory_profiler.cpp	\
+  src/memory_profiler.hpp	\
   src/metrics/metrics.cpp	\
   src/mime.cpp			\
+  src/mpsc_linked_queue.hpp	\
   src/pid.cpp			\
-  src/poll_socket.cpp		\
+  src/posix/io.cpp		\
+  src/posix/poll_socket.cpp	\
+  src/posix/subprocess.cpp	\
+  src/posix/subprocess.hpp	\
   src/poll_socket.hpp		\
-  src/profiler.cpp		\
   src/process.cpp		\
   src/process_reference.hpp	\
+  src/profiler.cpp		\
   src/reap.cpp			\
   src/run_queue.hpp		\
   src/semaphore.hpp		\
   src/socket.cpp		\
   src/socket_manager.hpp	\
   src/subprocess.cpp		\
-  src/subprocess_posix.cpp	\
-  src/subprocess_posix.hpp	\
-  src/time.cpp			\
-  src/timeseries.cpp
+  src/time.cpp
 
 if ENABLE_SSL
-libprocess_la_SOURCES +=	\
-  src/jwt.cpp			\
-  src/jwt_authenticator.cpp	\
-  src/libevent_ssl_socket.cpp	\
-  src/libevent_ssl_socket.hpp	\
-  src/openssl.cpp		\
-  src/openssl.hpp		\
+libprocess_la_SOURCES +=			\
+  src/jwt.cpp					\
+  src/jwt_authenticator.cpp			\
+  src/posix/libevent/libevent_ssl_socket.cpp	\
+  src/posix/libevent/libevent_ssl_socket.hpp	\
+  src/openssl.cpp				\
+  src/openssl.hpp				\
   src/ssl/utilities.cpp
 endif
 
 
-# We use "-isystem" instead of "-I" to add Boost to the include search
-# path. This disables compiler warnings inside Boost headers since we
-# can't easily fix them. See MESOS-3799.
 libprocess_la_CPPFLAGS =			\
   -DBUILD_DIR=\"$(LIBPROCESS_BUILD_DIR)\"	\
   -I$(srcdir)/include				\
+  -I$(srcdir)/src				\
   $(BOOST_INCLUDE_FLAGS)			\
   $(CONCURRENTQUEUE_INCLUDE_FLAGS)		\
   $(ELFIO_INCLUDE_FLAGS)			\
@@ -260,15 +264,15 @@ libprocess_la_SOURCES +=	\
 endif
 
 if ENABLE_LIBEVENT
-libprocess_la_SOURCES +=	\
-  src/libevent.hpp		\
-  src/libevent.cpp		\
-  src/libevent_poll.cpp
+libprocess_la_SOURCES +=			\
+  src/posix/libevent/libevent.hpp		\
+  src/posix/libevent/libevent.cpp		\
+  src/posix/libevent/libevent_poll.cpp
 else
-libprocess_la_SOURCES +=	\
-  src/libev.hpp			\
-  src/libev.cpp			\
-  src/libev_poll.cpp
+libprocess_la_SOURCES +=			\
+  src/posix/libev/libev.hpp			\
+  src/posix/libev/libev.cpp			\
+  src/posix/libev/libev_poll.cpp
 endif
 
 if ENABLE_STATIC_LIBPROCESS
@@ -276,6 +280,10 @@ if ENABLE_STATIC_LIBPROCESS
 # final shared library (e.g., libmesos.so) which includes everything necessary
 # (and only install that).
 libprocess_la_LDFLAGS = -static -fpic
+endif
+
+if OS_LINUX
+libprocess_la_CPPFLAGS += -DLIBPROCESS_ALLOW_JEMALLOC
 endif
 
 libprocess_la_LIBADD =		\
@@ -300,6 +308,7 @@ libprocess_tests_SOURCES =					\
   src/tests/loop_tests.cpp					\
   src/tests/main.cpp						\
   src/tests/metrics_tests.cpp					\
+  src/tests/mpsc_linked_queue_tests.cpp				\
   src/tests/mutex_tests.cpp					\
   src/tests/owned_tests.cpp					\
   src/tests/process_tests.cpp					\
@@ -376,6 +385,12 @@ check_PROGRAMS += test-linkee
 test_linkee_SOURCES = src/tests/test_linkee.cpp
 test_linkee_CPPFLAGS = $(libprocess_tests_CPPFLAGS)
 test_linkee_LDADD = $(libprocess_tests_LDADD)
+
+# Compile the example to make sure it remains valid.
+check_PROGRAMS += example
+example_SOURCES = examples/example.cpp
+example_CPPFLAGS = $(libprocess_tests_CPPFLAGS)
+example_LDADD = $(libprocess_tests_LDADD)
 
 if !ENABLE_STATIC_LIBPROCESS
 # If libprocess is not static, we need to directly link against libglog, etc.

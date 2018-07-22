@@ -30,10 +30,9 @@
 #include <stout/path.hpp>
 #include <stout/stringify.hpp>
 #include <stout/try.hpp>
+#include <stout/unreachable.hpp>
 
-#ifndef __WINDOWS__
 #include <stout/os/signals.hpp>
-#endif // __WINDOWS__
 
 #include "logging/logging.hpp"
 
@@ -66,6 +65,7 @@ using std::string;
 extern "C" void __cxa_pure_virtual()
 {
   RAW_LOG(FATAL, "Pure virtual method called");
+  UNREACHABLE();
 }
 
 

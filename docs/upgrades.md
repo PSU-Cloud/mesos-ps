@@ -43,6 +43,80 @@ We categorize the changes as follows:
   </thead>
 <tr>
   <td style="word-wrap: break-word; overflow-wrap: break-word;"><!--Version-->
+  1.7.x
+  </td>
+
+  <td style="word-wrap: break-word; overflow-wrap: break-word;"><!--Mesos Core-->
+    <ul style="padding-left:10px;">
+      <li>A <a href="#1-7-x-linux-devices-isolator">Linux devices isolator</a></li>
+      <li>A <a href="#1-7-x-auto-load-subsystems">Automatically load local enabled cgroups subsystems</a></li>
+      <li>A <a href="#1-7-x-container-specific-cgroups-mounts">Container-specific cgroups mounts</a></li>
+    </ul>
+  </td>
+
+  <td style="word-wrap: break-word; overflow-wrap: break-word;"><!--Flags-->
+    <ul style="padding-left:10px;">
+      <li>A <a href="#1-7-x-enforce-container-ports">enforce_container_ports</a></li>
+    </ul>
+  </td>
+
+  <td style="word-wrap: break-word; overflow-wrap: break-word;"><!--Framework API-->
+    <ul style="padding-left:10px;">
+    </ul>
+  </td>
+
+  <td style="word-wrap: break-word; overflow-wrap: break-word;"><!--Module API-->
+    <ul style="padding-left:10px;">
+      <li>C <a href="#1-7-x-container-logger">ContainerLogger module interface changes</a></li>
+      <li>C <a href="#1-7-x-isolator-recover">Isolator::recover module interface change</a></li>
+      <li>C <a href="#1-7-x-sorter-update">Changed semantics of Sorter::update</a></li>
+    </ul>
+  </td>
+
+  <td style="word-wrap: break-word; overflow-wrap: break-word;"><!--Endpoints-->
+    <ul style="padding-left:10px;">
+    </ul>
+  </td>
+</tr>
+<tr>
+  <td style="word-wrap: break-word; overflow-wrap: break-word;"><!--Version-->
+  1.6.x
+  </td>
+
+  <td style="word-wrap: break-word; overflow-wrap: break-word;"><!--Mesos Core-->
+    <ul style="padding-left:10px;">
+      <li>C <a href="#1-6-x-grpc-requirement">Requirement for gRPC library</a></li>
+      <li>C <a href="#1-6-x-csi-support">CSI v0.2 Support</a></li>
+    </ul>
+  </td>
+
+  <td style="word-wrap: break-word; overflow-wrap: break-word;"><!--Flags-->
+    <ul style="padding-left:10px;">
+      <li>A <a href="#1-6-x-fetcher-stall-timeout">fetcher_stall_timeout</a></li>
+    </ul>
+    <ul style="padding-left:10px;">
+      <li>A <a href="#1-6-x-xfs-kill-containers">xfs_kill_containers</a></li>
+    </ul>
+  </td>
+
+  <td style="word-wrap: break-word; overflow-wrap: break-word;"><!--Framework API-->
+    <ul style="padding-left:10px;">
+    </ul>
+  </td>
+
+  <td style="word-wrap: break-word; overflow-wrap: break-word;"><!--Module API-->
+    <ul style="padding-left:10px;">
+      <li>C <a href="#1-6-x-disk-profile-adaptor">Disk profile adaptor module changes</a></li>
+    </ul>
+  </td>
+
+  <td style="word-wrap: break-word; overflow-wrap: break-word;"><!--Endpoints-->
+    <ul style="padding-left:10px;">
+    </ul>
+  </td>
+</tr>
+<tr>
+  <td style="word-wrap: break-word; overflow-wrap: break-word;"><!--Version-->
   1.5.x
   </td>
 
@@ -51,6 +125,8 @@ We categorize the changes as follows:
       <li>C <a href="#1-5-x-task-starting">Built-in executors send a TASK_STARTING update</a></li>
       <li>A <a href="#1-5-x-network-ports-isolator">Network ports isolator</a></li>
       <li>C <a href="#1-5-x-relative-disk-source-root-path">Relative source root paths for disk resources</a></li>
+      <li>A <a href="#1-5-x-reconfiguration-policy">Agent state recovery after resource changes</a></li>
+      <li>C <a href="#1-5-x-protobuf-requirement">Requirement for Protobuf library</a></li>
     </ul>
   </td>
 
@@ -59,6 +135,7 @@ We categorize the changes as follows:
       <li>A <a href="#1-5-x-network-ports-isolator">container_ports_watch_interval</a></li>
       <li>A <a href="#1-5-x-network-ports-isolator">check_agent_port_range_only</a></li>
       <li>D <a href="#1-5-x-executor-secret-key">executor_secret_key</a></li>
+      <li>A <a href="#1-5-x-reconfiguration-policy">reconfiguration_policy</a></li>
     </ul>
   </td>
 
@@ -75,6 +152,7 @@ We categorize the changes as follows:
 
   <td style="word-wrap: break-word; overflow-wrap: break-word;"><!--Endpoints-->
     <ul style="padding-left:10px;">
+      <li>A <a href="#1-5-x-get-containers">Allowed to view nested/standalone containers</a></li>
     </ul>
   </td>
 
@@ -356,6 +434,63 @@ We categorize the changes as follows:
 </tr>
 </table>
 
+## Upgrading from 1.6.x to 1.7.x ##
+
+<a name="1-7-x-linux-devices-isolator"></a>
+
+* A new [`linux/devices`](isolators/linux-devices.md) isolator has been
+  added. This isolator automatically populates containers with devices
+  that have been whitelisted with the `--allowed_devices` agent flag.
+
+<a name="1-7-x-enforce-container-ports"></a>
+
+* A new [`--enforce_container_ports`](configuration/agent.md#enforce_container_ports)
+  has been added to toggle whether the [`network/ports`](isolators/network-ports.md)
+  isolator should enforce TCP ports usage limits.
+
+<a name="1-7-x-auto-load-subsystems"></a>
+
+* A new option `cgroups/all` has been added to the agent flag `--isolation`. This allows cgroups isolator to automatically load all the local enabled cgroups subsystems. If this option is specified in the agent flag `--isolation` along with other cgroups related options (e.g., `cgroups/cpu`), those options will be just ignored.
+
+<a name="1-7-x-container-specific-cgroups-mounts"></a>
+
+* Added container-specific cgroups mounts under `/sys/fs/cgroup` to containers with image launched by Mesos containerizer.
+
+<a name="1-7-x-container-logger"></a>
+
+* `ContainerLogger` module interface has been changed. The `prepare()` method now takes `ContainerID` and `ContainerConfig` instead.
+
+<a name="1-7-x-isolator-recover"></a>
+
+* `Isolator::recover()` has been updated to take an `std::vector` instead of `std::list` of container states.
+
+<a name="1-7-x-sorter-update"></a>
+
+* The semantics of `Sorter::update` has been changed so that resources can be removed from a client's allocation without removing the full agent in which they reside. Callers are expected to update the total resources of the agent as well by, e.g., removing the agent and adding it back with the new total resources.
+
+## Upgrading from 1.5.x to 1.6.x ##
+
+<a name="1-6-x-grpc-requirement"></a>
+
+* gRPC version 1.10+ is required to build Mesos when enabling gRPC-related features. Please upgrade your gRPC library if you are using an unbundled one.
+
+<a name="1-6-x-csi-support"></a>
+
+* CSI v0.2 is now supported as experimental. Due to the incompatibility between CSI v0.1 and v0.2, the experimental support for CSI v0.1 is deprecated, and the operator must remove all storage local resource providers within an agent before upgrading the agent. NOTE: This is a **breaking change** for storage local resource providers.
+
+<a name="1-6-x-fetcher-stall-timeout"></a>
+
+* A new agent flag `--fetcher_stall_timeout` has been added. This flag specifies the amount of time for the container image and artifact fetchers to wait before aborting a stalled download (i.e., the speed keeps below one byte per second). NOTE: This flag only applies when downloading data from the net and does not apply to HDFS.
+
+<a name="1-6-x-disk-profile-adaptor"></a>
+
+* The disk profile adaptor module has been changed to support CSI v0.2, and its header file has been renamed to be consistent with other modules. See `disk_profile_adaptor.hpp` for interface changes.
+
+<a name="1-6-x-xfs-kill-containers"></a>
+
+* A new agent flag `--xfs_kill_containers` has been added. By setting this flag, the [`disk/xfs`](isolators/disk-xfs.md) isolator
+  will now kill containers that exceed the disk limit.
+
 ## Upgrading from 1.4.x to 1.5.x ##
 
 <a name="1-5-x-task-starting"></a>
@@ -378,7 +513,7 @@ We categorize the changes as follows:
 
 * A new [`network/ports`](isolators/network-ports.md) isolator has been added. The isolator supports the following new agent flags:
   * `--container_ports_watch_interval` specifies the interval at which the isolator reconciles port assignments.
-  * `--check_agent_port_range_only` excludes ports outside the agent's range from port reconcilation.
+  * `--check_agent_port_range_only` excludes ports outside the agent's range from port reconciliation.
 
 <a name="1-5-x-executor-secret-key"></a>
 
@@ -388,6 +523,26 @@ We categorize the changes as follows:
 
 * The fields `Resource.disk.source.path.root` and `Resource.disk.source.mount.root` can now be set to relative paths to an agent's work directory. The containerizers will interpret the paths based on the `--work_dir` flag on an agent.
 
+<a name="1-5-x-get-containers"></a>
+
+* The agent operator API call `GET_CONTAINERS` has been updated to support listing nested or standalone containers. One can specify the following fields in the request:
+  * `show_nested`: Whether to show nested containers.
+  * `show_standalone`: Whether to show standalone containers.
+
+<a name="1-5-x-reconfiguration-policy"></a>
+
+* A new agent flag `--reconfiguration_policy` has been added. By setting the value of this flag to `additive`,
+  operators can allow the agent to be restarted with increased resources without requiring the agent ID to be
+  changed. Note that if this feature is used, the master version is required to be >= 1.5 as well.
+
+<a name="1-5-x-protobuf-requirement"></a>
+
+* Protobuf version 3+ is required to build Mesos. Please upgrade your Protobuf library if you are using an unbundled one.
+
+<a name="1-5-x-log-reader-catchup"></a>
+
+* A new `catchup()` method has been added to the replicated log reader API. The method allows to catch-up positions missing in the local non-leading replica to allow safe eventually consistent reads from it. Note about backwards compatibility: In order for the feature to work correctly in presence of log truncations all log replicas need to be updated.
+
 ## Upgrading from 1.3.x to 1.4.x ##
 
 <a name="1-4-x-ambient-capabilities"></a>
@@ -396,7 +551,7 @@ We categorize the changes as follows:
 
 <a name="1-4-x-bounding-capabilities"></a>
 
-* Explicitly setting the bounding capabilities of a task independently of the effective capabilities is now supported. Frameworks can specifiy the task bounding capabilities by using the `LinuxInfo.bounding_capabilities` message. Operators can specify the default bounding capabilities using the agent `--bounding_capabilities` flag. This flag also specifies the maximum bounding set that a framework is allowed to specify.
+* Explicitly setting the bounding capabilities of a task independently of the effective capabilities is now supported. Frameworks can specify the task bounding capabilities by using the `LinuxInfo.bounding_capabilities` message. Operators can specify the default bounding capabilities using the agent `--bounding_capabilities` flag. This flag also specifies the maximum bounding set that a framework is allowed to specify.
 
 <a name="1-4-x-agent-recovery"></a>
 
@@ -541,7 +696,7 @@ In order to upgrade a running cluster:
 
 <a name="1-1-x-allocator-updateallocation"></a>
 
-* Mesos 1.1 adds an `offeredResources` argument to the `Allocator::updateAllocation()` method. It is used to indicate the resources that the operations passed to `updateAllocation()` are applied to. [MESOS-4431](https://issues.apache.org/jira/browse/MESOS-4431) (paticularly [/r/45961/](https://reviews.apache.org/r/45961/)) has more details on the motivation.
+* Mesos 1.1 adds an `offeredResources` argument to the `Allocator::updateAllocation()` method. It is used to indicate the resources that the operations passed to `updateAllocation()` are applied to. [MESOS-4431](https://issues.apache.org/jira/browse/MESOS-4431) (particularly [/r/45961/](https://reviews.apache.org/r/45961/)) has more details on the motivation.
 
 ## Upgrading from 0.28.x to 1.0.x ##
 
@@ -561,7 +716,7 @@ In order to upgrade a running cluster:
 
 <a name="1-0-x-executor-environment-variables"></a>
 
-* By default, executors will no longer inherit environment variables from the agent. The operator can still use the `--executor-environment-variables` flag on the agent to explicitly specify what environment variables the executors will get. Mesos generated environment variables (i.e., `$MESOS_`, `$LIBPROCESS_`) will not be affected. If `$PATH` is not specified for an executor, a default value `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin` will be used.
+* By default, executors will no longer inherit environment variables from the agent. The operator can still use the `--executor_environment_variables` flag on the agent to explicitly specify what environment variables the executors will get. Mesos generated environment variables (i.e., `$MESOS_`, `$LIBPROCESS_`) will not be affected. If `$PATH` is not specified for an executor, a default value `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin` will be used.
 
 <a name="1-0-x-allocator-metrics"></a>
 
@@ -629,7 +784,7 @@ In order to upgrade a running cluster:
 <a name="1-0-x-quota-acls"></a>
 
 * The `SetQuota` and `RemoveQuota` ACLs have been deprecated. To replace these, a new ACL `UpdateQuota` have been introduced. In addition, a new ACL `GetQuota` have been added; these control which principals are allowed to query quota information for which roles. These changes affect the `--acls` flag for the local authorizer in the following ways:
-  * The `update_quotas` ACL cannot be used in combination with either the `set_quotas` or `remove_quotas` ACL. The local authorizor will produce an error in such a case;
+  * The `update_quotas` ACL cannot be used in combination with either the `set_quotas` or `remove_quotas` ACL. The local authorizer will produce an error in such a case;
   * When upgrading a Mesos cluster that uses the `set_quotas` or `remove_quotas` ACLs, the operator should first upgrade the Mesos binaries. At this point, the deprecated ACLs will still be enforced. After the upgrade has been verified, the operator should replace deprecated values for `set_quotas` and `remove_quotas` with equivalent values for `update_quotas`;
   * If desired, the operator can use the `get_quotas` ACL after the upgrade to control which principals are allowed to query quota information.
 
@@ -650,7 +805,7 @@ In order to upgrade a running cluster:
 
 <a name="1-0-x-http-authentication-flags"></a>
 
-* The `--authenticate_http` flag has been deprecated in favor of `--authenticate_http_readwrite`. Setting `--authenticate_http_readwrite` will now enable authentication for all endpoints which previously had authentication support. These happen to be the endpoints which allow modifiication of the cluster state, or "read-write" endpoints. Note that `/logging/toggle`, `/profiler/start`, `/profiler/stop`, `/maintenance/schedule`, `/machine/up`, and `/machine/down` previously did not have authentication support, but in 1.0 if either `--authenticate_http` or `--authenticate_http_readwrite` is set, those endpoints will now require authentication. A new flag has also been introduced, `--authenticate_http_readonly`, which enables authentication for endpoints which support authentication and do not allow modification of the state of the cluster, like `/state` or `/flags`.
+* The `--authenticate_http` flag has been deprecated in favor of `--authenticate_http_readwrite`. Setting `--authenticate_http_readwrite` will now enable authentication for all endpoints which previously had authentication support. These happen to be the endpoints which allow modification of the cluster state, or "read-write" endpoints. Note that `/logging/toggle`, `/profiler/start`, `/profiler/stop`, `/maintenance/schedule`, `/machine/up`, and `/machine/down` previously did not have authentication support, but in 1.0 if either `--authenticate_http` or `--authenticate_http_readwrite` is set, those endpoints will now require authentication. A new flag has also been introduced, `--authenticate_http_readonly`, which enables authentication for endpoints which support authentication and do not allow modification of the state of the cluster, like `/state` or `/flags`.
 
 <a name="1-0-x-endpoint-authorization"></a>
 

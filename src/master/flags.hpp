@@ -60,7 +60,7 @@ public:
   Option<std::string> agent_removal_rate_limit;
   std::string webui_dir;
   Option<Path> whitelist;
-  std::string user_sorter;
+  std::string role_sorter;
   std::string framework_sorter;
   Duration allocation_interval;
   Option<std::string> cluster;
@@ -82,6 +82,7 @@ public:
   std::string allocator;
   Option<std::set<std::string>> fair_sharing_excluded_resource_names;
   bool filter_gpu_resources;
+  std::string min_allocatable_resources;
   Option<std::string> hooks;
   Duration agent_ping_timeout;
   size_t max_agent_ping_timeouts;
@@ -96,6 +97,7 @@ public:
   Duration registry_gc_interval;
   Duration registry_max_agent_age;
   size_t registry_max_agent_count;
+  bool require_agent_domain;
   Option<DomainInfo> domain;
 
   // The following flags are executable specific (e.g., since we only
@@ -106,7 +108,8 @@ public:
   uint16_t port;
   Option<std::string> advertise_ip;
   Option<std::string> advertise_port;
-  Option<std::string> zk;
+  Option<flags::SecurePathOrValue> zk;
+  bool memory_profiling;
 
   // Optional IP discover script that will set the Master IP.
   // If set, its output is expected to be a valid parseable IP string.

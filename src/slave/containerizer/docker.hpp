@@ -17,7 +17,6 @@
 #ifndef __DOCKER_CONTAINERIZER_HPP__
 #define __DOCKER_CONTAINERIZER_HPP__
 
-#include <list>
 #include <map>
 #include <set>
 #include <string>
@@ -27,6 +26,10 @@
 #include <process/owned.hpp>
 #include <process/shared.hpp>
 
+#include <process/metrics/metrics.hpp>
+#include <process/metrics/timer.hpp>
+
+#include <stout/duration.hpp>
 #include <stout/flags.hpp>
 #include <stout/hashset.hpp>
 
@@ -81,36 +84,37 @@ public:
   DockerContainerizer(
       const process::Owned<DockerContainerizerProcess>& _process);
 
-  virtual ~DockerContainerizer();
+  ~DockerContainerizer() override;
 
-  virtual process::Future<Nothing> recover(
-      const Option<state::SlaveState>& state);
+  process::Future<Nothing> recover(
+      const Option<state::SlaveState>& state) override;
 
-  virtual process::Future<Containerizer::LaunchResult> launch(
+  process::Future<Containerizer::LaunchResult> launch(
       const ContainerID& containerId,
       const mesos::slave::ContainerConfig& containerConfig,
       const std::map<std::string, std::string>& environment,
-      const Option<std::string>& pidCheckpointPath);
+      const Option<std::string>& pidCheckpointPath) override;
 
-  virtual process::Future<Nothing> update(
+  process::Future<Nothing> update(
       const ContainerID& containerId,
-      const Resources& resources);
+      const Resources& resources) override;
 
-  virtual process::Future<ResourceStatistics> usage(
-      const ContainerID& containerId);
+  process::Future<ResourceStatistics> usage(
+      const ContainerID& containerId) override;
 
-  virtual process::Future<ContainerStatus> status(
-      const ContainerID& containerId);
+  process::Future<ContainerStatus> status(
+      const ContainerID& containerId) override;
 
-  virtual process::Future<Option<mesos::slave::ContainerTermination>> wait(
-      const ContainerID& containerId);
+  process::Future<Option<mesos::slave::ContainerTermination>> wait(
+      const ContainerID& containerId) override;
 
-  virtual process::Future<bool> destroy(const ContainerID& containerId);
+  process::Future<Option<mesos::slave::ContainerTermination>> destroy(
+      const ContainerID& containerId) override;
 
-  virtual process::Future<hashset<ContainerID>> containers();
+  process::Future<hashset<ContainerID>> containers() override;
 
-  virtual process::Future<Nothing> pruneImages(
-      const std::vector<Image>& excludedImages);
+  process::Future<Nothing> pruneImages(
+      const std::vector<Image>& excludedImages) override;
 
 private:
   process::Owned<DockerContainerizerProcess> process;
@@ -159,7 +163,7 @@ public:
   virtual process::Future<Option<mesos::slave::ContainerTermination>> wait(
       const ContainerID& containerId);
 
-  virtual process::Future<bool> destroy(
+  virtual process::Future<Option<mesos::slave::ContainerTermination>> destroy(
       const ContainerID& containerId,
       bool killed = true); // process is either killed or reaped.
 
@@ -170,6 +174,21 @@ public:
   virtual process::Future<hashset<ContainerID>> containers();
 
 private:
+  struct Metrics
+  {
+    Metrics() : image_pull("containerizer/docker/image_pull", Hours(1))
+    {
+      process::metrics::add(image_pull);
+    }
+
+    ~Metrics()
+    {
+      process::metrics::remove(image_pull);
+    }
+
+    process::metrics::Timer<Milliseconds> image_pull;
+  };
+
   // Continuations and helpers.
   process::Future<Nothing> _fetch(
       const ContainerID& containerId,
@@ -185,10 +204,10 @@ private:
 
   process::Future<Nothing> _recover(
       const Option<state::SlaveState>& state,
-      const std::list<Docker::Container>& containers);
+      const std::vector<Docker::Container>& containers);
 
   process::Future<Nothing> __recover(
-      const std::list<Docker::Container>& containers);
+      const std::vector<Docker::Container>& containers);
 
   // Starts the executor in a Docker container.
   process::Future<Docker::Container> launchExecutorContainer(
@@ -292,6 +311,8 @@ private:
   process::Shared<Docker> docker;
 
   Option<NvidiaComponents> nvidia;
+
+  Metrics metrics;
 
   struct Container
   {

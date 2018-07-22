@@ -182,7 +182,7 @@ public:
       action_(action),
       permissive_(permissive) {}
 
-  virtual Try<bool> approved(
+  Try<bool> approved(
       const Option<ObjectApprover::Object>& object) const noexcept override
   {
     // Construct subject.
@@ -402,6 +402,7 @@ public:
         case authorization::KILL_STANDALONE_CONTAINER:
         case authorization::WAIT_STANDALONE_CONTAINER:
         case authorization::REMOVE_STANDALONE_CONTAINER:
+        case authorization::VIEW_STANDALONE_CONTAINER:
         case authorization::GET_MAINTENANCE_SCHEDULE:
         case authorization::GET_MAINTENANCE_STATUS:
         case authorization::MARK_AGENT_GONE:
@@ -411,16 +412,22 @@ public:
         case authorization::STOP_MAINTENANCE:
         case authorization::UPDATE_MAINTENANCE_SCHEDULE:
         case authorization::MODIFY_RESOURCE_PROVIDER_CONFIG:
+        case authorization::PRUNE_IMAGES:
           aclObject.set_type(ACL::Entity::ANY);
 
           break;
         case authorization::CREATE_VOLUME:
+        case authorization::RESIZE_VOLUME:
         case authorization::GET_QUOTA:
         case authorization::RESERVE_RESOURCES:
         case authorization::UPDATE_QUOTA:
         case authorization::UPDATE_WEIGHT:
         case authorization::VIEW_ROLE:
         case authorization::REGISTER_FRAMEWORK:
+        case authorization::CREATE_BLOCK_DISK:
+        case authorization::DESTROY_BLOCK_DISK:
+        case authorization::CREATE_MOUNT_DISK:
+        case authorization::DESTROY_MOUNT_DISK:
           return Error("Authorization for action " + stringify(action_) +
                        " requires a specialized approver object.");
         case authorization::UNKNOWN:
@@ -473,7 +480,7 @@ public:
   // under an executor running under a given OS user and, if a command
   // is available, the principal is also allowed to run the command as
   // the given OS user.
-  virtual Try<bool> approved(
+  Try<bool> approved(
       const Option<ObjectApprover::Object>& object) const noexcept override
   {
     if (object.isNone() || object->command_info == nullptr) {
@@ -517,7 +524,7 @@ public:
   // Executors are permitted to perform an action when the root ContainerID in
   // the object is equal to the ContainerID that was extracted from the
   // subject's claims.
-  virtual Try<bool> approved(
+  Try<bool> approved(
       const Option<ObjectApprover::Object>& object) const noexcept override
   {
     return object.isSome() &&
@@ -539,7 +546,7 @@ public:
   // Resource providers are permitted to perform an action when the
   // ContainerID in the object is prefixed by the namespace extracted
   // from the subject's claims.
-  virtual Try<bool> approved(
+  Try<bool> approved(
       const Option<ObjectApprover::Object>& object) const noexcept override
   {
     return object.isSome() &&
@@ -556,7 +563,7 @@ private:
 class RejectingObjectApprover : public ObjectApprover
 {
 public:
-  virtual Try<bool> approved(
+  Try<bool> approved(
       const Option<ObjectApprover::Object>& object) const noexcept override
   {
     return false;
@@ -582,7 +589,7 @@ public:
     }
   }
 
-  virtual Try<bool> approved(const Option<ObjectApprover::Object>& object) const
+  Try<bool> approved(const Option<ObjectApprover::Object>& object) const
       noexcept override
   {
     ACL::Entity entityObject;
@@ -592,7 +599,12 @@ public:
     } else {
       switch (action_) {
         case authorization::CREATE_VOLUME:
-        case authorization::RESERVE_RESOURCES: {
+        case authorization::RESIZE_VOLUME:
+        case authorization::RESERVE_RESOURCES:
+        case authorization::CREATE_BLOCK_DISK:
+        case authorization::DESTROY_BLOCK_DISK:
+        case authorization::CREATE_MOUNT_DISK:
+        case authorization::DESTROY_MOUNT_DISK: {
           entityObject.set_type(ACL::Entity::SOME);
           if (object->resource) {
             if (object->resource->reservations_size() > 0) {
@@ -699,6 +711,7 @@ public:
         case authorization::LAUNCH_NESTED_CONTAINER_SESSION:
         case authorization::LAUNCH_STANDALONE_CONTAINER:
         case authorization::MARK_AGENT_GONE:
+        case authorization::PRUNE_IMAGES:
         case authorization::REGISTER_AGENT:
         case authorization::REMOVE_NESTED_CONTAINER:
         case authorization::REMOVE_STANDALONE_CONTAINER:
@@ -713,6 +726,7 @@ public:
         case authorization::VIEW_EXECUTOR:
         case authorization::VIEW_FLAGS:
         case authorization::VIEW_FRAMEWORK:
+        case authorization::VIEW_STANDALONE_CONTAINER:
         case authorization::VIEW_TASK:
         case authorization::WAIT_NESTED_CONTAINER:
         case authorization::WAIT_STANDALONE_CONTAINER:
@@ -871,6 +885,11 @@ public:
             createHierarchicalRoleACLs(acls.create_volumes());
         break;
       }
+      case authorization::RESIZE_VOLUME: {
+        hierarchicalRoleACLs =
+            createHierarchicalRoleACLs(acls.resize_volumes());
+        break;
+      }
       case authorization::RESERVE_RESOURCES: {
         hierarchicalRoleACLs =
             createHierarchicalRoleACLs(acls.reserve_resources());
@@ -901,6 +920,26 @@ public:
             createHierarchicalRoleACLs(acls.update_quotas());
         break;
       }
+      case authorization::CREATE_BLOCK_DISK: {
+        hierarchicalRoleACLs =
+          createHierarchicalRoleACLs(acls.create_block_disks());
+        break;
+      }
+      case authorization::DESTROY_BLOCK_DISK: {
+        hierarchicalRoleACLs =
+          createHierarchicalRoleACLs(acls.destroy_block_disks());
+        break;
+      }
+      case authorization::CREATE_MOUNT_DISK: {
+        hierarchicalRoleACLs =
+          createHierarchicalRoleACLs(acls.create_mount_disks());
+        break;
+      }
+      case authorization::DESTROY_MOUNT_DISK: {
+        hierarchicalRoleACLs =
+          createHierarchicalRoleACLs(acls.destroy_mount_disks());
+        break;
+      }
       case authorization::ACCESS_MESOS_LOG:
       case authorization::ACCESS_SANDBOX:
       case authorization::ATTACH_CONTAINER_INPUT:
@@ -915,6 +954,7 @@ public:
       case authorization::LAUNCH_NESTED_CONTAINER_SESSION:
       case authorization::LAUNCH_STANDALONE_CONTAINER:
       case authorization::MARK_AGENT_GONE:
+      case authorization::PRUNE_IMAGES:
       case authorization::REGISTER_AGENT:
       case authorization::REMOVE_NESTED_CONTAINER:
       case authorization::REMOVE_STANDALONE_CONTAINER:
@@ -930,6 +970,7 @@ public:
       case authorization::VIEW_EXECUTOR:
       case authorization::VIEW_FLAGS:
       case authorization::VIEW_FRAMEWORK:
+      case authorization::VIEW_STANDALONE_CONTAINER:
       case authorization::VIEW_TASK:
       case authorization::WAIT_NESTED_CONTAINER:
       case authorization::WAIT_STANDALONE_CONTAINER:
@@ -1107,12 +1148,17 @@ public:
         return getNestedContainerObjectApprover(subject, action);
       }
       case authorization::CREATE_VOLUME:
+      case authorization::RESIZE_VOLUME:
       case authorization::RESERVE_RESOURCES:
       case authorization::UPDATE_WEIGHT:
       case authorization::VIEW_ROLE:
       case authorization::GET_QUOTA:
       case authorization::REGISTER_FRAMEWORK:
-      case authorization::UPDATE_QUOTA: {
+      case authorization::UPDATE_QUOTA:
+      case authorization::CREATE_BLOCK_DISK:
+      case authorization::DESTROY_BLOCK_DISK:
+      case authorization::CREATE_MOUNT_DISK:
+      case authorization::DESTROY_MOUNT_DISK: {
         return getHierarchicalRoleApprover(subject, action);
       }
       case authorization::ACCESS_MESOS_LOG:
@@ -1127,6 +1173,7 @@ public:
       case authorization::KILL_STANDALONE_CONTAINER:
       case authorization::LAUNCH_STANDALONE_CONTAINER:
       case authorization::MARK_AGENT_GONE:
+      case authorization::PRUNE_IMAGES:
       case authorization::REGISTER_AGENT:
       case authorization::REMOVE_NESTED_CONTAINER:
       case authorization::REMOVE_STANDALONE_CONTAINER:
@@ -1141,6 +1188,7 @@ public:
       case authorization::VIEW_EXECUTOR:
       case authorization::VIEW_FLAGS:
       case authorization::VIEW_FRAMEWORK:
+      case authorization::VIEW_STANDALONE_CONTAINER:
       case authorization::VIEW_TASK:
       case authorization::WAIT_NESTED_CONTAINER:
       case authorization::WAIT_STANDALONE_CONTAINER:
@@ -1436,7 +1484,7 @@ private:
         return acls_;
       case authorization::LAUNCH_STANDALONE_CONTAINER:
         foreach (const ACL::LaunchStandaloneContainer& acl,
-                 acls.launch_standalone_container()) {
+                 acls.launch_standalone_containers()) {
           GenericACL acl_;
           acl_.subjects = acl.principals();
           acl_.objects = acl.users();
@@ -1447,7 +1495,7 @@ private:
         return acls_;
       case authorization::KILL_STANDALONE_CONTAINER:
         foreach (const ACL::KillStandaloneContainer& acl,
-            acls.kill_standalone_container()) {
+            acls.kill_standalone_containers()) {
           GenericACL acl_;
           acl_.subjects = acl.principals();
           acl_.objects = acl.users();
@@ -1458,7 +1506,7 @@ private:
         return acls_;
       case authorization::WAIT_STANDALONE_CONTAINER:
         foreach (const ACL::WaitStandaloneContainer& acl,
-            acls.wait_standalone_container()) {
+            acls.wait_standalone_containers()) {
           GenericACL acl_;
           acl_.subjects = acl.principals();
           acl_.objects = acl.users();
@@ -1469,7 +1517,18 @@ private:
         return acls_;
       case authorization::REMOVE_STANDALONE_CONTAINER:
         foreach (const ACL::RemoveStandaloneContainer& acl,
-            acls.remove_standalone_container()) {
+            acls.remove_standalone_containers()) {
+          GenericACL acl_;
+          acl_.subjects = acl.principals();
+          acl_.objects = acl.users();
+
+          acls_.push_back(acl_);
+        }
+
+        return acls_;
+      case authorization::VIEW_STANDALONE_CONTAINER:
+        foreach (const ACL::ViewStandaloneContainer& acl,
+            acls.view_standalone_containers()) {
           GenericACL acl_;
           acl_.subjects = acl.principals();
           acl_.objects = acl.users();
@@ -1489,8 +1548,19 @@ private:
         }
 
         return acls_;
+      case authorization::PRUNE_IMAGES:
+        foreach (const ACL::PruneImages& acl, acls.prune_images()) {
+          GenericACL acl_;
+          acl_.subjects = acl.principals();
+          acl_.objects = acl.images();
+
+          acls_.push_back(acl_);
+        }
+
+        return acls_;
       case authorization::REGISTER_FRAMEWORK:
       case authorization::CREATE_VOLUME:
+      case authorization::RESIZE_VOLUME:
       case authorization::RESERVE_RESOURCES:
       case authorization::UPDATE_WEIGHT:
       case authorization::VIEW_ROLE:
@@ -1498,6 +1568,10 @@ private:
       case authorization::UPDATE_QUOTA:
       case authorization::LAUNCH_NESTED_CONTAINER_SESSION:
       case authorization::LAUNCH_NESTED_CONTAINER:
+      case authorization::CREATE_BLOCK_DISK:
+      case authorization::DESTROY_BLOCK_DISK:
+      case authorization::CREATE_MOUNT_DISK:
+      case authorization::DESTROY_MOUNT_DISK:
         return Error("Extracting ACLs for " + stringify(action) + " requires "
                      "a specialized function");
       case authorization::UNKNOWN:
@@ -1551,19 +1625,19 @@ Option<Error> LocalAuthorizer::validate(const ACLs& acls)
 {
   foreach (const ACL::AccessMesosLog& acl, acls.access_mesos_logs()) {
     if (acl.logs().type() == ACL::Entity::SOME) {
-      return Error("acls.access_mesos_logs type must be either NONE or ANY");
+      return Error("ACL.AccessMesosLog type must be either NONE or ANY");
     }
   }
 
   foreach (const ACL::ViewFlags& acl, acls.view_flags()) {
     if (acl.flags().type() == ACL::Entity::SOME) {
-      return Error("acls.view_flags type must be either NONE or ANY");
+      return Error("ACL.ViewFlags type must be either NONE or ANY");
     }
   }
 
   foreach (const ACL::SetLogLevel& acl, acls.set_log_level()) {
     if (acl.level().type() == ACL::Entity::SOME) {
-      return Error("acls.set_log_level type must be either NONE or ANY");
+      return Error("ACL.SetLogLevel type must be either NONE or ANY");
     }
   }
 
@@ -1580,7 +1654,7 @@ Option<Error> LocalAuthorizer::validate(const ACLs& acls)
   foreach (const ACL::RegisterAgent& acl, acls.register_agents()) {
     if (acl.agents().type() == ACL::Entity::SOME) {
       return Error(
-          "acls.register_agents type must be either NONE or ANY");
+          "ACL.RegisterAgent type must be either NONE or ANY");
     }
   }
 
@@ -1588,7 +1662,7 @@ Option<Error> LocalAuthorizer::validate(const ACLs& acls)
            acls.update_maintenance_schedules()) {
     if (acl.machines().type() == ACL::Entity::SOME) {
       return Error(
-          "acls.update_maintenance_schedule type must be either NONE or ANY");
+          "ACL.UpdateMaintenanceSchedule type must be either NONE or ANY");
     }
   }
 
@@ -1596,59 +1670,66 @@ Option<Error> LocalAuthorizer::validate(const ACLs& acls)
            acls.get_maintenance_schedules()) {
     if (acl.machines().type() == ACL::Entity::SOME) {
       return Error(
-          "acls.get_maintenance_schedule type must be either NONE or ANY");
+          "ACL.GetMaintenanceSchedule type must be either NONE or ANY");
     }
   }
 
   foreach (const ACL::StartMaintenance& acl, acls.start_maintenances()) {
     if (acl.machines().type() == ACL::Entity::SOME) {
-      return Error("acls.start_maintenance type must be either NONE or ANY");
+      return Error("ACL.StartMaintenance type must be either NONE or ANY");
     }
   }
 
   foreach (const ACL::StopMaintenance& acl, acls.stop_maintenances()) {
     if (acl.machines().type() == ACL::Entity::SOME) {
-      return Error("acls.stop_maintenance type must be either NONE or ANY");
+      return Error("ACL.StopMaintenance type must be either NONE or ANY");
     }
   }
 
   foreach (const ACL::GetMaintenanceStatus& acl,
            acls.get_maintenance_statuses()) {
     if (acl.machines().type() == ACL::Entity::SOME) {
-      return Error(
-          "acls.get_maintenance_status type must be either NONE or ANY");
+      return Error("ACL.GetMaintenanceStatus type must be either NONE or ANY");
     }
   }
 
   foreach (const ACL::LaunchStandaloneContainer& acl,
-           acls.launch_standalone_container()) {
+           acls.launch_standalone_containers()) {
     if (acl.users().type() == ACL::Entity::SOME) {
       return Error(
-          "acls.launch_standalone_container type must be either NONE or ANY");
+          "ACL.LaunchStandaloneContainer type must be either NONE or ANY");
     }
   }
 
   foreach (const ACL::KillStandaloneContainer& acl,
-           acls.kill_standalone_container()) {
+           acls.kill_standalone_containers()) {
     if (acl.users().type() == ACL::Entity::SOME) {
       return Error(
-          "acls.kill_standalone_container type must be either NONE or ANY");
+          "ACL.KillStandaloneContainer type must be either NONE or ANY");
     }
   }
 
   foreach (const ACL::WaitStandaloneContainer& acl,
-           acls.wait_standalone_container()) {
+           acls.wait_standalone_containers()) {
     if (acl.users().type() == ACL::Entity::SOME) {
       return Error(
-          "acls.wait_standalone_container type must be either NONE or ANY");
+          "ACL.WaitStandaloneContainer type must be either NONE or ANY");
     }
   }
 
   foreach (const ACL::RemoveStandaloneContainer& acl,
-           acls.remove_standalone_container()) {
+           acls.remove_standalone_containers()) {
     if (acl.users().type() == ACL::Entity::SOME) {
       return Error(
-          "acls.remove_standalone_container type must be either NONE or ANY");
+          "ACL.RemoveStandaloneContainer type must be either NONE or ANY");
+    }
+  }
+
+  foreach (const ACL::ViewStandaloneContainer& acl,
+           acls.view_standalone_containers()) {
+    if (acl.users().type() == ACL::Entity::SOME) {
+      return Error(
+          "ACL.ViewStandaloneContainer type must be either NONE or ANY");
     }
   }
 
@@ -1656,8 +1737,13 @@ Option<Error> LocalAuthorizer::validate(const ACLs& acls)
            acls.modify_resource_provider_configs()) {
     if (acl.resource_providers().type() == ACL::Entity::SOME) {
       return Error(
-          "acls.modify_resource_provider_config type must be either NONE or "
-          "ANY");
+          "ACL.ModifyResourceProviderConfig type must be either NONE or ANY");
+    }
+  }
+
+  foreach (const ACL::PruneImages& acl, acls.prune_images()) {
+    if (acl.images().type() == ACL::Entity::SOME) {
+      return Error("ACL.PruneImages type must be either NONE or ANY");
     }
   }
 

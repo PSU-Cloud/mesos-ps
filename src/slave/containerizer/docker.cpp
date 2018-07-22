@@ -28,9 +28,14 @@
 #include <process/defer.hpp>
 #include <process/delay.hpp>
 #include <process/io.hpp>
+#include <process/network.hpp>
 #include <process/owned.hpp>
 #include <process/reap.hpp>
 #include <process/subprocess.hpp>
+
+#ifdef __WINDOWS__
+#include <process/windows/jobobject.hpp>
+#endif // __WINDOWS__
 
 #include <stout/adaptor.hpp>
 #include <stout/fs.hpp>
@@ -43,6 +48,11 @@
 #include <stout/uuid.hpp>
 
 #include <stout/os/killtree.hpp>
+#include <stout/os/which.hpp>
+
+#ifdef __WINDOWS__
+#include <stout/os/windows/jobobject.hpp>
+#endif // __WINDOWS__
 
 #include "common/status_utils.hpp"
 
@@ -147,7 +157,7 @@ Option<ContainerID> parse(const Docker::Container& container)
 
     // Check if id is a valid UUID.
     if (containerId.isSome()) {
-      Try<id::UUID> uuid = id::UUID::fromString(containerId.get().value());
+      Try<id::UUID> uuid = id::UUID::fromString(containerId->value());
       if (uuid.isError()) {
         return None();
       }
@@ -443,10 +453,10 @@ Future<Nothing> DockerContainerizerProcess::pull(
 
   string image = container->image();
 
-  Future<Docker::Image> future = docker->pull(
-    container->containerWorkDir,
-    image,
-    container->forcePullImage());
+  Future<Docker::Image> future = metrics.image_pull.time(docker->pull(
+      container->containerWorkDir,
+      image,
+      container->forcePullImage()));
 
   containers_.at(containerId)->pull = future;
 
@@ -532,8 +542,15 @@ Try<Nothing> DockerContainerizerProcess::updatePersistentVolumes(
 
     bool isVolumeInUse = false;
 
-    foreachvalue (const Container* container, containers_) {
-      if (container->resources.contains(resource)) {
+    foreachpair (const ContainerID& _containerId,
+                 const Container* _container,
+                 containers_) {
+      // Skip self.
+      if (_containerId == containerId) {
+        continue;
+      }
+
+      if (_container->resources.contains(resource)) {
         isVolumeInUse = true;
         break;
       }
@@ -650,7 +667,7 @@ Try<Nothing> DockerContainerizerProcess::unmountPersistentVolumes(
   vector<string> unmountErrors;
 
   foreach (const fs::MountInfoTable::Entry& entry,
-           adaptor::reverse(table.get().entries)) {
+           adaptor::reverse(table->entries)) {
     // TODO(tnachen): We assume there is only one docker container
     // running per container Id and no other mounts will have the
     // container Id name. We might need to revisit if this is no
@@ -861,7 +878,8 @@ Future<Option<ContainerTermination>> DockerContainerizer::wait(
 }
 
 
-Future<bool> DockerContainerizer::destroy(const ContainerID& containerId)
+Future<Option<ContainerTermination>> DockerContainerizer::destroy(
+    const ContainerID& containerId)
 {
   return dispatch(
       process.get(),
@@ -898,8 +916,10 @@ Future<Nothing> DockerContainerizerProcess::recover(
 
 Future<Nothing> DockerContainerizerProcess::_recover(
     const Option<SlaveState>& state,
-    const list<Docker::Container>& _containers)
+    const vector<Docker::Container>& _containers)
 {
+  LOG(INFO) << "Got the list of Docker containers";
+
   if (state.isSome()) {
     // This mapping of ContainerIDs to running Docker container names
     // is established for two reasons:
@@ -958,19 +978,21 @@ Future<Nothing> DockerContainerizerProcess::_recover(
         const ContainerID& containerId = executor.latest.get();
         Option<RunState> run = executor.runs.get(containerId);
         CHECK_SOME(run);
-        CHECK_SOME(run.get().id);
-        CHECK_EQ(containerId, run.get().id.get());
+        CHECK_SOME(run->id);
+        CHECK_EQ(containerId, run->id.get());
 
-        // We need the pid so the reaper can monitor the executor so
-        // skip this executor if it's not present. This is not an
-        // error because the slave will try to wait on the container
-        // which will return a failed 'ContainerTermination' and
-        // everything will get cleaned up.
-        if (!run.get().forkedPid.isSome()) {
+        // We need the pid so the reaper can monitor the executor so skip this
+        // executor if it's not present. We will also skip this executor if the
+        // libprocess pid is not present which means the slave exited before
+        // checkpointing it, in which case the executor will shutdown itself
+        // immediately. Both of these two cases are safe to skip because the
+        // slave will try to wait on the container which will return `None()`
+        // and everything will get cleaned up.
+        if (run->forkedPid.isNone() || run->libprocessPid.isNone()) {
           continue;
         }
 
-        if (run.get().completed) {
+        if (run->completed) {
           VLOG(1) << "Skipping recovery of executor '" << executor.id
                   << "' of framework " << framework.id
                   << " because its latest run "
@@ -1012,12 +1034,45 @@ Future<Nothing> DockerContainerizerProcess::_recover(
           container->containerName = existingContainers.at(containerId);
         }
 
-        pid_t pid = run.get().forkedPid.get();
+        // Only reap the executor process if the executor can be connected
+        // otherwise just set `container->status` to `None()`. This is to
+        // avoid reaping an irrelevant process, e.g., after the agent host is
+        // rebooted, the executor pid happens to be reused by another process.
+        // See MESOS-8125 for details.
+        // Note that if both the pid and the port of the executor are reused
+        // by another process or two processes respectively after the agent
+        // host reboots we will still reap an irrelevant process, but that
+        // should be highly unlikely.
+        pid_t pid = run->forkedPid.get();
 
-        container->status.set(process::reap(pid));
+        // Create a TCP socket.
+        Try<int_fd> socket = net::socket(AF_INET, SOCK_STREAM, 0);
+        if (socket.isError()) {
+          return Failure(
+              "Failed to create socket for connecting to executor '" +
+              stringify(executor.id) + "': " + socket.error());
+        }
 
-        container->status.future().get()
-          .onAny(defer(self(), &Self::reaped, containerId));
+        Try<Nothing, SocketError> connect = process::network::connect(
+            socket.get(),
+            run->libprocessPid->address);
+
+        if (connect.isSome()) {
+          container->status.set(process::reap(pid));
+        } else {
+          LOG(WARNING) << "Failed to connect to executor '" << executor.id
+                       << "' of framework " << framework.id << ": "
+                       << connect.error().message;
+
+          container->status.set(Future<Option<int>>(None()));
+        }
+
+        // Shutdown and close the socket.
+        ::shutdown(socket.get(), SHUT_RDWR);
+        os::close(socket.get());
+
+        container->status.future()
+          ->onAny(defer(self(), &Self::reaped, containerId));
 
         if (pids.containsValue(pid)) {
           // This should (almost) never occur. There is the
@@ -1054,10 +1109,10 @@ Future<Nothing> DockerContainerizerProcess::_recover(
 
 
 Future<Nothing> DockerContainerizerProcess::__recover(
-    const list<Docker::Container>& _containers)
+    const vector<Docker::Container>& _containers)
 {
-  list<ContainerID> containerIds;
-  list<Future<Nothing>> futures;
+  vector<ContainerID> containerIds;
+  vector<Future<Nothing>> futures;
   foreach (const Docker::Container& container, _containers) {
     VLOG(1) << "Checking if Docker container named '"
             << container.name << "' was started by Mesos";
@@ -1098,6 +1153,8 @@ Future<Nothing> DockerContainerizerProcess::__recover(
                          containerId.value() + "': " + unmount.error());
         }
       }
+
+      LOG(INFO) << "Finished processing orphaned Docker containers";
 
       return Nothing();
     }));
@@ -1331,15 +1388,15 @@ Future<Docker::Container> DockerContainerizerProcess::launchExecutorContainer(
     return Failure("Container is already destroyed");
   }
 
+  if (containers_[containerId]->state == Container::DESTROYING) {
+    return Failure(
+      "Container is being destroyed during launching excutor container");
+  }
+
   Container* container = containers_.at(containerId);
   container->state = Container::RUNNING;
 
-  return logger->prepare(
-      container->containerConfig.executor_info(),
-      container->containerWorkDir,
-      container->containerConfig.has_user()
-        ? container->containerConfig.user()
-        : Option<string>::none())
+  return logger->prepare(container->id, container->containerConfig)
     .then(defer(
         self(),
         [=](const ContainerIO& containerIO)
@@ -1398,15 +1455,15 @@ Future<Docker::Container> DockerContainerizerProcess::launchExecutorContainer(
 
     run.onAny([=]() mutable {
       if (!run.isReady()) {
-        inspect.discard();
         promise->fail(run.isFailed() ? run.failure() : "discarded");
-      } else if (run->isNone()) {
         inspect.discard();
+      } else if (run->isNone()) {
         promise->fail("Failed to obtain exit status of container");
+        inspect.discard();
       } else {
         if (!WSUCCEEDED(run->get())) {
-          inspect.discard();
           promise->fail("Container " + WSTRINGIFY(run->get()));
+          inspect.discard();
         }
 
         // TODO(bmahler): Handle the case where the 'run' exits
@@ -1424,6 +1481,11 @@ Future<pid_t> DockerContainerizerProcess::launchExecutorProcess(
 {
   if (!containers_.contains(containerId)) {
     return Failure("Container is already destroyed");
+  }
+
+  if (containers_[containerId]->state == Container::DESTROYING) {
+    return Failure(
+      "Container is being destroyed during launching executor process");
   }
 
   Container* container = containers_.at(containerId);
@@ -1458,6 +1520,24 @@ Future<pid_t> DockerContainerizerProcess::launchExecutorProcess(
 
   if (environment.count("PATH") == 0) {
     environment["PATH"] = os::host_default_path();
+
+    // TODO(andschwa): We will consider removing the `#ifdef` in future, as
+    // other platforms may benefit from being pointed to the same `docker` in
+    // both Agent and Executor (there is a chance that the cleaned path results
+    // in using a different docker, if multiple dockers are installed).
+#ifdef __WINDOWS__
+    // Docker is generally not installed in `os::host_default_path()` on
+    // Windows, so the executor will not be able to find `docker`. We search for
+    // `docker` in `PATH` and prepend the parent directory to
+    // `environment["PATH"]`. We prepend instead of append so that in the off
+    // chance that `docker` is in `host_default_path`, the executor and agent
+    // will use the same `docker`.
+    Option<string> dockerPath = os::which("docker");
+    if (dockerPath.isSome()) {
+      environment["PATH"] =
+        Path(dockerPath.get()).dirname() + ";" + environment["PATH"];
+    }
+#endif // __WINDOWS__
   }
 
   vector<string> argv;
@@ -1481,12 +1561,7 @@ Future<pid_t> DockerContainerizerProcess::launchExecutorProcess(
 
   return allocateGpus
     .then(defer(self(), [=]() {
-      return logger->prepare(
-          container->containerConfig.executor_info(),
-          container->containerWorkDir,
-          container->containerConfig.has_user()
-            ? container->containerConfig.user()
-            : Option<string>::none());
+      return logger->prepare(container->id, container->containerConfig);
     }))
     .then(defer(
         self(),
@@ -1521,6 +1596,13 @@ Future<pid_t> DockerContainerizerProcess::launchExecutorProcess(
       parentHooks.emplace_back(Subprocess::ParentHook(
           &systemd::mesos::extendLifetime));
     }
+#elif __WINDOWS__
+    parentHooks.emplace_back(Subprocess::ParentHook::CREATE_JOB());
+    // Setting the "kill on close" job object limit ties the lifetime of the
+    // docker processes to that of the executor. This ensures that if the
+    // executor exits, the docker processes aren't leaked.
+    parentHooks.emplace_back(Subprocess::ParentHook(
+        [](pid_t pid) { return os::set_job_kill_on_close_limit(pid); }));
 #endif // __linux__
 
     // Prepare the flags to pass to the mesos docker executor process.
@@ -1553,7 +1635,7 @@ Future<pid_t> DockerContainerizerProcess::launchExecutorProcess(
       return Failure("Failed to fork executor: " + s.error());
     }
 
-    return s.get().pid();
+    return s->pid();
   }));
 }
 
@@ -1596,8 +1678,8 @@ Future<Nothing> DockerContainerizerProcess::reapExecutor(
   // And finally watch for when the container gets reaped.
   container->status.set(process::reap(pid));
 
-  container->status.future().get()
-    .onAny(defer(self(), &Self::reaped, containerId));
+  container->status.future()
+    ->onAny(defer(self(), &Self::reaped, containerId));
 
   return Nothing();
 }
@@ -1649,7 +1731,47 @@ Future<Nothing> DockerContainerizerProcess::update(
     return __update(containerId, _resources, container->pid.get());
   }
 
-  return docker->inspect(containers_.at(containerId)->containerName)
+  string containerName = containers_.at(containerId)->containerName;
+
+  // Since the Docker daemon might hang, we have to retry the inspect command.
+  //
+  // NOTE: This code is duplicated from the built-in docker executor, but
+  // the retry interval is not passed to `inspect`, because the container might
+  // be terminated.
+  // TODO(abudnik): Consider using a class helper for retrying docker commands.
+  auto inspectLoop = loop(
+      self(),
+      [=]() {
+        return await(
+            docker->inspect(containerName)
+              .after(
+                  slave::DOCKER_INSPECT_TIMEOUT,
+                  [=](Future<Docker::Container> future) {
+                    LOG(WARNING) << "Docker inspect timed out after "
+                                 << slave::DOCKER_INSPECT_TIMEOUT
+                                 << " for container "
+                                 << "'" << containerName << "'";
+
+                    // We need to clean up the hanging Docker CLI process.
+                    // Discarding the inspect future triggers a callback in
+                    // the Docker library that kills the subprocess and
+                    // transitions the future.
+                    future.discard();
+                    return future;
+                  }));
+      },
+      [](const Future<Docker::Container>& future)
+          -> Future<ControlFlow<Docker::Container>> {
+        if (future.isReady()) {
+          return Break(future.get());
+        }
+        if (future.isFailed()) {
+          return Failure(future.failure());
+        }
+        return Continue();
+      });
+
+  return inspectLoop
     .then(defer(self(), &Self::_update, containerId, _resources, lambda::_1));
 #else
   return Nothing();
@@ -1691,6 +1813,13 @@ Future<Nothing> DockerContainerizerProcess::__update(
   static Result<string> cpuHierarchy = cgroups::hierarchy("cpu");
   static Result<string> memoryHierarchy = cgroups::hierarchy("memory");
 
+  // NOTE: Normally, a Docker container should be in its own cgroup.
+  // However, a zombie process (exited but not reaped) will be
+  // temporarily moved into the system root cgroup. We add some
+  // defensive check here to make sure we are not changing the knobs
+  // in the root cgroup. See MESOS-8480 for details.
+  const string systemRootCgroup = stringify(os::PATH_SEPARATOR);
+
   if (cpuHierarchy.isError()) {
     return Failure("Failed to determine the cgroup hierarchy "
                    "where the 'cpu' subsystem is mounted: " +
@@ -1719,11 +1848,16 @@ Future<Nothing> DockerContainerizerProcess::__update(
     LOG(WARNING) << "Container " << containerId
                  << " does not appear to be a member of a cgroup"
                  << " where the 'cpu' subsystem is mounted";
+  } else if (cpuCgroup.get() == systemRootCgroup) {
+    LOG(WARNING)
+        << "Process '" << pid
+        << "' should not be in the system root cgroup (being destroyed?)";
   }
 
   // And update the CPU shares (if applicable).
   if (cpuHierarchy.isSome() &&
       cpuCgroup.isSome() &&
+      cpuCgroup.get() != systemRootCgroup &&
       _resources.cpus().isSome()) {
     double cpuShares = _resources.cpus().get();
 
@@ -1781,11 +1915,16 @@ Future<Nothing> DockerContainerizerProcess::__update(
     LOG(WARNING) << "Container " << containerId
                  << " does not appear to be a member of a cgroup"
                  << " where the 'memory' subsystem is mounted";
+  } else if (memoryCgroup.get() == systemRootCgroup) {
+    LOG(WARNING)
+        << "Process '" << pid
+        << "' should not be in the system root cgroup (being destroyed?)";
   }
 
   // And update the memory limits (if applicable).
   if (memoryHierarchy.isSome() &&
       memoryCgroup.isSome() &&
+      memoryCgroup.get() != systemRootCgroup &&
       _resources.mem().isSome()) {
     // TODO(tnachen): investigate and handle OOM with docker.
     Bytes mem = _resources.mem().get();
@@ -1881,7 +2020,7 @@ Future<ResourceStatistics> DockerContainerizerProcess::usage(
     const Resources& resource = container->resources;
     const Option<Bytes> mem = resource.mem();
     if (mem.isSome()) {
-      result.set_mem_limit_bytes(mem.get().bytes());
+      result.set_mem_limit_bytes(mem->bytes());
     }
 
     const Option<double> cpus = resource.cpus();
@@ -1932,6 +2071,13 @@ Try<ResourceStatistics> DockerContainerizerProcess::cgroupsStatistics(
   const Result<string> cpuacctHierarchy = cgroups::hierarchy("cpuacct");
   const Result<string> memHierarchy = cgroups::hierarchy("memory");
 
+  // NOTE: Normally, a Docker container should be in its own cgroup.
+  // However, a zombie process (exited but not reaped) will be
+  // temporarily moved into the system root cgroup. We add some
+  // defensive check here to make sure we are not reporting statistics
+  // for the root cgroup. See MESOS-8480 for details.
+  const string systemRootCgroup = stringify(os::PATH_SEPARATOR);
+
   if (cpuacctHierarchy.isError()) {
     return Error(
         "Failed to determine the cgroup 'cpuacct' subsystem hierarchy: " +
@@ -1951,6 +2097,10 @@ Try<ResourceStatistics> DockerContainerizerProcess::cgroupsStatistics(
         cpuacctCgroup.error());
   } else if (cpuacctCgroup.isNone()) {
     return Error("Unable to find 'cpuacct' cgroup subsystem");
+  } else if (cpuacctCgroup.get() == systemRootCgroup) {
+    return Error(
+        "Process '" + stringify(pid) +
+        "' should not be in the system root cgroup (being destroyed?)");
   }
 
   const Result<string> memCgroup = cgroups::memory::cgroup(pid);
@@ -1960,6 +2110,10 @@ Try<ResourceStatistics> DockerContainerizerProcess::cgroupsStatistics(
         memCgroup.error());
   } else if (memCgroup.isNone()) {
     return Error("Unable to find 'memory' cgroup subsystem");
+  } else if (memCgroup.get() == systemRootCgroup) {
+    return Error(
+        "Process '" + stringify(pid) +
+        "' should not be in the system root cgroup (being destroyed?)");
   }
 
   const Try<cgroups::cpuacct::Stats> cpuAcctStat =
@@ -1978,15 +2132,15 @@ Try<ResourceStatistics> DockerContainerizerProcess::cgroupsStatistics(
         memStats.error());
   }
 
-  if (!memStats.get().contains("rss")) {
+  if (!memStats->contains("rss")) {
     return Error("cgroups memory stats does not contain 'rss' data");
   }
 
   ResourceStatistics result;
   result.set_timestamp(Clock::now().secs());
-  result.set_cpus_system_time_secs(cpuAcctStat.get().system.secs());
-  result.set_cpus_user_time_secs(cpuAcctStat.get().user.secs());
-  result.set_mem_rss_bytes(memStats.get().at("rss"));
+  result.set_cpus_system_time_secs(cpuAcctStat->system.secs());
+  result.set_cpus_user_time_secs(cpuAcctStat->user.secs());
+  result.set_mem_rss_bytes(memStats->at("rss"));
 
   // Add the cpu.stat information only if CFS is enabled.
   if (flags.cgroups_enable_cfs) {
@@ -2005,6 +2159,10 @@ Try<ResourceStatistics> DockerContainerizerProcess::cgroupsStatistics(
           cpuCgroup.error());
     } else if (cpuCgroup.isNone()) {
       return Error("Unable to find 'cpu' cgroup subsystem");
+    } else if (cpuCgroup.get() == systemRootCgroup) {
+      return Error(
+          "Process '" + stringify(pid) +
+          "' should not be in the system root cgroup (being destroyed?)");
     }
 
     const Try<hashmap<string, uint64_t>> stat =
@@ -2014,17 +2172,17 @@ Try<ResourceStatistics> DockerContainerizerProcess::cgroupsStatistics(
       return Error("Failed to read cpu.stat: " + stat.error());
     }
 
-    Option<uint64_t> nr_periods = stat.get().get("nr_periods");
+    Option<uint64_t> nr_periods = stat->get("nr_periods");
     if (nr_periods.isSome()) {
       result.set_cpus_nr_periods(nr_periods.get());
     }
 
-    Option<uint64_t> nr_throttled = stat.get().get("nr_throttled");
+    Option<uint64_t> nr_throttled = stat->get("nr_throttled");
     if (nr_throttled.isSome()) {
       result.set_cpus_nr_throttled(nr_throttled.get());
     }
 
-    Option<uint64_t> throttled_time = stat.get().get("throttled_time");
+    Option<uint64_t> throttled_time = stat->get("throttled_time");
     if (throttled_time.isSome()) {
       result.set_cpus_throttled_time_secs(
           Nanoseconds(throttled_time.get()).secs());
@@ -2059,7 +2217,7 @@ Future<Option<ContainerTermination>> DockerContainerizerProcess::wait(
 }
 
 
-Future<bool> DockerContainerizerProcess::destroy(
+Future<Option<ContainerTermination>> DockerContainerizerProcess::destroy(
     const ContainerID& containerId,
     bool killed)
 {
@@ -2069,7 +2227,7 @@ Future<bool> DockerContainerizerProcess::destroy(
     // Move this logging into the callers.
     LOG(WARNING) << "Attempted to destroy unknown container " << containerId;
 
-    return false;
+    return None();
   }
 
   // TODO(klueska): Ideally, we would do this check as the first thing
@@ -2092,19 +2250,21 @@ Future<bool> DockerContainerizerProcess::destroy(
     // cleanup.
     CHECK_PENDING(container->status.future());
 
+    ContainerTermination termination;
+
     // NOTE: The launch error message will be retrieved by the slave
     // and properly set in the corresponding status update.
-    container->termination.set(ContainerTermination());
+    container->termination.set(termination);
 
     containers_.erase(containerId);
     delete container;
 
-    return true;
+    return termination;
   }
 
   if (container->state == Container::DESTROYING) {
     return container->termination.future()
-      .then([]() { return true; });
+      .then(Option<ContainerTermination>::some);
   }
 
   // It's possible that destroy is getting called before
@@ -2143,7 +2303,7 @@ Future<bool> DockerContainerizerProcess::destroy(
     containers_.erase(containerId);
     delete container;
 
-    return true;
+    return termination;
   }
 
   if (container->state == Container::PULLING) {
@@ -2158,7 +2318,7 @@ Future<bool> DockerContainerizerProcess::destroy(
     containers_.erase(containerId);
     delete container;
 
-    return true;
+    return termination;
   }
 
   if (container->state == Container::MOUNTING) {
@@ -2179,7 +2339,7 @@ Future<bool> DockerContainerizerProcess::destroy(
     containers_.erase(containerId);
     delete container;
 
-    return true;
+    return termination;
   }
 
   CHECK(container->state == Container::RUNNING);
@@ -2214,7 +2374,7 @@ Future<bool> DockerContainerizerProcess::destroy(
     .onAny(defer(self(), &Self::_destroy, containerId, killed));
 
   return container->termination.future()
-    .then([]() { return true; });
+    .then(Option<ContainerTermination>::some);
 }
 
 
@@ -2300,8 +2460,8 @@ void DockerContainerizerProcess::__destroy(
   // Status must be ready since we did a Docker::kill.
   CHECK_READY(container->status.future());
 
-  container->status.future().get()
-    .onAny(defer(self(), &Self::___destroy, containerId, killed, lambda::_1));
+  container->status.future()
+    ->onAny(defer(self(), &Self::___destroy, containerId, killed, lambda::_1));
 }
 
 
@@ -2345,8 +2505,8 @@ void DockerContainerizerProcess::____destroy(
 
   ContainerTermination termination;
 
-  if (status.isReady() && status.get().isSome()) {
-    termination.set_status(status.get().get());
+  if (status.isReady() && status->isSome()) {
+    termination.set_status(status->get());
   }
 
   termination.set_message(
@@ -2391,7 +2551,7 @@ Future<Nothing> DockerContainerizerProcess::destroyTimeout(
       // Ignoring the error from killing process as it can already
       // have exited.
       VLOG(1) << "Ignoring error when killing process pid "
-              << container->executorPid.get() << " in destroy, error: "
+              << container->pid.get() << " in destroy, error: "
               << kill.error();
     }
   }

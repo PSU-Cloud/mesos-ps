@@ -14,7 +14,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <list>
 #include <string>
 #include <tuple>
 #include <vector>
@@ -49,7 +48,6 @@ namespace http = process::http;
 namespace io = process::io;
 namespace spec = docker::spec;
 
-using std::list;
 using std::set;
 using std::string;
 using std::tuple;
@@ -93,7 +91,8 @@ static set<string> schemes()
 // streaming).
 static Future<http::Response> curl(
     const string& uri,
-    const http::Headers& headers = http::Headers())
+    const http::Headers& headers,
+    const Option<Duration>& stallTimeout)
 {
   vector<string> argv = {
     "curl",
@@ -108,6 +107,14 @@ static Future<http::Response> curl(
   foreachpair (const string& key, const string& value, headers) {
     argv.push_back("-H");
     argv.push_back(key + ": " + value);
+  }
+
+  // Add a timeout for curl to abort when the download speed keeps low
+  // (1 byte per second by default) for the specified duration. See:
+  // https://curl.haxx.se/docs/manpage.html#-y
+  if (stallTimeout.isSome()) {
+    argv.push_back("-y");
+    argv.push_back(std::to_string(static_cast<long>(stallTimeout->secs())));
   }
 
   argv.push_back(strings::trim(uri));
@@ -125,9 +132,9 @@ static Future<http::Response> curl(
   }
 
   return await(
-      s.get().status(),
-      io::read(s.get().out().get()),
-      io::read(s.get().err().get()))
+      s->status(),
+      io::read(s->out().get()),
+      io::read(s->err().get()))
     .then([](const tuple<
         Future<Option<int>>,
         Future<string>,
@@ -199,9 +206,10 @@ static Future<http::Response> curl(
 
 static Future<http::Response> curl(
     const URI& uri,
-    const http::Headers& headers = http::Headers())
+    const http::Headers& headers,
+    const Option<Duration>& stallTimeout)
 {
-  return curl(stringify(uri), headers);
+  return curl(stringify(uri), headers, stallTimeout);
 }
 
 
@@ -209,7 +217,8 @@ static Future<http::Response> curl(
 static Future<int> download(
     const string& uri,
     const string& blobPath,
-    const http::Headers& headers = http::Headers())
+    const http::Headers& headers,
+    const Option<Duration>& stallTimeout)
 {
   vector<string> argv = {
     "curl",
@@ -223,6 +232,13 @@ static Future<int> download(
   foreachpair (const string& key, const string& value, headers) {
     argv.push_back("-H");
     argv.push_back(key + ": " + value);
+  }
+
+  // Add a timeout for curl to abort when the download speed keeps below
+  // 1 byte per second. See: https://curl.haxx.se/docs/manpage.html#-y
+  if (stallTimeout.isSome()) {
+    argv.push_back("-y");
+    argv.push_back(std::to_string(static_cast<long>(stallTimeout->secs())));
   }
 
   argv.push_back(uri);
@@ -240,9 +256,9 @@ static Future<int> download(
   }
 
   return await(
-      s.get().status(),
-      io::read(s.get().out().get()),
-      io::read(s.get().err().get()))
+      s->status(),
+      io::read(s->out().get()),
+      io::read(s->err().get()))
     .then([=](const tuple<
         Future<Option<int>>,
         Future<string>,
@@ -294,7 +310,7 @@ static Future<int> download(
       if (tokens.size() == 2) {
         // Headers are not attached because the request is already
         // authenticated.
-        return download(tokens[1], blobPath);
+        return download(tokens[1], blobPath, http::Headers(), stallTimeout);
       }
 
       return code.get();
@@ -305,10 +321,12 @@ static Future<int> download(
 static Future<int> download(
     const URI& uri,
     const string& directory,
-    const http::Headers& headers = http::Headers())
+    const http::Headers& headers,
+    const Option<Duration>& stallTimeout)
 {
   const string blobPath = path::join(directory, Path(uri.path()).basename());
-  return download(strings::trim(stringify(uri)), blobPath, headers);
+  return download(
+      strings::trim(stringify(uri)), blobPath, headers, stallTimeout);
 }
 
 
@@ -375,9 +393,11 @@ class DockerFetcherPluginProcess : public Process<DockerFetcherPluginProcess>
 {
 public:
   DockerFetcherPluginProcess(
-      const hashmap<string, spec::Config::Auth>& _auths)
+      const hashmap<string, spec::Config::Auth>& _auths,
+      const Option<Duration>& _stallTimeout)
     : ProcessBase(process::ID::generate("docker-fetcher-plugin")),
-      auths(_auths) {}
+      auths(_auths),
+      stallTimeout(_stallTimeout) {}
 
   Future<Nothing> fetch(
       const URI& uri,
@@ -426,6 +446,9 @@ private:
   // keyed by registry URL.
   // For example, "https://index.docker.io/v1/" -> spec::Config::Auth
   hashmap<string, spec::Config::Auth> auths;
+
+  // Timeout for curl to wait when a net download stalls.
+  const Option<Duration> stallTimeout;
 };
 
 
@@ -434,6 +457,12 @@ DockerFetcherPlugin::Flags::Flags()
   add(&Flags::docker_config,
       "docker_config",
       "The default docker config file.");
+
+  add(&Flags::docker_stall_timeout,
+      "docker_stall_timeout",
+      "Amount of time for the fetcher to wait before considering a download\n"
+      "being too slow and abort it when the download stalls (i.e., the speed\n"
+      "keeps below one byte per second).");
 }
 
 
@@ -457,7 +486,8 @@ Try<Owned<Fetcher::Plugin>> DockerFetcherPlugin::create(const Flags& flags)
   }
 
   Owned<DockerFetcherPluginProcess> process(new DockerFetcherPluginProcess(
-      hashmap<string, spec::Config::Auth>(auths)));
+      hashmap<string, spec::Config::Auth>(auths),
+      flags.docker_stall_timeout));
 
   return Owned<Fetcher::Plugin>(new DockerFetcherPlugin(process));
 }
@@ -569,7 +599,7 @@ Future<Nothing> DockerFetcherPluginProcess::fetch(
     {"Accept", "application/vnd.docker.distribution.manifest.v1+json"}
   };
 
-  return curl(manifestUri, manifestHeaders + basicAuthHeaders)
+  return curl(manifestUri, manifestHeaders + basicAuthHeaders, stallTimeout)
     .then(defer(self(),
                 &Self::_fetch,
                 uri,
@@ -594,7 +624,7 @@ Future<Nothing> DockerFetcherPluginProcess::_fetch(
     return getAuthHeader(manifestUri, basicAuthHeaders, response)
       .then(defer(self(), [=](
           const http::Headers& authHeaders) -> Future<Nothing> {
-        return curl(manifestUri, manifestHeaders + authHeaders)
+        return curl(manifestUri, manifestHeaders + authHeaders, stallTimeout)
           .then(defer(self(),
                       &Self::__fetch,
                       uri,
@@ -670,7 +700,7 @@ Future<Nothing> DockerFetcherPluginProcess::__fetch(
   }
 
   // Download all the filesystem layers.
-  list<Future<Nothing>> futures;
+  vector<Future<Nothing>> futures;
   for (int i = 0; i < manifest->fslayers_size(); i++) {
     URI blob = uri::docker::blob(
         uri.path(),                         // The 'repository'.
@@ -702,7 +732,7 @@ Future<Nothing> DockerFetcherPluginProcess::fetchBlob(
 {
   URI blobUri = getBlobUri(uri);
 
-  return download(blobUri, directory, authHeaders)
+  return download(blobUri, directory, authHeaders, stallTimeout)
     .then(defer(self(), [=](int code) -> Future<Nothing> {
       if (code == http::Status::UNAUTHORIZED) {
         // If we get a '401 Unauthorized', we assume that 'authHeaders'
@@ -727,7 +757,7 @@ Future<Nothing> DockerFetcherPluginProcess::_fetchBlob(
   // HTTP headers from 'download'. Currently, 'download' only returns
   // the HTTP response code because we don't support parsing HTTP
   // headers alone. Revisit this once that's supported.
-  return curl(blobUri, basicAuthHeaders)
+  return curl(blobUri, basicAuthHeaders, stallTimeout)
     .then(defer(self(), [=](const http::Response& response) -> Future<Nothing> {
       // We expect a '401 Unauthorized' response here since the
       // 'download' with the same URI returns a '401 Unauthorized'.
@@ -740,7 +770,7 @@ Future<Nothing> DockerFetcherPluginProcess::_fetchBlob(
       return getAuthHeader(blobUri, basicAuthHeaders, response)
         .then(defer(self(), [=](
             const http::Headers& authHeaders) -> Future<Nothing> {
-          return download(blobUri, directory, authHeaders)
+          return download(blobUri, directory, authHeaders, stallTimeout)
             .then(defer(self(),
                         &Self::__fetchBlob,
                         lambda::_1));
@@ -812,7 +842,7 @@ Future<http::Headers> DockerFetcherPluginProcess::getAuthHeader(
       "service=" + authParam.at("service") + "&" +
       "scope=" + authParam.at("scope");
 
-    return curl(authServerUri, basicAuthHeaders)
+    return curl(authServerUri, basicAuthHeaders, stallTimeout)
       .then([authServerUri](
           const http::Response& response) -> Future<http::Headers> {
         if (response.code != http::Status::OK) {
@@ -838,6 +868,11 @@ Future<http::Headers> DockerFetcherPluginProcess::getAuthHeader(
 
         return getAuthHeaderBearer(token->value);
       });
+  }
+
+  if (authScheme == "BASIC"){
+    return Failure(
+        "Unexpected BASIC Authorization response status: " + response.status);
   }
 
   return Failure("Unsupported auth-scheme: " + authScheme);
