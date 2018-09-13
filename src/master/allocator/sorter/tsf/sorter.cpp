@@ -591,7 +591,7 @@ std::priority_queue<std::pair<std::string, double>,
 TSFSorter::yieldHeap(const SlaveID& slaveId) {
   if (dirty) {
     std::function<void (Node*)> sortTree =
-        [this, &slaveId, &sortTree](Node* node) {
+        [this, &sortTree](Node* node) {
       // Inactive leaves are always stored at the end of the
       // `children` vector; this means that as soon as we see an
       // inactive leaf, we can stop calculating shares, and we only
