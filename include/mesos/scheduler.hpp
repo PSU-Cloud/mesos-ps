@@ -406,6 +406,7 @@ public:
   // See SchedulerDriver for descriptions of these.
   virtual Status start();
   virtual Status stop(bool failover = false);
+  virtual Status stop(bool failover, int trend);
   virtual Status abort();
   virtual Status join();
   virtual Status run();

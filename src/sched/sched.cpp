@@ -1186,8 +1186,7 @@ protected:
     VLOG(1) << "Scheduler::error took " << stopwatch.elapsed();
   }
 
-  void stop(bool failover)
-  {
+  void stop(bool failover, int trend) {
     LOG(INFO) << "Stopping framework " << framework.id();
 
     // Whether or not we send an unregister message, we want to
@@ -1200,6 +1199,7 @@ protected:
       CHECK(framework.has_id());
       call.mutable_framework_id()->CopyFrom(framework.id());
       call.set_type(Call::TEARDOWN);
+      call.set_trend(trend);
 
       CHECK_SOME(master);
       send(master.get().pid(), call);
@@ -1208,6 +1208,11 @@ protected:
     synchronized (mutex) {
       CHECK_NOTNULL(latch)->trigger();
     }
+  }
+
+  void stop(bool failover)
+  {
+    stop(failover, 0);
   }
 
   // NOTE: This function informs the master to stop attempting to send
@@ -2020,6 +2025,40 @@ Status MesosSchedulerDriver::stop(bool failover)
     if (process != nullptr) {
       process->running.store(false);
       dispatch(process, &SchedulerProcess::stop, failover);
+    }
+
+    // TODO(benh): It might make more sense to clean up our local
+    // cluster here than in the destructor. However, what would be
+    // even better is to allow multiple local clusters to exist (i.e.
+    // not use global vars in local.cpp) so that ours can just be an
+    // instance variable in MesosSchedulerDriver.
+
+    bool aborted = status == DRIVER_ABORTED;
+
+    status = DRIVER_STOPPED;
+
+    return aborted ? DRIVER_ABORTED : status;
+  }
+}
+
+
+Status MesosSchedulerDriver::stop(bool failover, int trend)
+{
+  synchronized (mutex) {
+    LOG(INFO) << "Asked to stop the driver";
+
+    if (status != DRIVER_RUNNING && status != DRIVER_ABORTED) {
+      VLOG(1) << "Ignoring stop because the status of the driver is "
+              << Status_Name(status);
+      return status;
+    }
+
+    // 'process' might be nullptr if the driver has failed to instantiate
+    // it due to bad parameters (e.g. error in creating the detector
+    // or loading flags).
+    if (process != nullptr) {
+      process->running.store(false);
+      dispatch(process, &SchedulerProcess::stop, failover, trend);
     }
 
     // TODO(benh): It might make more sense to clean up our local

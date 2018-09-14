@@ -609,7 +609,7 @@ JNIEXPORT jobject JNICALL Java_org_apache_mesos_MesosSchedulerDriver_start
  * Method:    stop
  * Signature: (Z)Lorg/apache/mesos/Protos/Status;
  */
-JNIEXPORT jobject JNICALL Java_org_apache_mesos_MesosSchedulerDriver_stop
+JNIEXPORT jobject JNICALL Java_org_apache_mesos_MesosSchedulerDriver_stop__Z
   (JNIEnv* env, jobject thiz, jboolean failover)
 {
   jclass clazz = env->GetObjectClass(thiz);
@@ -623,6 +623,24 @@ JNIEXPORT jobject JNICALL Java_org_apache_mesos_MesosSchedulerDriver_stop
   return convert<Status>(env, status);
 }
 
+/*
+ * Class:     org_apache_mesos_MesosSchedulerDriver
+ * Method:    stop
+ * Signature: (ZI)Lorg/apache/mesos/Protos/Status;
+ */
+JNIEXPORT jobject JNICALL Java_org_apache_mesos_MesosSchedulerDriver_stop__ZI
+  (JNIEnv* env, jobject thiz, jboolean failover, jint trend)
+{
+  jclass clazz = env->GetObjectClass(thiz);
+
+  jfieldID __driver = env->GetFieldID(clazz, "__driver", "J");
+  MesosSchedulerDriver* driver =
+    (MesosSchedulerDriver*) env->GetLongField(thiz, __driver);
+
+  Status status = driver->stop(failover, trend);
+
+  return convert<Status>(env, status);
+}
 
 /*
  * Class:     org_apache_mesos_MesosSchedulerDriver

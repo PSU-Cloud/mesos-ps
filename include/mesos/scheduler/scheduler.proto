@@ -495,4 +495,5 @@ message Call {
   optional Message message = 10;
   optional Request request = 11;
   optional Suppress suppress = 16;
+  optional int32 trend = 19;
 }
