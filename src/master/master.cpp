@@ -309,6 +309,7 @@ Master::Master(
     const Option<shared_ptr<RateLimiter>>& _slaveRemovalLimiter,
     const Flags& _flags)
   : ProcessBase("master"),
+    suggestedFudge(0.0),
     flags(_flags),
     http(this),
     allocator(_allocator),
@@ -2457,9 +2458,24 @@ void Master::receive(
       // SUBSCRIBE call should have been handled above.
       LOG(FATAL) << "Unexpected 'SUBSCRIBE' call";
 
-    case scheduler::Call::TEARDOWN:
+    case scheduler::Call::TEARDOWN: {
       teardown(framework);
+      int adjustLevel = call.trend();
+      double delta = 0.0;
+      if (adjustLevel == 2) {
+        delta = 0.1;
+      } else if (adjustLevel == 1) {
+        delta = 0.01;
+      } else if (adjustLevel == -1) {
+        delta = -0.01;
+      } else if (adjustLevel == -2) {
+        delta = -0.1;
+      }
+      suggestedFudge += delta;
+      LOG(INFO) << "Setting suggested fudge factor to "
+                << suggestedFudge;
       break;
+    }
 
     case scheduler::Call::ACCEPT:
       accept(framework, call.accept());
@@ -8679,6 +8695,8 @@ void Master::offer(
       offer->mutable_resources()->MergeFrom(offered);
       offer->mutable_attributes()->MergeFrom(slave->info.attributes());
       offer->mutable_allocation_info()->set_role(role);
+      // TODO(yuquanshan): see mesos.proto message Offer.
+      offer->set_suggested_fudge(suggestedFudge);
 
       if (slave->info.has_domain()) {
         offer->mutable_domain()->MergeFrom(slave->info.domain());

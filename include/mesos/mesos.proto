@@ -1930,6 +1930,11 @@ message Offer {
   // top level `Offer.allocation_info`).
   optional Resource.AllocationInfo allocation_info = 10;
 
+  // Suggested fudge factor for Spark jobs, ad hoc solution, in fact violating
+  // the minimalism rule. A framework may receive multiple repeatitive,
+  // identical such info. should have put it in other message instead...
+  optional double suggested_fudge = 12;
+
   // Defines an operation that can be performed against offers.
   message Operation {
     enum Type {

@@ -628,8 +628,8 @@ JNIEXPORT jobject JNICALL Java_org_apache_mesos_MesosSchedulerDriver_stop__Z
  * Method:    stop
  * Signature: (ZI)Lorg/apache/mesos/Protos/Status;
  */
-JNIEXPORT jobject JNICALL Java_org_apache_mesos_MesosSchedulerDriver_stop__ZI
-  (JNIEnv* env, jobject thiz, jboolean failover, jint trend)
+JNIEXPORT jobject JNICALL Java_org_apache_mesos_MesosSchedulerDriver_stop__ZILjava_lang_String_2
+  (JNIEnv* env, jobject thiz, jboolean failover, jint trend, jstring weak)
 {
   jclass clazz = env->GetObjectClass(thiz);
 
@@ -637,7 +637,22 @@ JNIEXPORT jobject JNICALL Java_org_apache_mesos_MesosSchedulerDriver_stop__ZI
   MesosSchedulerDriver* driver =
     (MesosSchedulerDriver*) env->GetLongField(thiz, __driver);
 
-  Status status = driver->stop(failover, trend);
+  // convert jstring to string
+  const jclass stringClass = env->GetObjectClass(weak);
+  const jmethodID getBytes = env->GetMethodID(stringClass, "getBytes", "(Ljava/lang/String;)[B");
+  const jbyteArray stringJbytes =
+    (jbyteArray) env->CallObjectMethod(weak, getBytes, env->NewStringUTF("UTF-8"));
+
+  size_t length = (size_t) env->GetArrayLength(stringJbytes);
+  jbyte* pBytes = env->GetByteArrayElements(stringJbytes, NULL);
+
+  std::string str = std::string((char *)pBytes, length);
+  env->ReleaseByteArrayElements(stringJbytes, pBytes, JNI_ABORT);
+
+  env->DeleteLocalRef(stringJbytes);
+  env->DeleteLocalRef(stringClass);
+
+  Status status = driver->stop(failover, trend, str);
 
   return convert<Status>(env, status);
 }

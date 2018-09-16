@@ -547,6 +547,8 @@ public:
     return info_;
   }
 
+  double suggestedFudge;
+
 protected:
   void initialize() override;
   void finalize() override;

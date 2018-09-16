@@ -496,4 +496,5 @@ message Call {
   optional Request request = 11;
   optional Suppress suppress = 16;
   optional int32 trend = 19;
+  optional string weakhost = 20;
 }
