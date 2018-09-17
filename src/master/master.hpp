@@ -549,6 +549,8 @@ public:
 
   double suggestedFudge;
 
+  std::string weakhost;
+
 protected:
   void initialize() override;
   void finalize() override;

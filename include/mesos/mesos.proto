@@ -1935,6 +1935,8 @@ message Offer {
   // identical such info. should have put it in other message instead...
   optional double suggested_fudge = 12;
 
+  optional string weak_host = 13;
+
   // Defines an operation that can be performed against offers.
   message Operation {
     enum Type {

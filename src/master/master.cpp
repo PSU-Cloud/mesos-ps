@@ -310,6 +310,7 @@ Master::Master(
     const Flags& _flags)
   : ProcessBase("master"),
     suggestedFudge(0.0),
+    weakhost(""),
     flags(_flags),
     http(this),
     allocator(_allocator),
@@ -2471,7 +2472,14 @@ void Master::receive(
       } else if (adjustLevel == -2) {
         delta = -0.1;
       }
+      if (weakhost != call.weakhost()) {
+        LOG(INFO) << "Changing weak host from " << weakhost << " to "
+                  << call.weakhost();
+        weakhost = call.weakhost();
+        suggestedFudge = 0.0;
+      }
       suggestedFudge += delta;
+
       LOG(INFO) << "Setting suggested fudge factor to "
                 << suggestedFudge;
       break;
@@ -8697,6 +8705,7 @@ void Master::offer(
       offer->mutable_allocation_info()->set_role(role);
       // TODO(yuquanshan): see mesos.proto message Offer.
       offer->set_suggested_fudge(suggestedFudge);
+      offer->set_weak_host(weakhost);
 
       if (slave->info.has_domain()) {
         offer->mutable_domain()->MergeFrom(slave->info.domain());
