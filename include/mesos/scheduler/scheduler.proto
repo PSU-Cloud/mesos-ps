@@ -466,6 +466,12 @@ message Call {
     repeated string roles = 1;
   }
 
+  message NodeInfo {
+    required string name = 1;
+    // The adjusted value should be (original est x factor)
+    required double factor = 2 [default = 1.0];
+  }
+
   // Identifies who generated this call. Master assigns a framework id
   // when a new scheduler subscribes for the first time. Once assigned,
   // the scheduler must set the 'framework_id' here and within its
@@ -495,6 +501,5 @@ message Call {
   optional Message message = 10;
   optional Request request = 11;
   optional Suppress suppress = 16;
-  optional int32 trend = 19;
-  optional string weakhost = 20;
+  repeated NodeInfo ninfos = 19;
 }

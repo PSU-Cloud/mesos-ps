@@ -547,9 +547,7 @@ public:
     return info_;
   }
 
-  double suggestedFudge;
-
-  std::string weakhost;
+  hashmap<std::string, double> node_adjustments;
 
 protected:
   void initialize() override;

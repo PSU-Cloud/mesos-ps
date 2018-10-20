@@ -242,7 +242,7 @@ public class MesosSchedulerDriver implements SchedulerDriver {
 
   public native Status stop(boolean failover);
 
-  public native Status stop(boolean failover, int trend, String weak);
+  public native Status stop(boolean failover, String[] hosts, double[] adjs);
 
   public Status stop() {
     return stop(false);

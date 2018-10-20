@@ -1933,9 +1933,15 @@ message Offer {
   // Suggested fudge factor for Spark jobs, ad hoc solution, in fact violating
   // the minimalism rule. A framework may receive multiple repeatitive,
   // identical such info. should have put it in other message instead...
-  optional double suggested_fudge = 12;
+  // TODO(yuquanshan): Offer:NodeInfo is the same as Call::NodeInfo, need to
+  // merge these two.
+  message NodeInfo {
+    required string name = 1;
+    // The adjusted value should be (original est x factor)
+    required double factor = 2 [default = 1.0];
+  }
 
-  optional string weak_host = 13;
+  repeated NodeInfo ninfos = 12;
 
   // Defines an operation that can be performed against offers.
   message Operation {

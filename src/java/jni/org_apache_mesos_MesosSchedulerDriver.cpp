@@ -626,10 +626,10 @@ JNIEXPORT jobject JNICALL Java_org_apache_mesos_MesosSchedulerDriver_stop__Z
 /*
  * Class:     org_apache_mesos_MesosSchedulerDriver
  * Method:    stop
- * Signature: (ZI)Lorg/apache/mesos/Protos/Status;
+ * Signature: (Z[Ljava/lang/String;[D)Lorg/apache/mesos/Protos/Status;
  */
-JNIEXPORT jobject JNICALL Java_org_apache_mesos_MesosSchedulerDriver_stop__ZILjava_lang_String_2
-  (JNIEnv* env, jobject thiz, jboolean failover, jint trend, jstring weak)
+JNIEXPORT jobject JNICALL Java_org_apache_mesos_MesosSchedulerDriver_stop__Z_3Ljava_lang_String_2_3D
+  (JNIEnv* env, jobject thiz, jboolean failover, jobjectArray hosts, jdoubleArray adjs)
 {
   jclass clazz = env->GetObjectClass(thiz);
 
@@ -637,22 +637,25 @@ JNIEXPORT jobject JNICALL Java_org_apache_mesos_MesosSchedulerDriver_stop__ZILja
   MesosSchedulerDriver* driver =
     (MesosSchedulerDriver*) env->GetLongField(thiz, __driver);
 
-  // convert jstring to string
-  const jclass stringClass = env->GetObjectClass(weak);
-  const jmethodID getBytes = env->GetMethodID(stringClass, "getBytes", "(Ljava/lang/String;)[B");
-  const jbyteArray stringJbytes =
-    (jbyteArray) env->CallObjectMethod(weak, getBytes, env->NewStringUTF("UTF-8"));
+  // Convert hosts to vector of strings, adjs to vector of doubles
+  int numElems = env->GetArrayLength(hosts);
+  vector<string> vhosts;
+  vector<double> vadjs;
+  jdouble* adjarr = env->GetDoubleArrayElements(adjs, NULL);
 
-  size_t length = (size_t) env->GetArrayLength(stringJbytes);
-  jbyte* pBytes = env->GetByteArrayElements(stringJbytes, NULL);
+  for (int i = 0; i < numElems; i++) {
+    jstring str = (jstring) (env->GetObjectArrayElement(hosts, i));
+    const char *rawString = env->GetStringUTFChars(str, 0);
+    string tmp(rawString);
+    vhosts.push_back(tmp);
+    env->ReleaseStringUTFChars(str, rawString);
 
-  std::string str = std::string((char *)pBytes, length);
-  env->ReleaseByteArrayElements(stringJbytes, pBytes, JNI_ABORT);
+    vadjs.push_back(adjarr[i]);
+  }
 
-  env->DeleteLocalRef(stringJbytes);
-  env->DeleteLocalRef(stringClass);
+  env->ReleaseDoubleArrayElements(adjs, adjarr, 0);
 
-  Status status = driver->stop(failover, trend, str);
+  Status status = driver->stop(failover, vhosts, vadjs);
 
   return convert<Status>(env, status);
 }

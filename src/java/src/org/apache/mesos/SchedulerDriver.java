@@ -43,12 +43,12 @@ public interface SchedulerDriver {
 
   /**
    * Stops the scheduler driver assuming no failover.
-   * See stop(boolean failover), plus report of optRepart adjustment
-   * level and the weak host.
+   * See stop(boolean failover), plus report of hosts-to-be-adjusted
+   * and their according adjustment factors.
    *
    * @return The state of the driver after the call.
    */
-  Status stop(boolean failover, int trend, String weak);
+  Status stop(boolean failover, String[] hosts, double[] adjs);
 
   /**
    * Stops the scheduler driver. If the 'failover' flag is set to

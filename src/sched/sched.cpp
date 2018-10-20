@@ -1186,7 +1186,8 @@ protected:
     VLOG(1) << "Scheduler::error took " << stopwatch.elapsed();
   }
 
-  void stop(bool failover, int trend, std::string weak) {
+  void stop(
+      bool failover, std::vector<std::string> hosts, std::vector<double> adjs) {
     LOG(INFO) << "Stopping framework " << framework.id();
 
     // Whether or not we send an unregister message, we want to
@@ -1199,8 +1200,11 @@ protected:
       CHECK(framework.has_id());
       call.mutable_framework_id()->CopyFrom(framework.id());
       call.set_type(Call::TEARDOWN);
-      call.set_trend(trend);
-      call.set_weakhost(weak);
+      for (unsigned int i = 0; i < hosts.size(); i++) {
+        Call::NodeInfo* ninfo = call.add_ninfos();
+        ninfo->set_name(hosts[i]);
+        ninfo->set_factor(adjs[i]);
+      }
 
       CHECK_SOME(master);
       send(master.get().pid(), call);
@@ -1213,7 +1217,9 @@ protected:
 
   void stop(bool failover)
   {
-    stop(failover, 0, "");
+    std::vector<std::string> hosts;
+    std::vector<double> adjs;
+    stop(failover, hosts, adjs);
   }
 
   // NOTE: This function informs the master to stop attempting to send
@@ -2043,7 +2049,8 @@ Status MesosSchedulerDriver::stop(bool failover)
 }
 
 
-Status MesosSchedulerDriver::stop(bool failover, int trend, std::string weak)
+Status MesosSchedulerDriver::stop(
+    bool failover, std::vector<std::string> hosts, std::vector<double> adjs)
 {
   synchronized (mutex) {
     LOG(INFO) << "Asked to stop the driver";
@@ -2059,7 +2066,7 @@ Status MesosSchedulerDriver::stop(bool failover, int trend, std::string weak)
     // or loading flags).
     if (process != nullptr) {
       process->running.store(false);
-      dispatch(process, &SchedulerProcess::stop, failover, trend, weak);
+      dispatch(process, &SchedulerProcess::stop, failover, hosts, adjs);
     }
 
     // TODO(benh): It might make more sense to clean up our local

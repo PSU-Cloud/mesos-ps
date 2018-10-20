@@ -309,8 +309,6 @@ Master::Master(
     const Option<shared_ptr<RateLimiter>>& _slaveRemovalLimiter,
     const Flags& _flags)
   : ProcessBase("master"),
-    suggestedFudge(0.0),
-    weakhost(""),
     flags(_flags),
     http(this),
     allocator(_allocator),
@@ -2461,27 +2459,14 @@ void Master::receive(
 
     case scheduler::Call::TEARDOWN: {
       teardown(framework);
-      int adjustLevel = call.trend();
-      double delta = 0.0;
-      if (adjustLevel == 2) {
-        delta = 0.1;
-      } else if (adjustLevel == 1) {
-        delta = 0.01;
-      } else if (adjustLevel == -1) {
-        delta = -0.01;
-      } else if (adjustLevel == -2) {
-        delta = -0.1;
+      for (int i = 0; i < call.ninfos_size(); i++) {
+        const scheduler::Call::NodeInfo nodeinfo = call.ninfos(i);
+        string host = nodeinfo.name();
+        double factor = nodeinfo.factor();
+        node_adjustments.put(host, factor);
+        LOG(INFO) << "Updating adjustment factor of " << host << " to "
+                  << factor;
       }
-      if (weakhost != call.weakhost()) {
-        LOG(INFO) << "Changing weak host from " << weakhost << " to "
-                  << call.weakhost();
-        weakhost = call.weakhost();
-        suggestedFudge = 0.0;
-      }
-      suggestedFudge += delta;
-
-      LOG(INFO) << "Setting suggested fudge factor to "
-                << suggestedFudge;
       break;
     }
 
@@ -8704,8 +8689,13 @@ void Master::offer(
       offer->mutable_attributes()->MergeFrom(slave->info.attributes());
       offer->mutable_allocation_info()->set_role(role);
       // TODO(yuquanshan): see mesos.proto message Offer.
-      offer->set_suggested_fudge(suggestedFudge);
-      offer->set_weak_host(weakhost);
+      for (auto it = node_adjustments.begin();
+           it != node_adjustments.end();
+           it++) {
+        Offer::NodeInfo* nodeinfo = offer->add_ninfos();
+        nodeinfo->set_name(it->first);
+        nodeinfo->set_factor(it->second);
+      }
 
       if (slave->info.has_domain()) {
         offer->mutable_domain()->MergeFrom(slave->info.domain());
