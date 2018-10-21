@@ -2463,8 +2463,7 @@ void Master::receive(
         const scheduler::Call::NodeInfo nodeinfo = call.ninfos(i);
         string host = nodeinfo.name();
         double factor = nodeinfo.factor();
-        node_adjustments.put(
-            host, factor * node_adjustments.get(host).getOrElse(1.0));
+        node_adjustments.put(host, factor);
         LOG(INFO) << "Updating adjustment factor of " << host << " to "
                   << factor;
       }
