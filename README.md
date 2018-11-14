@@ -1,9 +1,3 @@
-# A working copy of Apache Mesos
-
-TODO:
-1. modify the original DRF scheduling algorithms to PS-DFS. 
-2. add more test frameworks to provide test support.
-
 # Apache Mesos
 
 Apache Mesos is a cluster manager that provides efficient resource isolation
